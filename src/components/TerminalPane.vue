@@ -43,6 +43,24 @@ function queueInput(data: string) {
   }
 }
 
+// Kitty keyboard protocol state, tracked from the app's output stream:
+// `CSI > flags u` push / `CSI < u` pop / `CSI = flags u` set. While active,
+// xterm encodes modifier keys natively. The tail buffer bridges sequences
+// split across stdout chunks.
+let kittyActive = false
+let vtTail = ''
+const KITTY_MODE = /\x1b\[(>|<|=)([^u]*)u/g
+
+function scanKitty(data: string) {
+  vtTail = (vtTail + data).slice(-32)
+  KITTY_MODE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = KITTY_MODE.exec(vtTail))) {
+    const flags = m[2].split(';')[0]
+    kittyActive = m[1] === '<' ? false : flags !== '' && flags !== '0'
+  }
+}
+
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64)
   const bytes = new Uint8Array(bin.length)
@@ -60,7 +78,10 @@ onMounted(() => {
   if (!container.value) return
 
   term = new Terminal({
-    fontFamily: '"Cascadia Code", ui-monospace, Consolas, monospace',
+    // Nerd Font variants come after the base family so icon glyphs
+    // (oh-my-posh, agent prompts) fall back per-glyph instead of tofu
+    fontFamily:
+      '"Cascadia Code", "Cascadia Code NF", "Cascadia Mono NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Hack Nerd Font", ui-monospace, Consolas, monospace',
     fontSize: ui.settings.terminalFontSize,
     lineHeight: 1.2,
     cursorBlink: true,
@@ -68,6 +89,9 @@ onMounted(() => {
     scrollback: 10000,
     allowTransparency: false,
     theme: terminalTheme(),
+    // Lets kitty-aware apps (opencode, Claude Code, …) turn on enhanced
+    // keyboard reporting so Shift+Enter & friends arrive disambiguated
+    vtExtensions: { kittyKeyboard: true },
   })
   fit = new FitAddon()
   term.loadAddon(fit)
@@ -79,10 +103,25 @@ onMounted(() => {
   // control bytes (^K, ESC-prefixed Alt sequences, …)
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true
+    // Legacy input sends plain \r for Shift+Enter, so apps see it as Enter.
+    // While kitty mode is off, translate it to "\n" — the Ctrl+J newline
+    // convention every agent (and shells) treat as a harmless line event.
+    // Kitty-active apps receive the real CSI 13;2u encoding instead.
+    if (
+      e.key === 'Enter' && e.shiftKey &&
+      !e.ctrlKey && !e.altKey && !e.metaKey && !kittyActive
+    ) {
+      queueInput('\n')
+      return false
+    }
     return actionFor(e, ui.settings) === null
   })
 
   sessions.attachSink(props.session.id, (data) => {
+    // xterm gets raw bytes (it buffers partial UTF-8 itself); the kitty
+    // scan runs on the binary string — its patterns are ASCII-only, so
+    // multibyte split boundaries can't produce false matches
+    scanKitty(atob(data))
     term?.write(b64ToBytes(data))
   })
 
