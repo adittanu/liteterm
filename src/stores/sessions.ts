@@ -65,7 +65,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     sinks.delete(sessionId)
   }
 
-  async function connect(hostId: number, pendingPassword?: string) {
+  async function connect(hostId: number, pendingPassword?: string, opts?: { silent?: boolean }) {
     const hosts = useHostsStore()
     const host = hosts.hostById(hostId)
     if (!host) return
@@ -99,7 +99,8 @@ export const useSessionsStore = defineStore('sessions', () => {
       tabs.value.push(tab)
       replayBuffered(tab)
       activeId.value = sessionId
-      useUiStore().openView(sessionView(sessionId))
+      // Silent connections (e.g. started from SFTP) don't hijack the view
+      if (!opts?.silent) useUiStore().openView(sessionView(sessionId))
     } catch (e) {
       const msg = errorText(e)
       // Backend asks for credentials at connect time

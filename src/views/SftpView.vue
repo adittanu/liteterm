@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   ArrowUp,
   RefreshCw,
@@ -16,7 +16,6 @@ import {
   Search,
   FolderOpen,
   Plug,
-  HardDrive,
   ChevronDown,
   MonitorSmartphone,
   Server,
@@ -191,11 +190,15 @@ function iconFor(kind: FileEntry['kind']) {
 
 function formatSize(e: FileEntry): string {
   if (e.kind !== 'file') return '—'
-  const s = e.size
-  if (s < 1024) return `${s} B`
-  if (s < 1024 * 1024) return `${(s / 1024).toFixed(1)} KB`
-  if (s < 1024 * 1024 * 1024) return `${(s / (1024 * 1024)).toFixed(1)} MB`
-  return `${(s / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  return fmtBytes(e.size)
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  if (n < 1024 * 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  return `${(n / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`
 }
 
 function kindLabel(e: FileEntry): string {
@@ -306,20 +309,56 @@ function paneTitle(pane: PaneState): string {
   return pane.sessionId !== null ? pane.hostLabel || 'Remote' : 'Select host'
 }
 
-function openSideSwitcher(e: MouseEvent, idx: number) {
-  const hostItems: MenuItem[] = hosts.hosts.map((h) => ({
-    label: `${h.label} · ${h.username}@${h.address}${connectedHostIds.value.has(h.id) ? '  — live' : ''}`,
-    icon: Server,
-    action: () => void useHost(idx, h.id),
-  }))
-  openMenu(e, [
-    {
-      label: 'Local — this PC',
-      icon: MonitorSmartphone,
-      action: () => useLocal(idx),
-    },
-    ...hostItems,
-  ])
+// Searchable popover anchored under the pane's switcher button
+const sidePicker = ref<{ idx: number } | null>(null)
+const sideQuery = ref('')
+const sideInputEl = ref<HTMLInputElement | null>(null)
+
+function openSidePicker(idx: number) {
+  sidePicker.value = { idx }
+  sideQuery.value = ''
+  void nextTick(() => sideInputEl.value?.focus())
+}
+
+function closeSidePicker() {
+  sidePicker.value = null
+}
+
+const sidePickerHosts = computed(() => {
+  const q = sideQuery.value.trim().toLowerCase()
+  const sorted = [...hosts.hosts].sort((a, b) => {
+    const ca = connectedHostIds.value.has(a.id) ? 0 : 1
+    const cb = connectedHostIds.value.has(b.id) ? 0 : 1
+    return ca - cb || a.label.localeCompare(b.label)
+  })
+  if (!q) return sorted
+  return sorted.filter(
+    (h) =>
+      h.label.toLowerCase().includes(q) ||
+      h.address.toLowerCase().includes(q) ||
+      h.username.toLowerCase().includes(q),
+  )
+})
+
+function pickSideLocal(idx: number) {
+  useLocal(idx)
+  closeSidePicker()
+}
+
+function pickSideHost(idx: number, hostId: number) {
+  void useHost(idx, hostId)
+  closeSidePicker()
+}
+
+// Current drive of a local pane, e.g. "C:\"
+function currentDrive(pane: PaneState): string {
+  const m = pane.path.match(/^[A-Za-z]:\\/)
+  return m ? m[0] : localDrives.value[0] ?? ''
+}
+
+function onDriveChange(idx: number, e: Event) {
+  const drive = (e.target as HTMLSelectElement).value
+  void loadPane(idx, drive)
 }
 
 function useLocal(idx: number) {
@@ -347,7 +386,8 @@ function useHost(idx: number, hostId: number) {
     void loadPane(idx)
     return
   }
-  // Connect on demand, then bind the pane when the session is up
+  // Connect on demand (silently — SFTP must not steal the terminal view),
+  // then bind the pane when the session is up
   const stop = sessions.$subscribe(() => {
     const tab = sessions.tabs.find(
       (t) => t.hostId === hostId && t.status === 'connected' && t.kind === 'ssh',
@@ -361,7 +401,7 @@ function useHost(idx: number, hostId: number) {
       stop()
     }
   })
-  void sessions.connect(hostId)
+  void sessions.connect(hostId, undefined, { silent: true })
 }
 
 // Reset panes whose session disappeared
@@ -380,17 +420,7 @@ function watchSessions() {
 }
 
 // ---- drive selector ----
-
-function openDriveMenu(e: MouseEvent, idx: number) {
-  openMenu(
-    e,
-    localDrives.value.map((d) => ({
-      label: d,
-      icon: HardDrive,
-      action: () => void loadPane(idx, d),
-    })),
-  )
-}
+// handled by the always-visible drive <select> in the pane header
 
 // ---- file operations (remote only) ----
 
@@ -594,7 +624,7 @@ function bgMenu(e: MouseEvent, idx: number) {
   }
   items.push(
     { label: 'Refresh', icon: RefreshCw, action: () => void loadPane(idx) },
-    { label: 'Switch side…', icon: Plug, action: () => openSideSwitcher(e, idx) },
+    { label: 'Switch side…', icon: Plug, action: () => openSidePicker(idx) },
   )
   openMenu(e, items)
 }
@@ -656,6 +686,8 @@ onUnmounted(() => {
 
 <template>
   <div class="sftp-view">
+    <!-- Click-away layer for the side picker -->
+    <div v-if="sidePicker" class="picker-backdrop" @click="closeSidePicker"></div>
     <section
       v-for="(pane, idx) in panes"
       :key="idx"
@@ -663,21 +695,75 @@ onUnmounted(() => {
       :class="{ 'drop-here': hoverDrop?.paneIdx === idx && hoverDrop?.name === null }"
     >
       <header class="pane-header">
-        <button class="side-switcher" title="Switch this side" @click="openSideSwitcher($event, idx)">
-          <MonitorSmartphone v-if="pane.kind === 'local'" :size="14" :stroke-width="1.5" aria-hidden="true" />
-          <Server v-else :size="14" :stroke-width="1.5" aria-hidden="true" />
-          <span class="side-label text-ellipsis">{{ paneTitle(pane) }}</span>
-          <ChevronDown :size="12" :stroke-width="2" aria-hidden="true" />
-        </button>
-        <button
+        <div class="switcher-wrap">
+          <button class="side-switcher" title="Switch this side" @click="sidePicker?.idx === idx ? closeSidePicker() : openSidePicker(idx)">
+            <MonitorSmartphone v-if="pane.kind === 'local'" :size="14" :stroke-width="1.5" aria-hidden="true" />
+            <Server v-else :size="14" :stroke-width="1.5" aria-hidden="true" />
+            <span class="side-label text-ellipsis">{{ paneTitle(pane) }}</span>
+            <ChevronDown :size="12" :stroke-width="2" aria-hidden="true" />
+          </button>
+
+          <!-- Searchable side picker -->
+          <div
+            v-if="sidePicker?.idx === idx"
+            class="side-popover surface"
+            @click.stop
+          >
+            <div class="picker-search">
+              <Search :size="14" :stroke-width="1.5" aria-hidden="true" />
+              <input
+                ref="sideInputEl"
+                v-model="sideQuery"
+                class="picker-input"
+                type="text"
+                placeholder="Search hosts…"
+                spellcheck="false"
+                aria-label="Search hosts"
+                @keydown.esc="closeSidePicker"
+              />
+            </div>
+            <div class="side-popover-list">
+              <button class="picker-row" @click="pickSideLocal(idx)">
+                <span class="side-popover-icon local">
+                  <MonitorSmartphone :size="15" :stroke-width="1.5" aria-hidden="true" />
+                </span>
+                <span class="picker-text">
+                  <span class="picker-name">Local</span>
+                  <span class="picker-sub">this PC</span>
+                </span>
+              </button>
+              <button
+                v-for="h in sidePickerHosts"
+                :key="h.id"
+                class="picker-row"
+                @click="pickSideHost(idx, h.id)"
+              >
+                <OsAvatar :label="h.label" :os="h.os" :size="30" />
+                <span class="picker-text">
+                  <span class="picker-name text-ellipsis">{{ h.label }}</span>
+                  <span class="picker-sub mono text-ellipsis">{{ h.username }}@{{ h.address }}</span>
+                </span>
+                <span v-if="connectedHostIds.has(h.id)" class="badge badge-success">
+                  <Plug :size="10" :stroke-width="2" aria-hidden="true" />
+                  live
+                </span>
+              </button>
+              <div v-if="!sidePickerHosts.length" class="side-popover-empty">No hosts match</div>
+            </div>
+          </div>
+        </div>
+
+        <select
           v-if="pane.kind === 'local'"
-          class="crumb-btn drive-btn"
-          title="Go to drive"
-          aria-label="Go to drive"
-          @click="openDriveMenu($event, idx)"
+          class="drive-select"
+          :value="currentDrive(pane)"
+          aria-label="Drive"
+          title="Switch drive"
+          @change="onDriveChange(idx, $event)"
         >
-          <HardDrive :size="14" :stroke-width="1.5" aria-hidden="true" />
-        </button>
+          <option v-for="d in localDrives" :key="d" :value="d">{{ d }}</option>
+        </select>
+
         <input v-model="pane.filter" class="pane-filter" type="text" placeholder="Filter" spellcheck="false" :aria-label="`Filter pane ${idx + 1}`" />
       </header>
 
@@ -845,7 +931,14 @@ onUnmounted(() => {
         </div>
         <div class="transfer-meta">
           <span v-if="t.error" class="transfer-error">{{ t.error }}</span>
-          <span v-else-if="t.done" class="transfer-done">Done</span>
+          <span v-else-if="t.done" class="transfer-done">
+            {{ t.size ? fmtBytes(t.size) : '' }}<template v-if="t.size"> · </template>Done
+          </span>
+          <span v-else-if="t.size">
+            {{ fmtBytes(t.transferred) }} / {{ fmtBytes(t.size) }}
+            · {{ Math.round((t.transferred / t.size) * 100) }}%
+          </span>
+          <span v-else>Starting…</span>
         </div>
       </div>
     </div>
@@ -866,6 +959,12 @@ onUnmounted(() => {
   height: 100%;
   min-height: 0;
   position: relative;
+}
+
+.picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
 }
 
 .pane {
@@ -893,6 +992,91 @@ onUnmounted(() => {
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.switcher-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.side-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: 340px;
+  max-width: calc(100vw - 80px);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-3);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  animation: side-pop 140ms var(--ease-out);
+  transform-origin: top left;
+}
+
+@keyframes side-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-3px);
+  }
+}
+
+.side-popover-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-popover-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.side-popover-icon.local {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.side-popover-empty {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-4);
+  font-size: var(--text-sm);
+}
+
+.drive-select {
+  appearance: none;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 5px 20px 5px 9px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-1);
+  cursor: pointer;
+  flex-shrink: 0;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M1 3l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+
+.drive-select:hover {
+  border-color: var(--border-strong);
+}
+
+.drive-select:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .side-switcher {
