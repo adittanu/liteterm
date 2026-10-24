@@ -1,0 +1,160 @@
+/* ============================================================
+   LiteTerm design tokens
+   Values are exact by design contract — do not approximate.
+   ============================================================ */
+
+:root {
+  /* ---- Typography ---- */
+  --font-ui: system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+
+  /* Type scale — hierarchy from weight + size + leading as a set */
+  --text-xs: 0.6875rem;   /* 11px — labels, badges */
+  --text-sm: 0.75rem;     /* 12px — secondary UI */
+  --text-base: 0.8125rem; /* 13px — primary UI (dense desktop tool) */
+  --text-md: 0.875rem;    /* 14px — inputs, emphasis */
+  --text-lg: 1.0625rem;   /* 17px — titles */
+  --text-xl: 1.375rem;    /* 22px — page titles */
+
+  --leading-tight: 1.15;  /* headings */
+  --leading-normal: 1.45; /* body */
+  --tracking-tight: -0.02em; /* headings only; body stays 0 */
+  --tracking-wide: 0.04em;   /* tiny uppercase labels */
+
+  /* ---- Spacing (rem so it follows user text size) ---- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* ---- Concentric radius scale: outer = inner + padding ---- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* ---- Motion (exact values; see motion.css) ---- */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-move: cubic-bezier(0.77, 0, 0.175, 1);
+  --dur-press: 100ms;
+  --dur-hover: 150ms;
+  --dur-pop: 180ms;
+  --dur-modal: 280ms;
+
+  /* ---- Layout ---- */
+  --sidebar-width: 264px;
+  --titlebar-height: 40px;
+  --tabbar-height: 38px;
+
+  color-scheme: dark;
+}
+
+/* ================= Dark (default) ================= */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: oklch(0.155 0.012 260);
+  --bg-titlebar: oklch(0.185 0.013 260 / 0.82);
+  --bg-sidebar: oklch(0.185 0.013 260 / 0.78);
+  --bg-surface: oklch(0.215 0.014 260);
+  --bg-surface-2: oklch(0.255 0.015 260);
+  --bg-surface-3: oklch(0.295 0.016 260);
+  --bg-input: oklch(0.19 0.013 260);
+  --bg-hover: oklch(0.26 0.015 260);
+  --bg-active: oklch(0.3 0.017 260);
+  --bg-selected: oklch(0.29 0.03 258);
+  --bg-terminal: oklch(0.145 0.012 260);
+
+  --text-1: oklch(0.93 0.005 260);
+  --text-2: oklch(0.72 0.01 260);
+  --text-3: oklch(0.55 0.012 260);
+  --text-4: oklch(0.42 0.012 260);
+
+  --accent: oklch(0.66 0.16 252);
+  --accent-hover: oklch(0.71 0.155 252);
+  --accent-down: oklch(0.61 0.165 252);
+  --accent-text: oklch(0.93 0.03 252);
+  --accent-bg: oklch(0.66 0.16 252 / 0.14);
+  --accent-bg-hover: oklch(0.66 0.16 252 / 0.22);
+
+  --success: oklch(0.72 0.16 155);
+  --success-bg: oklch(0.72 0.16 155 / 0.14);
+  --warning: oklch(0.8 0.14 85);
+  --warning-bg: oklch(0.8 0.14 85 / 0.14);
+  --danger: oklch(0.65 0.19 25);
+  --danger-hover: oklch(0.71 0.185 25);
+  --danger-bg: oklch(0.65 0.19 25 / 0.14);
+
+  /* Structure borders — 1px, only where structure demands */
+  --border: oklch(1 0 0 / 0.08);
+  --border-strong: oklch(1 0 0 / 0.14);
+  --border-focus: oklch(0.66 0.16 252 / 0.7);
+
+  /* Layered elevation (transparent shadows, never gray) */
+  --shadow-1: 0 1px 2px oklch(0 0 0 / 0.2);
+  --shadow-2: 0 2px 6px oklch(0 0 0 / 0.22), 0 1px 2px oklch(0 0 0 / 0.18);
+  --shadow-3: 0 8px 28px oklch(0 0 0 / 0.38), 0 2px 8px oklch(0 0 0 / 0.24);
+  --shadow-pop: 0 4px 16px oklch(0 0 0 / 0.32), 0 1px 4px oklch(0 0 0 / 0.2);
+
+  /* Material surface (sidebar/titlebar float above terminal scroll) */
+  --material-bg: var(--bg-sidebar);
+  --material-blur: blur(20px) saturate(180%);
+  --material-edge: 1px solid oklch(1 0 0 / 0.05);
+
+  --scrim: oklch(0 0 0 / 0.45);
+}
+
+/* ================= Light ================= */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: oklch(0.965 0.003 260);
+  --bg-titlebar: oklch(0.99 0.002 260 / 0.85);
+  --bg-sidebar: oklch(0.99 0.002 260 / 0.8);
+  --bg-surface: oklch(1 0 0);
+  --bg-surface-2: oklch(0.975 0.003 260);
+  --bg-surface-3: oklch(0.945 0.004 260);
+  --bg-input: oklch(0.985 0.002 260);
+  --bg-hover: oklch(0.945 0.004 260);
+  --bg-active: oklch(0.925 0.005 260);
+  --bg-selected: oklch(0.93 0.02 252);
+  --bg-terminal: oklch(1 0 0);
+
+  --text-1: oklch(0.21 0.012 260);
+  --text-2: oklch(0.42 0.012 260);
+  --text-3: oklch(0.55 0.012 260);
+  --text-4: oklch(0.68 0.01 260);
+
+  --accent: oklch(0.55 0.19 255);
+  --accent-hover: oklch(0.5 0.19 255);
+  --accent-down: oklch(0.48 0.18 255);
+  --accent-text: oklch(0.98 0.01 252);
+  --accent-bg: oklch(0.55 0.19 255 / 0.1);
+  --accent-bg-hover: oklch(0.55 0.19 255 / 0.16);
+
+  --success: oklch(0.58 0.15 155);
+  --success-bg: oklch(0.58 0.15 155 / 0.12);
+  --warning: oklch(0.62 0.14 75);
+  --warning-bg: oklch(0.62 0.14 75 / 0.12);
+  --danger: oklch(0.55 0.2 25);
+  --danger-hover: oklch(0.5 0.2 25);
+  --danger-bg: oklch(0.55 0.2 25 / 0.1);
+
+  --border: oklch(0.2 0.01 260 / 0.09);
+  --border-strong: oklch(0.2 0.01 260 / 0.16);
+  --border-focus: oklch(0.55 0.19 255 / 0.6);
+
+  --shadow-1: 0 1px 2px oklch(0.2 0.02 260 / 0.07);
+  --shadow-2: 0 2px 6px oklch(0.2 0.02 260 / 0.08), 0 1px 2px oklch(0.2 0.02 260 / 0.05);
+  --shadow-3: 0 8px 28px oklch(0.2 0.02 260 / 0.14), 0 2px 8px oklch(0.2 0.02 260 / 0.08);
+  --shadow-pop: 0 4px 16px oklch(0.2 0.02 260 / 0.12), 0 1px 4px oklch(0.2 0.02 260 / 0.08);
+
+  --material-bg: var(--bg-sidebar);
+  --material-blur: blur(20px) saturate(180%);
+  --material-edge: 1px solid oklch(0.2 0.02 260 / 0.07);
+
+  --scrim: oklch(0.2 0.02 260 / 0.3);
+}

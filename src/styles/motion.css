@@ -1,0 +1,206 @@
+/* ============================================================
+   Motion system — exact values per design contract.
+   Interruptible CSS transitions (never keyframes for dynamic
+   state), enter ease-out fast, exit softer/faster, never
+   scale(0). Class names follow Vue <Transition> conventions.
+   ============================================================ */
+
+/* ---- Modal: dim to focus; material arrives with the scrim ---- */
+
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity var(--dur-modal) ease;
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+.modal-content-enter-active {
+  transition:
+    transform var(--dur-modal) var(--ease-out),
+    opacity var(--dur-modal) var(--ease-out);
+}
+
+.modal-content-leave-active {
+  /* exits are softer and faster than enters */
+  transition:
+    transform 140ms var(--ease-out),
+    opacity 140ms var(--ease-out);
+}
+
+.modal-content-enter-from {
+  transform: scale(0.95) translateY(4px);
+  opacity: 0;
+}
+
+.modal-content-leave-to {
+  transform: translateY(6px) scale(0.98);
+  opacity: 0;
+}
+
+/* ---- Popover/menu: scales from its trigger via --origin-x/--origin-y ---- */
+
+.pop-enter-active {
+  transition:
+    transform var(--dur-pop) var(--ease-out),
+    opacity var(--dur-pop) var(--ease-out);
+}
+
+.pop-leave-active {
+  transition:
+    transform 120ms var(--ease-out),
+    opacity 120ms var(--ease-out);
+}
+
+.pop-enter-from,
+.pop-leave-to {
+  transform: scale(0.96);
+  opacity: 0;
+}
+
+/* ---- Toast: small translateY, not full height ---- */
+
+.toast-enter-active {
+  transition:
+    transform 240ms var(--ease-out),
+    opacity 240ms var(--ease-out);
+}
+
+.toast-leave-active {
+  transition:
+    transform 140ms var(--ease-out),
+    opacity 140ms var(--ease-out);
+}
+
+.toast-enter-from {
+  transform: translateY(10px);
+  opacity: 0;
+}
+
+.toast-leave-to {
+  transform: translateY(6px);
+  opacity: 0;
+}
+
+/* ---- Panel (SFTP drawer): on-screen move ---- */
+
+.panel-enter-active {
+  transition: transform 220ms var(--ease-move);
+}
+
+.panel-leave-active {
+  transition: transform 160ms var(--ease-move);
+}
+
+.panel-enter-from,
+.panel-leave-to {
+  transform: translateX(100%);
+}
+
+/* ---- Collapsible disclosure (groups): height via grid rows ---- */
+
+.disclose-enter-active,
+.disclose-leave-active {
+  transition: grid-template-rows 180ms var(--ease-out), opacity 180ms var(--ease-out);
+  display: grid;
+}
+
+.disclose-enter-from,
+.disclose-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.disclose-enter-to,
+.disclose-leave-from {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+/* ---- Theme switch: snap, never smear. Applied programmatically for
+   one frame while data-theme flips, then removed (see ui store). ---- */
+
+.theme-snap,
+.theme-snap *,
+.theme-snap *::before,
+.theme-snap *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* ---- Keyboard/command-initiated actions: no animation, ever ---- */
+
+.instant {
+  transition: none !important;
+}
+
+/* ---- Spinner: fast rotation = perceived performance ---- */
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--text-2);
+  animation: spin 0.7s linear infinite;
+}
+
+.spinner.small {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Stagger: infrequent entrances only, 40ms steps, never blocks interaction ---- */
+
+.stagger-enter-active {
+  animation: stagger-in 240ms var(--ease-out) both;
+}
+
+.stagger-child-enter-active {
+  animation: stagger-in 240ms var(--ease-out) both;
+}
+
+@keyframes stagger-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---- Reduced motion: gentler equivalent, not zero feedback ---- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .spinner {
+    animation-duration: 0.7s !important; /* kept: non-vestibular status cue */
+  }
+}
+
+/* Reduced transparency: material becomes solid */
+@media (prefers-reduced-transparency: reduce) {
+  .material {
+    background: var(--bg-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
