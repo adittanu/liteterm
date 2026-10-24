@@ -48,13 +48,8 @@ function queueInput(data: string) {
 // xterm encodes modifier keys natively. The tail buffer bridges sequences
 // split across stdout chunks.
 let kittyActive = false
-// ConPTY's win32-input-mode: conhost sends CSI ?9001h at startup; while
-// it's on, xterm ships full INPUT_RECORDs (modifiers included) instead of
-// lossy legacy VT sequences
-let win32Active = false
 let vtTail = ''
 const KITTY_MODE = /\x1b\[(>|<|=)([^u]*)u/g
-const WIN32_MODE = /\x1b\[\?9001(h|l)/g
 
 function scanKitty(data: string) {
   vtTail = (vtTail + data).slice(-32)
@@ -63,10 +58,6 @@ function scanKitty(data: string) {
   while ((m = KITTY_MODE.exec(vtTail))) {
     const flags = m[2].split(';')[0]
     kittyActive = m[1] === '<' ? false : flags !== '' && flags !== '0'
-  }
-  WIN32_MODE.lastIndex = 0
-  while ((m = WIN32_MODE.exec(vtTail))) {
-    win32Active = m[1] === 'h'
   }
 }
 
@@ -99,10 +90,11 @@ onMounted(() => {
     allowTransparency: false,
     theme: terminalTheme(),
     // Lets kitty-aware apps (opencode, Claude Code, …) turn on enhanced
-    // keyboard reporting, and accepts ConPTY's win32-input-mode handshake
-    // (conhost always requests CSI ?9001h on init) so modifier keys like
-    // Shift+Enter survive into console apps on Windows
-    vtExtensions: { kittyKeyboard: true, win32InputMode: true },
+    // keyboard reporting so Shift+Enter & friends arrive disambiguated.
+    // win32-input-mode is deliberately left off: modern agents read raw VT
+    // input (not console INPUT_RECORDs), and the mode eats kitty
+    // negotiation responses.
+    vtExtensions: { kittyKeyboard: true },
   })
   fit = new FitAddon()
   term.loadAddon(fit)
@@ -115,15 +107,18 @@ onMounted(() => {
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true
     // Legacy input sends plain \r for Shift+Enter, so apps see it as Enter.
-    // While kitty or win32-input-mode is off, translate it to "\n" — the
-    // Ctrl+J newline convention. Under either enhanced mode xterm encodes
-    // the real modifier state instead and we must not interfere.
-    if (
-      e.key === 'Enter' && e.shiftKey &&
-      !e.ctrlKey && !e.altKey && !e.metaKey && !kittyActive && !win32Active
-    ) {
-      queueInput('\n')
-      return false
+    // - Kitty-negotiated sessions get the native CSI 13;2u encoding.
+    // - Other local (ConPTY) sessions: send CSI 13;2u ourselves — agent CLIs
+    //   (Claude Code, opencode, pi) parse this sequence even without kitty
+    //   negotiation. Same bytes as Windows Terminal's community
+    //   sendInput("\u001b[13;2u") keybinding.
+    // - SSH hosts without kitty get "\n" (the Ctrl+J newline convention),
+    //   which remote shells treat harmlessly.
+    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (!kittyActive) {
+        queueInput(props.session.kind === 'local' ? '\x1b[13;2u' : '\n')
+        return false
+      }
     }
     return actionFor(e, ui.settings) === null
   })
