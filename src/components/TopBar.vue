@@ -6,7 +6,6 @@ import { Menu, Plus, X, FolderTree, TerminalSquare } from 'lucide-vue-next'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
-import appIcon from '../assets/app-icon.png'
 
 const ui = useUiStore()
 const sessions = useSessionsStore()
@@ -71,15 +70,6 @@ function closeSession(sessionId: number) {
     >
       <Menu :size="17" :stroke-width="1.5" aria-hidden="true" />
     </button>
-
-    <img
-      :src="appIcon"
-      class="brand-icon"
-      alt="LiteTerm"
-      title="LiteTerm"
-      draggable="false"
-      data-tauri-drag-region
-    />
 
     <div class="topbar-tabs" data-tauri-drag-region>
       <div
@@ -183,18 +173,6 @@ function closeSession(sessionId: number) {
   margin-left: 6px;
 }
 
-.brand-icon {
-  height: 16px;
-  width: 16px;
-  border-radius: 4px;
-  margin: 0 7px 0 3px;
-  align-self: center;
-  flex-shrink: 0;
-  user-select: none;
-  /* neutral 1px outline keeps the dark tile from floating on light themes */
-  box-shadow: 0 0 0 1px var(--border);
-}
-
 .topbar-tabs {
   display: flex;
   align-items: center;
@@ -235,6 +213,8 @@ function closeSession(sessionId: number) {
   color: var(--text-1);
   background: var(--bg-surface-2);
 }
+
+
 
 .tab-ico {
   color: var(--text-4);

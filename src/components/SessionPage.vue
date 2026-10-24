@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSessionsStore } from '../stores/sessions'
-import type { SessionTab, SessionStatus } from '../types'
+import type { SessionTab } from '../types'
 import TerminalPane from './TerminalPane.vue'
 
 const props = defineProps<{ sessionId: number }>()
@@ -10,16 +10,6 @@ const sessions = useSessionsStore()
 const tab = computed(
   () => sessions.tabs.find((t) => t.id === props.sessionId) as SessionTab | undefined,
 )
-
-function statusText(status: SessionStatus): string {
-  switch (status) {
-    case 'connecting': return 'Connecting…'
-    case 'hostkey': return 'Verify host'
-    case 'connected': return 'Connected'
-    case 'error': return 'Failed'
-    case 'closed': return 'Closed'
-  }
-}
 
 async function resetHostKey(t: SessionTab) {
   if (t.hostId === null) return
@@ -35,13 +25,6 @@ async function resetHostKey(t: SessionTab) {
 
 <template>
   <div v-if="tab" class="session-page">
-    <div class="session-status-bar">
-      <span class="status-dot" :class="tab.status === 'connected' ? 'connected' : tab.status === 'error' ? 'error' : tab.status === 'closed' ? 'idle' : 'connecting'"></span>
-      <span class="session-title text-ellipsis">{{ tab.label }}</span>
-      <span class="session-sub text-ellipsis mono">{{ tab.address }}</span>
-      <span class="session-state">{{ statusText(tab.status) }}</span>
-    </div>
-
     <div class="session-stage">
       <TerminalPane :session="tab" />
 
@@ -82,34 +65,6 @@ async function resetHostKey(t: SessionTab) {
   flex-direction: column;
   height: 100%;
   min-width: 0;
-}
-
-.session-status-bar {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  height: 40px;
-  padding: 0 var(--space-4);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  min-width: 0;
-}
-
-.session-title {
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--text-1);
-}
-
-.session-sub {
-  font-size: var(--text-xs);
-  color: var(--text-3);
-}
-
-.session-state {
-  margin-left: auto;
-  font-size: var(--text-xs);
-  color: var(--text-3);
 }
 
 .session-stage {
