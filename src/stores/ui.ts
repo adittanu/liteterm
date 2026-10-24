@@ -51,6 +51,7 @@ export const useUiStore = defineStore('ui', () => {
     terminalFontSize: 13,
     confirmDeleteFile: true,
     autoSudoPassword: true,
+    keybindings: {},
   })
 
   async function loadSettings() {

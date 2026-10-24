@@ -20,29 +20,65 @@ import CommandPalette from './components/CommandPalette.vue'
 import Toasts from './components/Toasts.vue'
 import { useSessionsStore } from './stores/sessions'
 import { useDialogsStore } from './stores/dialogs'
-import { useUiStore } from './stores/ui'
+import { useUiStore, type ViewId } from './stores/ui'
+import { actionFor, captureActive } from './services/shortcuts'
 
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.repeat) return
-  if (!(e.ctrlKey || e.metaKey)) return
-  const key = e.key.toLowerCase()
-  if (key === 'k') {
-    e.preventDefault()
-    dialogs.showPalette = !dialogs.showPalette
-  } else if (key === 't') {
-    e.preventDefault()
-    void sessions.connectLocal()
-  } else if (key === 'w') {
-    e.preventDefault()
-    const current = ui.activeView
-    if (current.startsWith('session:')) {
-      void sessions.disconnect(Number(current.split(':')[1]))
+// Tab order mirrors the top bar: SFTP first, then sessions in creation order
+function tabViews(): string[] {
+  return ['sftp', ...sessions.tabs.map((t) => `session:${t.id}`)]
+}
+
+function cycleTab(delta: number) {
+  const views = tabViews()
+  if (!views.length) return
+  const i = views.indexOf(ui.activeView)
+  const next =
+    i === -1
+      ? delta > 0
+        ? 0
+        : views.length - 1
+      : (i + delta + views.length) % views.length
+  ui.openView(views[next] as ViewId)
+}
+
+function runAction(id: string) {
+  switch (id) {
+    case 'palette':
+      dialogs.showPalette = !dialogs.showPalette
+      break
+    case 'newLocal':
+      void sessions.connectLocal()
+      break
+    case 'closeTab': {
+      const view = ui.activeView
+      if (view.startsWith('session:')) void sessions.disconnect(Number(view.slice(8)))
+      break
+    }
+    case 'nextTab':
+      cycleTab(1)
+      break
+    case 'prevTab':
+      cycleTab(-1)
+      break
+    default: {
+      if (id.startsWith('tab')) {
+        const target = tabViews()[Number(id.slice(3)) - 1]
+        if (target) ui.openView(target as ViewId)
+      }
     }
   }
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.repeat || captureActive.value) return
+  const id = actionFor(e, ui.settings)
+  if (!id) return
+  e.preventDefault()
+  runAction(id)
 }
 
 // Capture phase so the shortcut fires before xterm's textarea handlers,

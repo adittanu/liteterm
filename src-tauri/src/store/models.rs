@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Host {
@@ -99,6 +100,8 @@ pub struct AppSettings {
     pub terminal_font_size: i64,
     pub confirm_delete_file: bool,
     pub auto_sudo_password: bool,
+    #[serde(default)]
+    pub keybindings: HashMap<String, String>, // action id -> combo ("Ctrl+K")
 }
 
 impl Default for AppSettings {
@@ -108,6 +111,7 @@ impl Default for AppSettings {
             terminal_font_size: 13,
             confirm_delete_file: true,
             auto_sudo_password: true,
+            keybindings: HashMap::new(),
         }
     }
 }

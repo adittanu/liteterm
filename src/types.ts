@@ -117,6 +117,7 @@ export interface AppSettings {
   terminalFontSize: number
   confirmDeleteFile: boolean
   autoSudoPassword: boolean
+  keybindings: Record<string, string> // action id -> combo ("Ctrl+K"); absent = default
 }
 
 export interface HostKeyEvent {

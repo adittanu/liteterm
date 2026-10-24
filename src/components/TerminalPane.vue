@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
 import { terminalThemeFor } from '../services/terminalThemes'
+import { actionFor } from '../services/shortcuts'
 import type { SessionTab } from '../types'
 
 const props = defineProps<{ session: SessionTab }>()
@@ -73,13 +74,12 @@ onMounted(() => {
   term.loadAddon(new WebLinksAddon())
   term.open(container.value)
 
-  // App shortcuts (Ctrl+K/T/W) are handled by App.vue's capture-phase
-  // listener; returning false here keeps xterm from processing them and
-  // leaking ^K/^T/^W control bytes into the shell
+  // App shortcuts are handled by App.vue's capture-phase listener; returning
+  // false here keeps xterm from forwarding bound combos into the shell as
+  // control bytes (^K, ESC-prefixed Alt sequences, …)
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown' || !(e.ctrlKey || e.metaKey)) return true
-    const key = e.key.toLowerCase()
-    return key !== 'k' && key !== 't' && key !== 'w'
+    if (e.type !== 'keydown') return true
+    return actionFor(e, ui.settings) === null
   })
 
   sessions.attachSink(props.session.id, (data) => {

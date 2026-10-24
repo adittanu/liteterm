@@ -626,6 +626,7 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, rusqlite::Error> {
             "terminalFontSize" => settings.terminal_font_size = v.parse().unwrap_or(13),
             "confirmDeleteFile" => settings.confirm_delete_file = v == "true",
             "autoSudoPassword" => settings.auto_sudo_password = v != "false",
+            "keybindings" => settings.keybindings = serde_json::from_str(&v).unwrap_or_default(),
             _ => {}
         }
     }
@@ -638,6 +639,10 @@ pub fn set_settings(conn: &Connection, settings: &AppSettings) -> Result<(), rus
         ("terminalFontSize", settings.terminal_font_size.to_string()),
         ("confirmDeleteFile", settings.confirm_delete_file.to_string()),
         ("autoSudoPassword", settings.auto_sudo_password.to_string()),
+        (
+            "keybindings",
+            serde_json::to_string(&settings.keybindings).unwrap_or_else(|_| "{}".into()),
+        ),
     ] {
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=?2",

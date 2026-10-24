@@ -6,6 +6,7 @@ import { Menu, Plus, X, FolderTree, TerminalSquare } from 'lucide-vue-next'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
+import { comboFor } from '../services/shortcuts'
 
 const ui = useUiStore()
 const sessions = useSessionsStore()
@@ -106,7 +107,12 @@ function closeSession(sessionId: number) {
         </template>
       </div>
 
-      <button class="topbar-btn" aria-label="New session" title="Quick connect (Ctrl+K)" @click="dialogs.showPalette = true">
+      <button
+        class="topbar-btn"
+        aria-label="New session"
+        :title="`Quick connect (${comboFor('palette', ui.settings)})`"
+        @click="dialogs.showPalette = true"
+      >
         <Plus :size="15" :stroke-width="1.5" aria-hidden="true" />
       </button>
     </div>
