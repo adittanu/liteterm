@@ -96,6 +96,8 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let _ = conn.execute_batch(
         "ALTER TABLE hosts ADD COLUMN credential_id INTEGER REFERENCES credentials(id) ON DELETE SET NULL",
     );
+    // hosts.os — detected distro id, added in v1.3
+    let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN os TEXT");
 
     // Schema v2: known_hosts keys off (host, key_type) — servers offer
     // several host key types and OpenSSH known_hosts stores one line per
@@ -149,12 +151,13 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
         key_path: row.get(8)?,
         credential_id: row.get(10)?,
         credential_name: row.get(11)?,
+        os: row.get(12)?,
         sort: row.get(9)?,
     })
 }
 
 const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, h.username, h.auth_method, \
-    h.password_saved, h.key_path, h.sort, h.credential_id, c.name";
+    h.password_saved, h.key_path, h.sort, h.credential_id, c.name, h.os";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -255,6 +258,11 @@ pub fn delete_host(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
     conn.execute("DELETE FROM hosts WHERE id = ?1", params![id])?;
     keyring_delete(&password_entry(id));
     keyring_delete(&keypass_entry(id));
+    Ok(())
+}
+
+pub fn set_host_os(conn: &Connection, id: i64, os: &str) -> Result<(), rusqlite::Error> {
+    conn.execute("UPDATE hosts SET os = ?2 WHERE id = ?1", params![id, os])?;
     Ok(())
 }
 

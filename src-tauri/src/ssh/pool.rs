@@ -143,6 +143,79 @@ pub struct SudoFilledEvent {
     pub session_id: u32,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HostOsEvent {
+    pub host_id: i64,
+    pub os: String,
+}
+
+/// Run a quiet detection command on its own exec channel (the interactive
+/// PTY is untouched) and parse the distro id.
+async fn detect_os(
+    handle: &russh::client::Handle<ClientHandler>,
+) -> Option<String> {
+    let mut channel = tokio::time::timeout(
+        Duration::from_secs(3),
+        handle.channel_open_session(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    channel
+        .exec(true, "cat /etc/os-release 2>/dev/null; echo; uname -s")
+        .await
+        .ok()?;
+    let mut out = String::new();
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(3), channel.wait()).await;
+        match msg {
+            Ok(Some(russh::ChannelMsg::Data { data })) => {
+                out.push_str(&String::from_utf8_lossy(&data));
+                if out.len() > 1024 {
+                    break;
+                }
+            }
+            Ok(Some(russh::ChannelMsg::Eof | russh::ChannelMsg::Close))
+            | Ok(None)
+            | Err(_) => break,
+            Ok(Some(_)) => {}
+        }
+    }
+    Some(parse_os(&out))
+}
+
+fn parse_os(output: &str) -> String {
+    let lower = output.to_lowercase();
+    if lower.contains("darwin") {
+        return "macos".into();
+    }
+    if lower.contains("windows") || lower.contains("mingw") {
+        return "windows".into();
+    }
+    // Prefer the distro ID line: "ID=ubuntu" (also matches ID_LIKE)
+    for line in lower.lines() {
+        if let Some(rest) = line.strip_prefix("id_like=") {
+            let v = rest.trim_matches('"').trim();
+            if !v.is_empty() {
+                return v.to_string();
+            }
+        }
+    }
+    for line in lower.lines() {
+        if let Some(rest) = line.strip_prefix("id=") {
+            let v = rest.trim_matches('"').trim();
+            if !v.is_empty() {
+                return v.to_string();
+            }
+        }
+    }
+    if lower.contains("linux") {
+        return "linux".into();
+    }
+    "unknown".into()
+}
+
 pub fn emit_status(app: &AppHandle, session_id: u32, status: &str, error: Option<String>) {
     let _ = app.emit(
         "session:status",
@@ -394,6 +467,21 @@ async fn connect_and_stream(
 
     if !authed {
         return Err("Authentication failed: check username and credentials".into());
+    }
+
+    // ---- detect the server OS on a quiet exec channel ----
+    if let Some(host_id) = session.host_id {
+        let detected = detect_os(&handle).await.unwrap_or_else(|| "unknown".into());
+        let _ = state.app.emit(
+            "host:os",
+            HostOsEvent {
+                host_id,
+                os: detected.clone(),
+            },
+        );
+        if let Ok(conn) = Connection::open(&state.db_path) {
+            let _ = db::set_host_os(&conn, host_id, &detected);
+        }
     }
 
     // ---- open PTY + shell ----

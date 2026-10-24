@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
-import { X } from 'lucide-vue-next'
+import { computed, reactive, watch } from 'vue'
+import { X, KeyRound, IdCard } from 'lucide-vue-next'
 import { useHostsStore } from '../stores/hosts'
 import { useCredentialsStore } from '../stores/credentials'
 import { useSessionsStore } from '../stores/sessions'
+import { api } from '../services/api'
+import OsAvatar from './OsAvatar.vue'
 import type { Host } from '../types'
 
 const props = defineProps<{ host: Host }>()
@@ -18,7 +20,16 @@ const form = reactive({
   port: String(props.host.port),
   group_id: props.host.group_id,
   credential_id: props.host.credential_id,
+  // inline auth (used when credential_id is null)
+  username: props.host.username,
+  auth_method: props.host.auth_method,
+  password: '',
+  save_password: props.host.password_saved,
+  key_path: props.host.key_path ?? '',
+  key_passphrase: '',
 })
+
+const inlineMode = computed(() => form.credential_id === null)
 
 watch(
   () => props.host.id,
@@ -27,43 +38,59 @@ watch(
     form.port = String(props.host.port)
     form.group_id = props.host.group_id
     form.credential_id = props.host.credential_id
+    form.username = props.host.username
+    form.auth_method = props.host.auth_method
+    form.password = ''
+    form.save_password = props.host.password_saved
+    form.key_path = props.host.key_path ?? ''
+    form.key_passphrase = ''
   },
 )
 
 async function saveField() {
-  // Skip until something actually changed
   if (
     form.label === props.host.label &&
     form.port === String(props.host.port) &&
     form.group_id === props.host.group_id &&
-    form.credential_id === props.host.credential_id
+    form.credential_id === props.host.credential_id &&
+    (form.credential_id !== null ||
+      (form.username === props.host.username &&
+        form.auth_method === props.host.auth_method &&
+        (form.auth_method === 'password' || form.key_path === (props.host.key_path ?? ''))))
   ) {
     return
   }
-  const usingCred = form.credential_id !== null ? credentials.byId(form.credential_id) : undefined
-  await hosts.saveHost({
+  await hosts.saveHost(buildInput())
+}
+
+function buildInput() {
+  const usingCred =
+    form.credential_id !== null ? credentials.byId(form.credential_id) : undefined
+  return {
     id: props.host.id,
     group_id: form.group_id,
     label: form.label.trim() || props.host.label,
     address: props.host.address,
     port: Number(form.port) || props.host.port,
-    username: usingCred ? usingCred.username : props.host.username,
-    auth_method: usingCred ? usingCred.auth_method : props.host.auth_method,
+    username: usingCred ? usingCred.username : form.username.trim() || props.host.username,
+    auth_method: usingCred ? usingCred.auth_method : form.auth_method,
+    password: inlineMode.value && form.auth_method === 'password' && form.password ? form.password : null,
+    save_password: inlineMode.value ? form.save_password : false,
+    key_path: inlineMode.value && form.auth_method === 'key' ? form.key_path.trim() || null : null,
+    key_passphrase: inlineMode.value && form.auth_method === 'key' && form.key_passphrase ? form.key_passphrase : null,
     credential_id: form.credential_id,
-  })
+  }
 }
 
-function initials(label: string): string {
-  const words = label.trim().split(/[\s._-]+/).filter(Boolean)
-  if (!words.length) return '?'
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase()
-  return (words[0][0] + words[1][0]).toUpperCase()
-}
-
-function avatarClass(label: string): string {
-  let hash = 0
-  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0
-  return `avatar-h${hash % 8}`
+async function browseKey() {
+  const path = await api.pickFile('Select private key', [
+    { name: 'Private keys', extensions: ['pem', 'key', 'ppk', 'id_rsa', 'ed25519', 'ecdsa'] },
+    { name: 'All files', extensions: ['*'] },
+  ])
+  if (path) {
+    form.key_path = path
+    await saveField()
+  }
 }
 
 function connect() {
@@ -88,7 +115,7 @@ function connect() {
       <div class="panel-card">
         <div class="panel-card-title">Address</div>
         <div class="address-row">
-          <span class="host-avatar" :class="avatarClass(form.label)">{{ initials(form.label) }}</span>
+          <OsAvatar :label="host.label" :os="host.os" :size="40" />
           <code class="address mono">{{ host.address }}</code>
         </div>
       </div>
@@ -110,7 +137,7 @@ function connect() {
         <div class="field">
           <label class="field-label" for="hp-cred">Credentials</label>
           <select id="hp-cred" v-model.number="form.credential_id" class="field-input" @change="saveField">
-            <option :value="null">No credential</option>
+            <option :value="null">No credential (set below)</option>
             <option v-for="c in credentials.credentials" :key="c.id" :value="c.id">
               {{ c.name }} ({{ c.username }})
             </option>
@@ -119,6 +146,56 @@ function connect() {
             Create reusable credentials in Keychain.
           </span>
         </div>
+      </div>
+
+      <!-- Inline auth: shown when no credential is linked -->
+      <div v-if="inlineMode" class="panel-card">
+        <div class="panel-card-title">Login</div>
+        <div class="field">
+          <label class="field-label" for="hp-user">Username</label>
+          <input id="hp-user" v-model="form.username" class="field-input mono" type="text" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
+        </div>
+
+        <div class="field">
+          <span class="field-label">Authentication</span>
+          <div class="auth-toggle" role="radiogroup" aria-label="Authentication method">
+            <button type="button" class="auth-option" :class="{ on: form.auth_method === 'password' }" role="radio" :aria-checked="form.auth_method === 'password'" @click="form.auth_method = 'password'; saveField()">
+              <IdCard :size="13" :stroke-width="1.5" aria-hidden="true" />
+              Password
+            </button>
+            <button type="button" class="auth-option" :class="{ on: form.auth_method === 'key' }" role="radio" :aria-checked="form.auth_method === 'key'" @click="form.auth_method = 'key'; saveField()">
+              <KeyRound :size="13" :stroke-width="1.5" aria-hidden="true" />
+              Private key
+            </button>
+          </div>
+        </div>
+
+        <template v-if="form.auth_method === 'password'">
+          <div class="field">
+            <label class="field-label" for="hp-pass">Password</label>
+            <input id="hp-pass" v-model="form.password" class="field-input" type="password" :placeholder="host.has_password ? '•••••••• (saved)' : 'Leave empty to type on connect'" autocomplete="new-password" @blur="saveField" @keydown.enter="saveField" />
+            <span class="field-hint">
+              <label class="check">
+                <input v-model="form.save_password" type="checkbox" @change="saveField" />
+                Remember password (Windows Credential Manager)
+              </label>
+            </span>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="field">
+            <label class="field-label" for="hp-key">Private key file</label>
+            <div class="key-row">
+              <input id="hp-key" v-model="form.key_path" class="field-input mono" type="text" placeholder="C:\Users\you\.ssh\id_ed25519" spellcheck="false" @blur="saveField" @keydown.enter="saveField" />
+              <button type="button" class="btn btn-secondary" @click="browseKey">Browse…</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label" for="hp-keypass">Key passphrase</label>
+            <input id="hp-keypass" v-model="form.key_passphrase" class="field-input" type="password" placeholder="Leave empty if the key has none" autocomplete="new-password" @blur="saveField" @keydown.enter="saveField" />
+          </div>
+        </template>
       </div>
 
       <!-- Port -->
@@ -221,27 +298,63 @@ function connect() {
   word-break: break-all;
 }
 
-.host-avatar {
+.auth-toggle {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
+  gap: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  font-weight: 700;
-  color: white;
-  flex-shrink: 0;
+  padding: 3px;
 }
 
-.avatar-h0 { background: #4a7ae8; }
-.avatar-h1 { background: #2a9d6e; }
-.avatar-h2 { background: #c2703d; }
-.avatar-h3 { background: #b0568f; }
-.avatar-h4 { background: #5c8ecf; }
-.avatar-h5 { background: #8a63c9; }
-.avatar-h6 { background: #3f97a8; }
-.avatar-h7 { background: #a85e56; }
+.auth-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-3);
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+}
+
+.auth-option:hover {
+  color: var(--text-1);
+}
+
+.auth-option.on {
+  background: var(--bg-selected);
+  color: var(--text-1);
+  box-shadow: var(--shadow-1);
+}
+
+.key-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.key-row .field-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.check input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
 
 .port-row {
   display: flex;

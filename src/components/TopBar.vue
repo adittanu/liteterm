@@ -4,9 +4,11 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Menu, Plus, X, FolderTree, TerminalSquare } from 'lucide-vue-next'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
+import { useDialogsStore } from '../stores/dialogs'
 
 const ui = useUiStore()
 const sessions = useSessionsStore()
+const dialogs = useDialogsStore()
 const appWindow = getCurrentWindow()
 
 const tabItems = computed(() => {
@@ -80,7 +82,7 @@ function closeSession(sessionId: number) {
         </template>
       </div>
 
-      <button class="topbar-btn" aria-label="New local terminal" title="New local terminal" @click="sessions.connectLocal()">
+      <button class="topbar-btn" aria-label="New session" title="Quick connect (Ctrl+K)" @click="dialogs.showPalette = true">
         <Plus :size="15" :stroke-width="1.5" aria-hidden="true" />
       </button>
     </div>

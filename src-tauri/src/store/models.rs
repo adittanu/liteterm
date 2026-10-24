@@ -14,6 +14,7 @@ pub struct Host {
     pub key_path: Option<String>,
     pub credential_id: Option<i64>,
     pub credential_name: Option<String>,
+    pub os: Option<String>, // detected distro id ("ubuntu", "debian", "macos", …)
     pub sort: i64,
 }
 

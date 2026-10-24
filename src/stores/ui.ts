@@ -27,8 +27,21 @@ export const useUiStore = defineStore('ui', () => {
   // ---- view routing (Termius-style shell) ----
   const activeView = ref<ViewId>('hosts')
   const railCollapsed = ref(false)
+  // Set while the rail was auto-collapsed for an immersive view, so
+  // returning to a page restores it; manual collapse stays collapsed.
+  const railAutoCollapsed = ref(false)
 
   function openView(view: ViewId) {
+    const immersive = view === 'sftp' || view.startsWith('session:')
+    if (immersive) {
+      if (!railCollapsed.value) {
+        railCollapsed.value = true
+        railAutoCollapsed.value = true
+      }
+    } else if (railAutoCollapsed.value) {
+      railCollapsed.value = false
+      railAutoCollapsed.value = false
+    }
     activeView.value = view
   }
 

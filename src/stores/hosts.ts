@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
 import type { Host, HostGroup, HostInput } from '../types'
 
@@ -13,6 +14,14 @@ export const useHostsStore = defineStore('hosts', () => {
     hosts.value = h
     groups.value = g
     loaded.value = true
+  }
+
+  // Live OS detection results from the backend
+  async function initEvents() {
+    await listen<{ hostId: number; os: string }>('host:os', (e) => {
+      const host = hosts.value.find((h) => h.id === e.payload.hostId)
+      if (host) host.os = e.payload.os
+    })
   }
 
   async function saveHost(input: HostInput): Promise<Host> {
@@ -54,6 +63,7 @@ export const useHostsStore = defineStore('hosts', () => {
     groups,
     loaded,
     load,
+    initEvents,
     saveHost,
     removeHost,
     saveGroup,

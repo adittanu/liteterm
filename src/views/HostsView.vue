@@ -6,6 +6,7 @@ import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import HostDetailsPanel from '../components/HostDetailsPanel.vue'
+import OsAvatar from '../components/OsAvatar.vue'
 import type { Host } from '../types'
 
 const hosts = useHostsStore()
@@ -59,14 +60,6 @@ function statusFor(hostId: number): string {
   if (tab.status === 'connecting' || tab.status === 'hostkey') return 'connecting'
   if (tab.status === 'error') return 'error'
   return 'idle'
-}
-
-const AVATAR_HUES = 8
-
-function avatarClass(label: string): string {
-  let hash = 0
-  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0
-  return `avatar-h${hash % AVATAR_HUES}`
 }
 
 function initials(label: string): string {
@@ -181,7 +174,7 @@ async function deleteSelected() {
               @dblclick="sessions.connect(host.id)"
               @keydown.enter="sessions.connect(host.id)"
             >
-              <span class="host-avatar" :class="avatarClass(host.label)">{{ initials(host.label) }}</span>
+              <OsAvatar :label="host.label" :os="host.os" :size="40" />
               <span class="host-card-text">
                 <span class="host-card-name text-ellipsis">{{ host.label }}</span>
                 <span class="host-card-sub text-ellipsis">ssh, {{ host.username }}</span>
@@ -333,8 +326,7 @@ async function deleteSelected() {
   box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
-.group-avatar,
-.host-avatar {
+.group-avatar {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -356,16 +348,6 @@ async function deleteSelected() {
   background: var(--bg-surface-3);
   color: var(--text-1);
 }
-
-/* Fixed hue palette — works across all themes */
-.avatar-h0 { background: #4a7ae8; }
-.avatar-h1 { background: #2a9d6e; }
-.avatar-h2 { background: #c2703d; }
-.avatar-h3 { background: #b0568f; }
-.avatar-h4 { background: #5c8ecf; }
-.avatar-h5 { background: #8a63c9; }
-.avatar-h6 { background: #3f97a8; }
-.avatar-h7 { background: #a85e56; }
 
 .group-text,
 .host-card-text {

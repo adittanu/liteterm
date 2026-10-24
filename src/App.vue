@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import TopBar from './components/TopBar.vue'
 import NavRail from './components/NavRail.vue'
 import SessionPage from './components/SessionPage.vue'
@@ -15,33 +15,32 @@ import HostKeyDialog from './components/HostKeyDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import PasswordPromptDialog from './components/PasswordPromptDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
+import CommandPalette from './components/CommandPalette.vue'
 import Toasts from './components/Toasts.vue'
 import { useSessionsStore } from './stores/sessions'
+import { useDialogsStore } from './stores/dialogs'
 import { useUiStore } from './stores/ui'
 
 const sessions = useSessionsStore()
+const dialogs = useDialogsStore()
 const ui = useUiStore()
-
-const activeSessionId = computed(() => {
-  if (!ui.activeView.startsWith('session:')) return null
-  return Number(ui.activeView.split(':')[1])
-})
 
 function onKeydown(e: KeyboardEvent) {
   if (!(e.ctrlKey || e.metaKey)) return
   const key = e.key.toLowerCase()
   if (key === 'k') {
     e.preventDefault()
-    // Ctrl+K: jump to a host — open palette (reuses Hosts search semantics)
-    ui.openView('hosts')
-    window.dispatchEvent(new CustomEvent('liteterm:focus-host-search'))
+    dialogs.showPalette = !dialogs.showPalette
   } else if (key === 't') {
     e.preventDefault()
     void sessions.connectLocal()
   } else if (key === 'w') {
     e.preventDefault()
-    const sid = activeSessionId.value
-    if (sid !== null) void sessions.disconnect(sid)
+    const current = ui.activeView
+    if (current.startsWith('session:')) {
+      void sessions.disconnect(Number(current.split(':')[1]))
+    }
   }
 }
 
@@ -55,6 +54,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <div class="app-body">
       <NavRail />
       <main class="app-main">
+        <!-- Session terminals stay mounted (v-show) so scrollback and
+             xterm state survive view switches -->
+        <SessionPage
+          v-for="tab in sessions.tabs"
+          :key="tab.id"
+          v-show="ui.activeView === `session:${tab.id}`"
+          :session-id="tab.id"
+        />
+
         <HostsView v-if="ui.activeView === 'hosts'" />
         <KeychainView v-else-if="ui.activeView === 'keychain'" />
         <ForwardsView v-else-if="ui.activeView === 'forwards'" />
@@ -62,8 +70,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         <KnownHostsView v-else-if="ui.activeView === 'known'" />
         <LogsView v-else-if="ui.activeView === 'logs'" />
         <SftpView v-else-if="ui.activeView === 'sftp'" />
-        <SessionPage v-else-if="activeSessionId !== null" :session-id="activeSessionId" />
-        <HostsView v-else />
       </main>
     </div>
 
@@ -72,6 +78,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <ConfirmDialog />
     <PasswordPromptDialog />
     <ImportDialog />
+    <SettingsDialog />
+    <CommandPalette />
     <Toasts />
   </div>
 </template>

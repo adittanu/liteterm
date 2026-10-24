@@ -120,6 +120,12 @@ export const api = {
     const result = await open({ title, multiple: false, directory: false, filters })
     return typeof result === 'string' ? result : null
   },
+  pickFiles: async (title: string): Promise<string[]> => {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const result = await open({ title, multiple: true, directory: false })
+    if (!result) return []
+    return Array.isArray(result) ? result : [result]
+  },
   pickSaveFile: async (title: string, defaultName: string): Promise<string | null> => {
     const { save } = await import('@tauri-apps/plugin-dialog')
     const result = await save({ title, defaultPath: defaultName })

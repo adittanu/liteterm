@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowUp,
   RefreshCw,
@@ -13,13 +13,18 @@ import {
   FilePlus2,
   Check,
   X,
-  MonitorSmartphone,
+  Search,
+  FolderOpen,
+  Plug,
 } from 'lucide-vue-next'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { api } from '../services/api'
 import { useSessionsStore, errorText } from '../stores/sessions'
 import { useHostsStore } from '../stores/hosts'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
+import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
+import OsAvatar from '../components/OsAvatar.vue'
 import type { FileEntry } from '../types'
 
 const sessions = useSessionsStore()
@@ -49,6 +54,21 @@ const localError = ref<string | null>(null)
 const localSelected = ref<string | null>(null)
 const localFilter = ref('')
 
+// ---- host picker ----
+const pickerQuery = ref('')
+
+// ---- context menu ----
+const menu = ref<{ x: number; y: number; items: MenuItem[] } | null>(null)
+
+// ---- drag & drop ----
+interface DragSrc {
+  pane: 'local' | 'remote'
+  name: string
+  isDir: boolean
+}
+const dragSrc = ref<DragSrc | null>(null)
+const dropTarget = ref<string | null>(null) // row name currently hovered
+
 const remoteHostLabel = computed(() => {
   const tab = sessions.tabs.find((t) => t.id === remoteSessionId.value)
   return tab?.label ?? ''
@@ -57,6 +77,26 @@ const remoteHostLabel = computed(() => {
 const connectedChoices = computed(() =>
   sessions.tabs.filter((t) => t.status === 'connected' && t.kind === 'ssh'),
 )
+
+const connectedHostIds = computed(
+  () => new Set(connectedChoices.value.map((t) => t.hostId)),
+)
+
+const pickerResults = computed(() => {
+  const q = pickerQuery.value.trim().toLowerCase()
+  const sorted = [...hosts.hosts].sort((a, b) => {
+    const ca = connectedHostIds.value.has(a.id) ? 0 : 1
+    const cb = connectedHostIds.value.has(b.id) ? 0 : 1
+    return ca - cb || a.label.localeCompare(b.label)
+  })
+  if (!q) return sorted
+  return sorted.filter(
+    (h) =>
+      h.label.toLowerCase().includes(q) ||
+      h.address.toLowerCase().includes(q) ||
+      h.username.toLowerCase().includes(q),
+  )
+})
 
 const remoteFiltered = computed(() =>
   sortEntries(
@@ -172,7 +212,6 @@ const localCrumbs = computed(() => {
   if (!p) return []
   const norm = p.replace(/\//g, '\\')
   const parts = norm.split('\\').filter(Boolean)
-  // First segment is the drive, e.g. "C:"
   return parts.map((part, i) => ({
     name: part,
     path: i === 0 ? `${part}\\` : parts.slice(0, i + 1).join('\\') + '\\',
@@ -218,6 +257,12 @@ async function remoteRemove(entry: FileEntry) {
   }
 }
 
+function startRename(entry: FileEntry) {
+  remoteSelected.value = entry.name
+  remoteRenaming.value = entry.name
+  remoteRenameValue.value = entry.name
+}
+
 async function remoteCommitRename() {
   const from = remoteRenaming.value
   const to = remoteRenameValue.value.trim()
@@ -231,40 +276,69 @@ async function remoteCommitRename() {
   }
 }
 
-async function uploadSelected() {
-  const local = selectedLocalEntry.value
-  if (!local || local.kind !== 'file' || remoteSessionId.value === null) return
-  const localPathFull = joinLocal(localPath.value, local.name)
-  try {
-    const id = await api.sftpUpload(remoteSessionId.value, localPathFull, join(remotePath.value, local.name))
-    sessions.trackTransfer({
-      id, sessionId: remoteSessionId.value, kind: 'upload',
-      fileName: local.name, size: local.size, transferred: 0, done: false,
+// ---- transfers ----
+function trackUpload(localPathFull: string, name: string, size: number) {
+  if (remoteSessionId.value === null) return
+  void api
+    .sftpUpload(remoteSessionId.value, localPathFull, join(remotePath.value, name))
+    .then((id) => {
+      sessions.trackTransfer({
+        id,
+        sessionId: remoteSessionId.value!,
+        kind: 'upload',
+        fileName: name,
+        size,
+        transferred: 0,
+        done: false,
+      })
     })
-  } catch (e) {
-    ui.toast('error', `Upload failed: ${errorText(e)}`)
-  }
+    .catch((e) => ui.toast('error', `Upload failed: ${errorText(e)}`))
 }
 
-async function downloadSelected() {
+function trackDownload(name: string, size: number) {
+  if (remoteSessionId.value === null || !localPath.value) return
+  void api
+    .sftpDownload(
+      remoteSessionId.value,
+      join(remotePath.value, name),
+      joinLocal(localPath.value, name),
+    )
+    .then((id) => {
+      sessions.trackTransfer({
+        id,
+        sessionId: remoteSessionId.value!,
+        kind: 'download',
+        fileName: name,
+        size,
+        transferred: 0,
+        done: false,
+      })
+    })
+    .catch((e) => ui.toast('error', `Download failed: ${errorText(e)}`))
+}
+
+function uploadSelected() {
+  const local = selectedLocalEntry.value
+  if (!local || local.kind !== 'file') return
+  trackUpload(joinLocal(localPath.value, local.name), local.name, local.size)
+}
+
+function downloadSelected() {
   const remote = selectedRemoteEntry.value
-  if (!remote || remote.kind !== 'file' || remoteSessionId.value === null) return
+  if (!remote || remote.kind !== 'file') return
   if (!localPath.value) {
     ui.toast('info', 'Open a local folder first to choose where the file goes')
     return
   }
-  try {
-    const id = await api.sftpDownload(
-      remoteSessionId.value,
-      join(remotePath.value, remote.name),
-      joinLocal(localPath.value, remote.name),
-    )
-    sessions.trackTransfer({
-      id, sessionId: remoteSessionId.value, kind: 'download',
-      fileName: remote.name, size: remote.size, transferred: 0, done: false,
-    })
-  } catch (e) {
-    ui.toast('error', `Download failed: ${errorText(e)}`)
+  trackDownload(remote.name, remote.size)
+}
+
+async function uploadPicked() {
+  const paths = await api.pickFiles('Choose files to upload')
+  if (!paths.length) return
+  for (const p of paths) {
+    const name = p.split(/[\\/]/).pop() ?? 'file'
+    trackUpload(p, name, 0)
   }
 }
 
@@ -311,27 +385,222 @@ function localOpen(entry: FileEntry) {
 // ---- host picking ----
 function pickConnected(sessionId: number) {
   remoteSessionId.value = sessionId
+  remotePath.value = '/'
   void openRemote()
 }
 
-function pickHostAndConnect(hostId: number) {
-  // If a connected tab exists for the host, reuse it
-  const existing = sessions.tabs.find((t) => t.hostId === hostId && t.status === 'connected')
+function pickHost(hostId: number) {
+  const existing = sessions.tabs.find(
+    (t) => t.hostId === hostId && t.status === 'connected' && t.kind === 'ssh',
+  )
   if (existing) {
     pickConnected(existing.id)
     return
   }
-  // Otherwise watch for its session to come up
+  // Connect on demand; SFTP opens as soon as the session is up
   const stop = sessions.$subscribe(() => {
-    const tab = sessions.tabs.find((t) => t.hostId === hostId && t.status === 'connected')
+    const tab = sessions.tabs.find(
+      (t) => t.hostId === hostId && t.status === 'connected' && t.kind === 'ssh',
+    )
     if (tab) {
-      remoteSessionId.value = tab.id
-      void openRemote()
+      pickConnected(tab.id)
       stop()
     }
   })
   void sessions.connect(hostId)
 }
+
+// ---- context menus ----
+function openMenu(e: MouseEvent, items: MenuItem[]) {
+  menu.value = { x: e.clientX, y: e.clientY, items }
+}
+
+function remoteEntryMenu(e: MouseEvent, entry: FileEntry) {
+  remoteSelected.value = entry.name
+  openMenu(e, [
+    ...(entry.kind === 'dir'
+      ? [
+          {
+            label: 'Open',
+            icon: FolderOpen,
+            action: () => void remoteGo(join(remotePath.value, entry.name)),
+          },
+        ]
+      : [
+          {
+            label: 'Download to local pane',
+            icon: Download,
+            action: () => {
+              if (!localPath.value) {
+                ui.toast('info', 'Open a local folder first')
+                return
+              }
+              trackDownload(entry.name, entry.size)
+            },
+          },
+        ]),
+    {
+      label: 'Rename',
+      icon: Pencil,
+      action: () => startRename(entry),
+    },
+    {
+      label: 'Delete',
+      icon: Trash2,
+      danger: true,
+      action: () => void remoteRemove(entry),
+    },
+  ])
+}
+
+function remoteBgMenu(e: MouseEvent) {
+  openMenu(e, [
+    {
+      label: 'New folder',
+      icon: FilePlus2,
+      action: () => {
+        remoteNewFolder.value = true
+        remoteNewFolderName.value = ''
+      },
+    },
+    {
+      label: 'Upload files…',
+      icon: Upload,
+      action: () => void uploadPicked(),
+    },
+    {
+      label: 'Refresh',
+      icon: RefreshCw,
+      action: () => void openRemote(),
+    },
+  ])
+}
+
+function localEntryMenu(e: MouseEvent, entry: FileEntry) {
+  localSelected.value = entry.name
+  openMenu(e, [
+    ...(entry.kind === 'dir'
+      ? [
+          {
+            label: 'Open',
+            icon: FolderOpen,
+            action: () => localOpen(entry),
+          },
+        ]
+      : [
+          {
+            label: 'Upload to remote pane',
+            icon: Upload,
+            action: () =>
+              trackUpload(joinLocal(localPath.value, entry.name), entry.name, entry.size),
+          },
+        ]),
+  ])
+}
+
+function localBgMenu(e: MouseEvent) {
+  openMenu(e, [
+    {
+      label: 'Refresh',
+      icon: RefreshCw,
+      action: () => void localGo(localPath.value),
+    },
+  ])
+}
+
+// ---- drag & drop between panes ----
+function onDragStart(e: DragEvent, pane: 'local' | 'remote', entry: FileEntry) {
+  dragSrc.value = { pane, name: entry.name, isDir: entry.kind === 'dir' }
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'copyMove'
+    e.dataTransfer.setData('text/plain', entry.name)
+  }
+}
+
+function onDragEnd() {
+  dragSrc.value = null
+  dropTarget.value = null
+}
+
+/** Resolve a drop: src → target pane + optional folder entry */
+function resolveDrop(
+  targetPane: 'local' | 'remote',
+  targetEntry: FileEntry | null,
+): boolean {
+  const src = dragSrc.value
+  if (!src) return false
+  if (src.pane === targetPane && targetEntry === null) return false
+  if (targetEntry && targetEntry.kind !== 'dir') return false
+
+  if (targetPane === 'remote') {
+    const dir = targetEntry ? join(remotePath.value, targetEntry.name) : remotePath.value
+    if (src.pane === 'local') {
+      if (src.isDir) {
+        ui.toast('info', 'Folder upload is not supported yet — drop files only')
+        return true
+      }
+      trackUpload(joinLocal(localPath.value, src.name), src.name, 0)
+      return true
+    }
+    // remote → remote: move within the server
+    const from = join(remotePath.value, src.name)
+    const to = join(dir, src.name)
+    if (from !== to && remoteSessionId.value !== null) {
+      void api
+        .sftpRename(remoteSessionId.value, from, to)
+        .then(() => remoteGo(remotePath.value))
+        .catch((e) => ui.toast('error', `Move failed: ${errorText(e)}`))
+    }
+    return true
+  }
+
+  // target = local
+  if (src.pane === 'local') return false
+  if (!localPath.value) return false
+  if (src.isDir) {
+    ui.toast('info', 'Folder download is not supported yet — drop files only')
+    return true
+  }
+  const dir = targetEntry ? joinLocal(localPath.value, targetEntry.name) : localPath.value
+  if (remoteSessionId.value === null) return false
+  void api
+    .sftpDownload(remoteSessionId.value, join(remotePath.value, src.name), joinLocal(dir, src.name))
+    .then((id) => {
+      sessions.trackTransfer({
+        id,
+        sessionId: remoteSessionId.value!,
+        kind: 'download',
+        fileName: src.name,
+        size: 0,
+        transferred: 0,
+        done: false,
+      })
+    })
+    .catch((e) => ui.toast('error', `Download failed: ${errorText(e)}`))
+  return true
+}
+
+function onDrop(e: DragEvent, targetPane: 'local' | 'remote', targetEntry: FileEntry | null) {
+  e.preventDefault()
+  dropTarget.value = null
+  resolveDrop(targetPane, targetEntry)
+  dragSrc.value = null
+}
+
+// Drop-target highlight; `dragover.prevent` on the elements keeps the
+// drop allowed
+function onDragOver(targetEntry: FileEntry | null) {
+  dropTarget.value = targetEntry ? targetEntry.name : '__pane__'
+}
+
+function onDragLeave(targetEntry: FileEntry | null) {
+  if (dropTarget.value === (targetEntry ? targetEntry.name : '__pane__')) {
+    dropTarget.value = null
+  }
+}
+
+// ---- native OS file drop (Explorer → remote pane) ----
+let unlistenDrop: (() => void) | null = null
 
 onMounted(async () => {
   try {
@@ -343,10 +612,25 @@ onMounted(async () => {
   const firstDrive = localDrives.value[0]
   if (firstDrive) void localGo(firstDrive)
 
+  // Drag-and-drop from the OS delivers absolute file paths via the
+  // webview event; upload them to the current remote folder.
+  unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type !== 'drop') return
+    if (ui.activeView !== 'sftp' || remoteSessionId.value === null) return
+    for (const path of event.payload.paths) {
+      const name = path.split(/[\\/]/).pop() ?? 'file'
+      trackUpload(path, name, 0)
+    }
+  })
+
   // Preselect a connected session if there is exactly one
   if (connectedChoices.value.length === 1) {
     pickConnected(connectedChoices.value[0].id)
   }
+})
+
+onUnmounted(() => {
+  unlistenDrop?.()
 })
 </script>
 
@@ -355,16 +639,16 @@ onMounted(async () => {
     <!-- Local pane -->
     <section class="pane">
       <header class="pane-header">
-        <span class="pane-title">
-          <MonitorSmartphone :size="14" :stroke-width="1.5" aria-hidden="true" />
-          Local
-        </span>
+        <span class="pane-title">Local</span>
         <input v-model="localFilter" class="pane-filter" type="text" placeholder="Filter" spellcheck="false" aria-label="Filter local files" />
       </header>
 
       <nav class="crumbs" aria-label="Local path">
         <button v-if="localParent(localPath)" class="crumb-btn" aria-label="Up" title="Up" @click="localUp">
           <ArrowUp :size="14" :stroke-width="1.5" aria-hidden="true" />
+        </button>
+        <button class="crumb-btn" aria-label="Refresh" title="Refresh" @click="localGo(localPath)">
+          <RefreshCw :size="14" :stroke-width="1.5" aria-hidden="true" />
         </button>
         <template v-for="(c, i) in localCrumbs" :key="c.path">
           <button v-if="i < localCrumbs.length - 1" class="crumb text-ellipsis" @click="localGo(c.path)">
@@ -375,7 +659,16 @@ onMounted(async () => {
         </template>
       </nav>
 
-      <div class="file-list" role="listbox" aria-label="Local files">
+      <div
+        class="file-list"
+        role="listbox"
+        aria-label="Local files"
+        :class="{ 'drop-here': dropTarget === '__pane__' }"
+        @dragover.prevent="onDragOver(null)"
+        @dragleave="onDragLeave(null)"
+        @drop="onDrop($event, 'local', null)"
+        @contextmenu.prevent="localBgMenu"
+      >
         <div v-if="localLoading && !localEntries.length" class="pane-state">
           <span class="spinner" aria-hidden="true"></span>
         </div>
@@ -389,11 +682,18 @@ onMounted(async () => {
             v-for="entry in localFiltered"
             :key="entry.name"
             class="file-row"
-            :class="{ selected: localSelected === entry.name }"
+            :class="{ selected: localSelected === entry.name, 'drop-here': dropTarget === entry.name }"
             role="option"
             :aria-selected="localSelected === entry.name"
+            draggable="true"
             @click="localSelected = entry.name"
             @dblclick="localOpen(entry)"
+            @dragstart="onDragStart($event, 'local', entry)"
+            @dragend="onDragEnd"
+            @dragover.prevent.stop="onDragOver(entry)"
+            @dragleave.stop="onDragLeave(entry)"
+            @drop.stop="onDrop($event, 'local', entry)"
+            @contextmenu.prevent.stop="localEntryMenu($event, entry)"
           >
             <component :is="iconFor(entry.kind)" :size="15" :stroke-width="1.5" :class="['file-icon', entry.kind]" aria-hidden="true" />
             <span class="file-name text-ellipsis">{{ entry.name }}</span>
@@ -413,31 +713,39 @@ onMounted(async () => {
         <input v-model="remoteFilter" class="pane-filter" type="text" placeholder="Filter" spellcheck="false" aria-label="Filter remote files" />
       </header>
 
-      <!-- No host picked yet -->
-      <div v-if="remoteSessionId === null" class="pane-state grow">
-        <p class="pick-lead">Connect to a saved host to manage files with SFTP.</p>
-        <div class="pick-list">
-          <button
-            v-for="choice in connectedChoices"
-            :key="choice.id"
-            class="btn btn-secondary pick-btn"
-            @click="pickConnected(choice.id)"
-          >
-            {{ choice.label }}
-          </button>
+      <!-- Host picker: search all saved hosts, click to connect + open -->
+      <div v-if="remoteSessionId === null" class="picker">
+        <div class="picker-search">
+          <Search :size="15" :stroke-width="1.5" aria-hidden="true" />
+          <input
+            v-model="pickerQuery"
+            class="picker-input"
+            type="text"
+            placeholder="Select a host to browse its files…"
+            spellcheck="false"
+            aria-label="Select host"
+          />
         </div>
-        <div v-if="hosts.hosts.length" class="pick-others">
-          <span class="section-label">Or connect a host</span>
-          <div class="pick-list">
-            <button
-              v-for="h in hosts.hosts.slice(0, 8)"
-              :key="h.id"
-              class="btn btn-ghost pick-btn"
-              @click="pickHostAndConnect(h.id)"
-            >
-              {{ h.label }}
-            </button>
+        <div class="picker-list">
+          <div v-if="!pickerResults.length" class="pane-state">
+            <p>No hosts match. Add one in Hosts first.</p>
           </div>
+          <button
+            v-for="h in pickerResults"
+            :key="h.id"
+            class="picker-row"
+            @click="pickHost(h.id)"
+          >
+            <OsAvatar :label="h.label" :os="h.os" :size="32" />
+            <span class="picker-text">
+              <span class="picker-name text-ellipsis">{{ h.label }}</span>
+              <span class="picker-sub mono text-ellipsis">{{ h.username }}@{{ h.address }}</span>
+            </span>
+            <span v-if="connectedHostIds.has(h.id)" class="badge badge-success">
+              <Plug :size="10" :stroke-width="2" aria-hidden="true" />
+              live
+            </span>
+          </button>
         </div>
       </div>
 
@@ -479,7 +787,16 @@ onMounted(async () => {
           </button>
         </div>
 
-        <div class="file-list" role="listbox" aria-label="Remote files">
+        <div
+          class="file-list"
+          role="listbox"
+          aria-label="Remote files"
+          :class="{ 'drop-here': dropTarget === '__pane__' }"
+          @dragover.prevent="onDragOver(null)"
+          @dragleave="onDragLeave(null)"
+          @drop="onDrop($event, 'remote', null)"
+          @contextmenu.prevent="remoteBgMenu"
+        >
           <div v-if="remoteLoading && !remoteEntries.length" class="pane-state">
             <span class="spinner" aria-hidden="true"></span>
           </div>
@@ -488,7 +805,7 @@ onMounted(async () => {
             <button class="btn btn-secondary" @click="openRemote">Retry</button>
           </div>
           <div v-else-if="!remoteFiltered.length" class="pane-state">
-            <p>Empty folder</p>
+            <p>Empty folder — right-click to create one, or drop files here</p>
           </div>
 
           <template v-else>
@@ -496,11 +813,18 @@ onMounted(async () => {
               v-for="entry in remoteFiltered"
               :key="entry.name"
               class="file-row"
-              :class="{ selected: remoteSelected === entry.name }"
+              :class="{ selected: remoteSelected === entry.name, 'drop-here': dropTarget === entry.name }"
               role="option"
               :aria-selected="remoteSelected === entry.name"
+              draggable="true"
               @click="remoteSelected = entry.name"
               @dblclick="entry.kind === 'dir' && remoteGo(join(remotePath, entry.name))"
+              @dragstart="onDragStart($event, 'remote', entry)"
+              @dragend="onDragEnd"
+              @dragover.prevent.stop="onDragOver(entry)"
+              @dragleave.stop="onDragLeave(entry)"
+              @drop.stop="onDrop($event, 'remote', entry)"
+              @contextmenu.prevent.stop="remoteEntryMenu($event, entry)"
             >
               <template v-if="remoteRenaming === entry.name">
                 <component :is="iconFor(entry.kind)" :size="15" :stroke-width="1.5" aria-hidden="true" />
@@ -508,6 +832,7 @@ onMounted(async () => {
                   v-model="remoteRenameValue"
                   class="field-input mono rename-input"
                   spellcheck="false"
+                  autofocus
                   @keydown.enter="remoteCommitRename"
                   @keydown.esc="remoteRenaming = null"
                   @blur="remoteCommitRename"
@@ -525,7 +850,7 @@ onMounted(async () => {
                   <button v-if="entry.kind === 'file'" class="btn-icon" :aria-label="`Download ${entry.name}`" title="Download to local pane" @click="downloadSelected">
                     <Download :size="13" :stroke-width="1.5" aria-hidden="true" />
                   </button>
-                  <button class="btn-icon" :aria-label="`Rename ${entry.name}`" title="Rename" @click="remoteRenaming = entry.name; remoteRenameValue = entry.name">
+                  <button class="btn-icon" :aria-label="`Rename ${entry.name}`" title="Rename" @click="startRename(entry)">
                     <Pencil :size="13" :stroke-width="1.5" aria-hidden="true" />
                   </button>
                   <button class="btn-icon file-delete" :aria-label="`Delete ${entry.name}`" title="Delete" @click="remoteRemove(entry)">
@@ -542,7 +867,7 @@ onMounted(async () => {
           <button
             class="btn btn-primary upload-btn"
             :disabled="!selectedLocalEntry || selectedLocalEntry.kind !== 'file'"
-            :title="selectedLocalEntry ? `Upload ${selectedLocalEntry.name}` : 'Select a file in the local pane first'"
+            :title="selectedLocalEntry ? `Upload ${selectedLocalEntry.name}` : 'Select a file in the local pane first (or drag it here)'"
             @click="uploadSelected"
           >
             <Upload :size="14" :stroke-width="1.5" aria-hidden="true" />
@@ -571,6 +896,14 @@ onMounted(async () => {
         </div>
       </template>
     </section>
+
+    <ContextMenu
+      v-if="menu"
+      :x="menu.x"
+      :y="menu.y"
+      :items="menu.items"
+      @close="menu = null"
+    />
   </div>
 </template>
 
@@ -625,6 +958,86 @@ onMounted(async () => {
 .pane-filter:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Host picker */
+.picker {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--space-3) var(--space-4);
+  gap: var(--space-2);
+}
+
+.picker-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  color: var(--text-3);
+}
+
+.picker-search:focus-within {
+  border-color: var(--accent);
+}
+
+.picker-input {
+  flex: 1;
+  border: none;
+  background: none;
+  font-size: var(--text-md);
+  color: var(--text-1);
+}
+
+.picker-input:focus {
+  outline: none;
+}
+
+.picker-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  max-width: 560px;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  transition: background-color var(--dur-hover) ease;
+}
+
+.picker-row:hover {
+  background: var(--bg-hover);
+}
+
+.picker-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  line-height: 1.3;
+}
+
+.picker-name {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.picker-sub {
+  font-size: var(--text-xs);
+  color: var(--text-3);
 }
 
 .crumbs {
@@ -686,6 +1099,13 @@ button.crumb:hover {
   padding: var(--space-1);
 }
 
+.file-list.drop-here {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  border-radius: var(--radius-md);
+  background: var(--accent-bg);
+}
+
 .file-row {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 80px 64px auto;
@@ -704,6 +1124,12 @@ button.crumb:hover {
 
 .file-row.selected {
   background: var(--bg-selected);
+}
+
+.file-row.drop-here {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-bg);
 }
 
 .file-icon.dir { color: var(--accent); }
@@ -771,36 +1197,11 @@ button.crumb:hover {
   text-align: center;
 }
 
-.pane-state.grow {
-  flex: 1;
-}
-
 .pane-error {
   font-size: var(--text-xs);
   color: var(--danger);
   word-break: break-all;
   user-select: text;
-}
-
-.pick-lead {
-  max-width: 40ch;
-  line-height: var(--leading-normal);
-}
-
-.pick-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  justify-content: center;
-  max-width: 480px;
-}
-
-.pick-others {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  align-items: center;
-  margin-top: var(--space-4);
 }
 
 .inline-form {

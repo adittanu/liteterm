@@ -21,6 +21,7 @@ export interface Host {
   key_path: string | null
   credential_id: number | null
   credential_name: string | null
+  os: string | null // detected distro id ("ubuntu", "debian", "macos", …)
   sort: number
 }
 

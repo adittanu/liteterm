@@ -58,6 +58,7 @@ export const useDialogsStore = defineStore('dialogs', () => {
 
   const showSettings = ref(false)
   const showImport = ref(false)
+  const showPalette = ref(false)
 
   return {
     hostDialog,
@@ -71,5 +72,6 @@ export const useDialogsStore = defineStore('dialogs', () => {
     closePasswordPrompt,
     showSettings,
     showImport,
+    showPalette,
   }
 })
