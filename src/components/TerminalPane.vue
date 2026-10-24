@@ -73,6 +73,15 @@ onMounted(() => {
   term.loadAddon(new WebLinksAddon())
   term.open(container.value)
 
+  // App shortcuts (Ctrl+K/T/W) are handled by App.vue's capture-phase
+  // listener; returning false here keeps xterm from processing them and
+  // leaking ^K/^T/^W control bytes into the shell
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || !(e.ctrlKey || e.metaKey)) return true
+    const key = e.key.toLowerCase()
+    return key !== 'k' && key !== 't' && key !== 'w'
+  })
+
   sessions.attachSink(props.session.id, (data) => {
     term?.write(b64ToBytes(data))
   })

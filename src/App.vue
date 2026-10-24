@@ -27,6 +27,7 @@ const dialogs = useDialogsStore()
 const ui = useUiStore()
 
 function onKeydown(e: KeyboardEvent) {
+  if (e.repeat) return
   if (!(e.ctrlKey || e.metaKey)) return
   const key = e.key.toLowerCase()
   if (key === 'k') {
@@ -44,8 +45,10 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+// Capture phase so the shortcut fires before xterm's textarea handlers,
+// which swallow keydowns while a terminal has focus
+onMounted(() => window.addEventListener('keydown', onKeydown, true))
+onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
 </script>
 
 <template>
