@@ -125,6 +125,24 @@ export interface HostKeyEvent {
   address: string
 }
 
+export interface SessionLog {
+  id: number
+  host_id: number | null
+  label: string
+  username: string
+  address: string
+  started_at: string
+  ended_at: string | null
+}
+
+export interface KnownHostRow {
+  host: string
+  key_type: string
+  public_key: string
+  fingerprint: string
+  added_at: string
+}
+
 export interface ParsedHost {
   alias: string
   hostname: string

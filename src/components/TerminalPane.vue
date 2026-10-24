@@ -100,11 +100,11 @@ onMounted(() => {
   }
 })
 
-// Keyboard tab switch lands here: focus without animation
+// View switch lands here: focus without animation
 watch(
-  () => sessions.activeId,
-  (id) => {
-    if (id === props.session.id) term?.focus()
+  () => ui.activeView,
+  (view) => {
+    if (view === `session:${props.session.id}`) term?.focus()
   },
 )
 

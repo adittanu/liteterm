@@ -7,6 +7,10 @@ import { useUiStore } from './ui'
 import { useDialogsStore } from './dialogs'
 import type { SessionTab, SessionStatus, HostKeyEvent, Transfer } from '../types'
 
+function sessionView(id: number) {
+  return `session:${id}` as const
+}
+
 type OutputSink = (data: string) => void
 
 export const useSessionsStore = defineStore('sessions', () => {
@@ -95,6 +99,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       tabs.value.push(tab)
       replayBuffered(tab)
       activeId.value = sessionId
+      useUiStore().openView(sessionView(sessionId))
     } catch (e) {
       const msg = errorText(e)
       // Backend asks for credentials at connect time
@@ -125,6 +130,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       tabs.value.push(tab)
       replayBuffered(tab)
       activeId.value = sessionId
+      useUiStore().openView(sessionView(sessionId))
     } catch (e) {
       useUiStore().toast('error', `Could not open local terminal: ${errorText(e)}`)
     }
@@ -154,6 +160,14 @@ export const useSessionsStore = defineStore('sessions', () => {
     tabs.value = tabs.value.filter((t) => t.id !== sessionId)
     if (activeId.value === sessionId) {
       activeId.value = tabs.value.length ? tabs.value[tabs.value.length - 1].id : null
+    }
+    // If we were looking at this session's page, fall back to the last open
+    // session or the hosts dashboard
+    const ui = useUiStore()
+    if (ui.activeView === sessionView(sessionId)) {
+      ui.openView(
+        activeId.value !== null ? sessionView(activeId.value) : 'hosts',
+      )
     }
   }
 

@@ -119,3 +119,23 @@ pub struct HostKeyEvent {
     pub key_type: String,
     pub address: String,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionLog {
+    pub id: i64,
+    pub host_id: Option<i64>,
+    pub label: String,
+    pub username: String,
+    pub address: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KnownHostRow {
+    pub host: String,
+    pub key_type: String,
+    pub public_key: String,
+    pub fingerprint: String,
+    pub added_at: String,
+}

@@ -1,42 +1,47 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
-import AppTitlebar from './components/AppTitlebar.vue'
-import Sidebar from './components/Sidebar.vue'
-import TerminalTabs from './components/TerminalTabs.vue'
-import WelcomePane from './components/WelcomePane.vue'
-import SftpPanel from './components/SftpPanel.vue'
+import TopBar from './components/TopBar.vue'
+import NavRail from './components/NavRail.vue'
+import SessionPage from './components/SessionPage.vue'
+import HostsView from './views/HostsView.vue'
+import KeychainView from './views/KeychainView.vue'
+import ForwardsView from './views/ForwardsView.vue'
+import SnippetsView from './views/SnippetsView.vue'
+import KnownHostsView from './views/KnownHostsView.vue'
+import LogsView from './views/LogsView.vue'
+import SftpView from './views/SftpView.vue'
 import HostDialog from './components/HostDialog.vue'
 import HostKeyDialog from './components/HostKeyDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import PasswordPromptDialog from './components/PasswordPromptDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
-import SnippetsDialog from './components/SnippetsDialog.vue'
-import ForwardsDialog from './components/ForwardsDialog.vue'
-import SettingsDialog from './components/SettingsDialog.vue'
-import CommandPalette from './components/CommandPalette.vue'
 import Toasts from './components/Toasts.vue'
 import { useSessionsStore } from './stores/sessions'
-import { useDialogsStore } from './stores/dialogs'
+import { useUiStore } from './stores/ui'
 
 const sessions = useSessionsStore()
-const dialogs = useDialogsStore()
+const ui = useUiStore()
 
-const activeTab = computed(
-  () => sessions.tabs.find((t) => t.id === sessions.activeId) ?? null,
-)
+const activeSessionId = computed(() => {
+  if (!ui.activeView.startsWith('session:')) return null
+  return Number(ui.activeView.split(':')[1])
+})
 
 function onKeydown(e: KeyboardEvent) {
   if (!(e.ctrlKey || e.metaKey)) return
   const key = e.key.toLowerCase()
   if (key === 'k') {
     e.preventDefault()
-    dialogs.showPalette = !dialogs.showPalette
+    // Ctrl+K: jump to a host — open palette (reuses Hosts search semantics)
+    ui.openView('hosts')
+    window.dispatchEvent(new CustomEvent('liteterm:focus-host-search'))
   } else if (key === 't') {
     e.preventDefault()
-    dialogs.showPalette = true
+    void sessions.connectLocal()
   } else if (key === 'w') {
     e.preventDefault()
-    if (sessions.activeId !== null) void sessions.disconnect(sessions.activeId)
+    const sid = activeSessionId.value
+    if (sid !== null) void sessions.disconnect(sid)
   }
 }
 
@@ -46,15 +51,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="app">
-    <AppTitlebar />
+    <TopBar />
     <div class="app-body">
-      <Sidebar />
+      <NavRail />
       <main class="app-main">
-        <div class="app-terminal-area">
-          <TerminalTabs v-if="sessions.tabs.length" />
-          <WelcomePane v-else />
-        </div>
-        <SftpPanel v-if="activeTab?.sftpOpen" :session-id="activeTab.id" />
+        <HostsView v-if="ui.activeView === 'hosts'" />
+        <KeychainView v-else-if="ui.activeView === 'keychain'" />
+        <ForwardsView v-else-if="ui.activeView === 'forwards'" />
+        <SnippetsView v-else-if="ui.activeView === 'snippets'" />
+        <KnownHostsView v-else-if="ui.activeView === 'known'" />
+        <LogsView v-else-if="ui.activeView === 'logs'" />
+        <SftpView v-else-if="ui.activeView === 'sftp'" />
+        <SessionPage v-else-if="activeSessionId !== null" :session-id="activeSessionId" />
+        <HostsView v-else />
       </main>
     </div>
 
@@ -63,10 +72,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <ConfirmDialog />
     <PasswordPromptDialog />
     <ImportDialog />
-    <SnippetsDialog />
-    <ForwardsDialog />
-    <SettingsDialog />
-    <CommandPalette />
     <Toasts />
   </div>
 </template>
@@ -85,15 +90,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 }
 
 .app-main {
-  display: flex;
   flex: 1;
   min-width: 0;
-}
-
-.app-terminal-area {
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-width: 0;
 }
 </style>

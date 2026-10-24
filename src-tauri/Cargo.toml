@@ -24,6 +24,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 russh = "0.45"
 russh-sftp = "2"
 portable-pty = "0.8"
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 keyring = { version = "3", features = ["windows-native"] }
 base64 = "0.22"
 

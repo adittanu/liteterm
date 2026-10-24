@@ -58,3 +58,27 @@ pub fn forget_host_key(db: State<Db>, host_id: i64) -> Result<(), String> {
     db::forget_host_keys(&conn, &host_tag).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+#[tauri::command]
+pub fn list_known_hosts(db: State<Db>) -> Result<Vec<crate::store::models::KnownHostRow>, String> {
+    let conn = db.0.lock().map_err(|_| "database busy")?;
+    db::list_known_hosts(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_known_host_entry(db: State<Db>, host: String, key_type: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|_| "database busy")?;
+    db::delete_known_host_entry(&conn, &host, &key_type).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_session_logs(db: State<Db>, limit: Option<i64>) -> Result<Vec<crate::store::models::SessionLog>, String> {
+    let conn = db.0.lock().map_err(|_| "database busy")?;
+    db::list_session_logs(&conn, limit.unwrap_or(200)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_session_logs(db: State<Db>) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|_| "database busy")?;
+    db::clear_session_logs(&conn).map_err(|e| e.to_string())
+}

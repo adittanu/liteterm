@@ -44,9 +44,9 @@
   --dur-modal: 280ms;
 
   /* ---- Layout ---- */
-  --sidebar-width: 264px;
-  --titlebar-height: 40px;
-  --tabbar-height: 38px;
+  --rail-width: 208px;
+  --rail-width-collapsed: 56px;
+  --topbar-height: 44px;
 
   color-scheme: dark;
 }

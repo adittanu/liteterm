@@ -73,6 +73,17 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS session_logs (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            host_id    INTEGER,
+            label      TEXT NOT NULL,
+            username   TEXT NOT NULL,
+            address    TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            ended_at   TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -514,6 +525,82 @@ pub fn remember_host_key(
 
 pub fn forget_host_keys(conn: &Connection, host: &str) -> Result<usize, rusqlite::Error> {
     conn.execute("DELETE FROM known_hosts WHERE host = ?1", params![host])
+}
+
+// ---------- session logs ----------
+
+pub fn session_log_start(
+    conn: &Connection,
+    session_id: u32,
+    host_id: Option<i64>,
+    label: &str,
+    username: &str,
+    address: &str,
+) -> Result<i64, rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO session_logs (session_id, host_id, label, username, address) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![session_id, host_id, label, username, address],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn session_log_end(conn: &Connection, log_id: i64) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE session_logs SET ended_at = datetime('now','localtime') WHERE id = ?1 AND ended_at IS NULL",
+        params![log_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_session_logs(conn: &Connection, limit: i64) -> Result<Vec<SessionLog>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, host_id, label, username, address, started_at, ended_at \
+         FROM session_logs ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |row| {
+        Ok(SessionLog {
+            id: row.get(0)?,
+            host_id: row.get(1)?,
+            label: row.get(2)?,
+            username: row.get(3)?,
+            address: row.get(4)?,
+            started_at: row.get(5)?,
+            ended_at: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn clear_session_logs(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM session_logs", [])?;
+    Ok(())
+}
+
+// ---------- known hosts listing ----------
+
+pub fn list_known_hosts(conn: &Connection) -> Result<Vec<KnownHostRow>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT host, key_type, public_key, fingerprint, added_at FROM known_hosts \
+         ORDER BY host, key_type",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(KnownHostRow {
+            host: row.get(0)?,
+            key_type: row.get(1)?,
+            public_key: row.get(2)?,
+            fingerprint: row.get(3)?,
+            added_at: row.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn delete_known_host_entry(conn: &Connection, host: &str, key_type: &str) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM known_hosts WHERE host = ?1 AND key_type = ?2",
+        params![host, key_type],
+    )?;
+    Ok(())
 }
 
 // ---------- settings ----------

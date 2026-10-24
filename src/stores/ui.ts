@@ -3,6 +3,16 @@ import { ref, watch } from 'vue'
 import { api } from '../services/api'
 import type { AppSettings } from '../types'
 
+export type ViewId =
+  | 'hosts'
+  | 'keychain'
+  | 'forwards'
+  | 'snippets'
+  | 'known'
+  | 'logs'
+  | 'sftp'
+  | `session:${number}`
+
 export interface Toast {
   id: number
   kind: 'success' | 'error' | 'info'
@@ -14,6 +24,14 @@ export interface Toast {
 let toastSeq = 1
 
 export const useUiStore = defineStore('ui', () => {
+  // ---- view routing (Termius-style shell) ----
+  const activeView = ref<ViewId>('hosts')
+  const railCollapsed = ref(false)
+
+  function openView(view: ViewId) {
+    activeView.value = view
+  }
+
   // ---- settings ----
   const settings = ref<AppSettings>({
     theme: 'system',
@@ -85,6 +103,9 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   return {
+    activeView,
+    railCollapsed,
+    openView,
     settings,
     resolvedThemeId,
     systemDark,

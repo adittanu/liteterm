@@ -96,6 +96,8 @@ pub struct SshSession {
     pub key_mismatch: Arc<std::sync::atomic::AtomicBool>,
     /// Kept in memory only, for auto-filling sudo prompts
     pub sudo_password: Arc<Mutex<Option<String>>>,
+    /// session_logs row for this connection (SSH only)
+    pub log_id: Mutex<Option<i64>>,
     pub closed: CancellationToken,
     pub transfers: Mutex<HashMap<u32, CancellationToken>>,
     pub next_transfer_id: AtomicU32,
@@ -295,6 +297,7 @@ pub fn create_session(
         sftp: Arc::default(),
         key_mismatch: Arc::default(),
         sudo_password: Arc::new(Mutex::new(None)),
+        log_id: Mutex::new(None),
         closed: CancellationToken::new(),
         transfers: Mutex::new(HashMap::new()),
         next_transfer_id: AtomicU32::new(1),
@@ -428,6 +431,12 @@ async fn connect_and_stream(
 
     emit_status(&state.app, session.id, "connected", None);
 
+    // Session history (SSH only)
+    let log_id = Connection::open(&state.db_path).ok().and_then(|conn| {
+        db::session_log_start(&conn, session.id, session.host_id, &session.label, &params.username, host_tag).ok()
+    });
+    *session.log_id.lock().unwrap() = log_id;
+
     // Auto-start any forwards bound to this host, now that it's reachable
     if session.host_id.is_some() {
         let auto: Vec<models::PortForward> = Connection::open(&state.db_path)
@@ -502,6 +511,11 @@ async fn connect_and_stream(
 
     // Wipe the in-memory password when the session ends
     *session.sudo_password.lock().unwrap() = None;
+    if let Some(log_id) = *session.log_id.lock().unwrap() {
+        if let Ok(conn) = Connection::open(&state.db_path) {
+            let _ = db::session_log_end(&conn, log_id);
+        }
+    }
     emit_status(&state.app, session.id, "closed", None);
     Ok(())
 }

@@ -13,6 +13,8 @@ import type {
   ImportResult,
   Credential,
   CredentialInput,
+  SessionLog,
+  KnownHostRow,
 } from '../types'
 
 export const api = {
@@ -25,6 +27,17 @@ export const api = {
     invoke('upsert_group', { id, name }),
   deleteGroup: (id: number): Promise<void> => invoke('delete_group', { id }),
   forgetHostKey: (hostId: number): Promise<void> => invoke('forget_host_key', { hostId }),
+
+  // ---- known hosts / session logs ----
+  listKnownHosts: (): Promise<KnownHostRow[]> => invoke('list_known_hosts'),
+  deleteKnownHostEntry: (host: string, keyType: string): Promise<void> =>
+    invoke('delete_known_host_entry', { host, keyType }),
+  listSessionLogs: (limit = 200): Promise<SessionLog[]> => invoke('list_session_logs', { limit }),
+  clearSessionLogs: (): Promise<void> => invoke('clear_session_logs'),
+
+  // ---- local filesystem (SFTP local pane) ----
+  localDrives: (): Promise<string[]> => invoke('local_drives'),
+  localList: (path: string): Promise<FileEntry[]> => invoke('local_list', { path }),
 
   // ---- credentials ----
   listCredentials: (): Promise<Credential[]> => invoke('list_credentials'),
