@@ -83,9 +83,33 @@ pub async fn sftp_download(
 }
 
 #[tauri::command]
-pub fn sftp_cancel_transfer(state: State<'_, Arc<AppState>>, session_id: u32, transfer_id: u32) -> Result<(), String> {
+pub async fn sftp_cancel_transfer(state: State<'_, Arc<AppState>>, session_id: u32, transfer_id: u32) -> Result<(), String> {
     pool::cancel_transfer(state.inner(), session_id, transfer_id);
     Ok(())
+}
+
+/// Copy a file from one SSH session to another (different servers),
+/// routed through a local temp file. Reported as a single transfer.
+#[tauri::command]
+pub async fn sftp_cross_transfer(
+    state: State<'_, Arc<AppState>>,
+    src_session_id: u32,
+    src_path: String,
+    dst_session_id: u32,
+    dst_dir: String,
+) -> Result<u32, String> {
+    let app_state = state.inner().clone();
+    let src = pool_session(&app_state, src_session_id)?;
+    let dst = pool_session(&app_state, dst_session_id)?;
+    if src.id == dst.id {
+        return Err("Source and destination are the same session — use move instead".into());
+    }
+    let transfer_id = src.next_transfer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    tauri::async_runtime::spawn(async move {
+        pool::run_cross_transfer(app_state.clone(), src.clone(), dst, transfer_id, src_path, dst_dir).await;
+    });
+    Ok(transfer_id)
 }
 
 fn pool_session(state: &AppState, session_id: u32) -> Result<std::sync::Arc<pool::SshSession>, String> {

@@ -770,6 +770,97 @@ pub async fn sftp_rename(session: &SshSession, from: &str, to: &str) -> Result<(
         .map_err(|e| format!("Rename failed: {e}"))
 }
 
+/// Server-to-server copy between two different SSH sessions: download to
+/// a temp file, then upload. Reported as one transfer whose progress
+/// covers both halves.
+pub async fn run_cross_transfer(
+    state: Arc<AppState>,
+    src: Arc<SshSession>,
+    dst: Arc<SshSession>,
+    transfer_id: u32,
+    src_path: String,
+    dst_dir: String,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let cancel = CancellationToken::new();
+    src.transfers.lock().unwrap().insert(transfer_id, cancel.clone());
+    let mut last_emit = Instant::now() - Duration::from_secs(1);
+
+    let name = src_path.rsplit('/').next().unwrap_or("file").to_string();
+    let temp = std::env::temp_dir().join(format!("liteterm_xfer_{transfer_id}_{name}"));
+    let dst_path = if dst_dir == "/" { format!("/{name}") } else { format!("{dst_dir}/{name}") };
+
+    let result: Result<(), String> = async {
+        let size = {
+            let guard = src.sftp.lock().await;
+            let sftp = guard.as_ref().ok_or("SFTP not open (source)")?;
+            sftp.metadata(&src_path).await.map_err(|e| format!("Source stat failed: {e}"))?.len()
+        };
+
+        // Phase 1: download to temp (progress = first half)
+        {
+            let guard = src.sftp.lock().await;
+            let sftp = guard.as_ref().ok_or("SFTP not open (source)")?;
+            let mut remote = sftp.open(&src_path).await.map_err(|e| format!("Source open failed: {e}"))?;
+            let mut local = tokio::fs::File::create(&temp).await.map_err(|e| format!("Temp file failed: {e}"))?;
+            let mut buf = vec![0u8; TRANSFER_CHUNK];
+            let mut done_bytes: u64 = 0;
+            loop {
+                if cancel.is_cancelled() {
+                    return Err("Cancelled".into());
+                }
+                let n = remote.read(&mut buf).await.map_err(|e| format!("Source read failed: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                local.write_all(&buf[..n]).await.map_err(|e| format!("Temp write failed: {e}"))?;
+                done_bytes += n as u64;
+                emit_transfer(&state.app, transfer_id, done_bytes / 2, size, false, None, &mut last_emit, false);
+            }
+            local.flush().await.map_err(|e| format!("Temp flush failed: {e}"))?;
+        }
+
+        // Phase 2: upload from temp (progress = second half)
+        {
+            let mut local = tokio::fs::File::open(&temp).await.map_err(|e| format!("Temp open failed: {e}"))?;
+            let mut buf = vec![0u8; TRANSFER_CHUNK];
+            let mut done_bytes: u64 = 0;
+            {
+                let guard = dst.sftp.lock().await;
+                let sftp = guard.as_ref().ok_or("SFTP not open (destination)")?;
+                let mut remote = sftp.create(&dst_path).await.map_err(|e| format!("Destination create failed: {e}"))?;
+                loop {
+                    if cancel.is_cancelled() {
+                        return Err("Cancelled".into());
+                    }
+                    let n = local.read(&mut buf).await.map_err(|e| format!("Temp read failed: {e}"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    remote.write_all(&buf[..n]).await.map_err(|e| format!("Destination write failed: {e}"))?;
+                    done_bytes += n as u64;
+                    emit_transfer(&state.app, transfer_id, size / 2 + done_bytes / 2, size, false, None, &mut last_emit, false);
+                }
+                let _ = remote.shutdown().await;
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    let _ = std::fs::remove_file(&temp);
+    match result {
+        Ok(()) => emit_transfer(&state.app, transfer_id, 1, 1, true, None, &mut last_emit, true),
+        Err(e) => {
+            let msg = if cancel.is_cancelled() { "Cancelled".to_string() } else { e };
+            emit_transfer(&state.app, transfer_id, 0, 0, true, Some(msg), &mut last_emit, true);
+        }
+    }
+    src.transfers.lock().unwrap().remove(&transfer_id);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_transfer(
     app: &AppHandle,

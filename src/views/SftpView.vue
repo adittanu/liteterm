@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   ArrowUp,
   RefreshCw,
@@ -16,6 +16,10 @@ import {
   Search,
   FolderOpen,
   Plug,
+  HardDrive,
+  ChevronDown,
+  MonitorSmartphone,
+  Server,
 } from 'lucide-vue-next'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { api } from '../services/api'
@@ -32,95 +36,151 @@ const hosts = useHostsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
 
-// ---- remote pane state ----
-const remoteSessionId = ref<number | null>(null)
-const remotePath = ref('/')
-const remoteEntries = ref<FileEntry[]>([])
-const remoteLoading = ref(false)
-const remoteError = ref<string | null>(null)
-const remoteSelected = ref<string | null>(null)
-const remoteRenaming = ref<string | null>(null)
-const remoteRenameValue = ref('')
-const remoteNewFolder = ref(false)
-const remoteNewFolderName = ref('')
-const remoteFilter = ref('')
+// ---- pane model: each side is Local or an SSH session, switchable ----
 
-// ---- local pane state ----
+interface PaneState {
+  kind: 'local' | 'ssh'
+  sessionId: number | null
+  hostLabel: string
+  path: string
+  entries: FileEntry[]
+  loading: boolean
+  error: string | null
+  selected: string | null
+  filter: string
+  renaming: string | null
+  renameValue: string
+  newFolder: boolean
+  newFolderName: string
+  selectorQuery: string
+}
+
+function newPane(kind: 'local' | 'ssh'): PaneState {
+  return {
+    kind,
+    sessionId: null,
+    hostLabel: '',
+    path: kind === 'local' ? '' : '/',
+    entries: [],
+    loading: false,
+    error: null,
+    selected: null,
+    filter: '',
+    renaming: null,
+    renameValue: '',
+    newFolder: false,
+    newFolderName: '',
+    selectorQuery: '',
+  }
+}
+
+const panes = reactive<PaneState[]>([newPane('local'), newPane('ssh')])
 const localDrives = ref<string[]>([])
-const localPath = ref('')
-const localEntries = ref<FileEntry[]>([])
-const localLoading = ref(false)
-const localError = ref<string | null>(null)
-const localSelected = ref<string | null>(null)
-const localFilter = ref('')
-
-// ---- host picker ----
-const pickerQuery = ref('')
 
 // ---- context menu ----
 const menu = ref<{ x: number; y: number; items: MenuItem[] } | null>(null)
-
-// ---- drag & drop ----
-interface DragSrc {
-  pane: 'local' | 'remote'
-  name: string
-  isDir: boolean
+function openMenu(e: MouseEvent, items: MenuItem[]) {
+  menu.value = { x: e.clientX, y: e.clientY, items }
 }
-const dragSrc = ref<DragSrc | null>(null)
-const dropTarget = ref<string | null>(null) // row name currently hovered
 
-const remoteHostLabel = computed(() => {
-  const tab = sessions.tabs.find((t) => t.id === remoteSessionId.value)
-  return tab?.label ?? ''
-})
+// ---- pointer-based drag (WebView2 blocks HTML5 DnD) ----
 
-const connectedChoices = computed(() =>
-  sessions.tabs.filter((t) => t.status === 'connected' && t.kind === 'ssh'),
-)
+const drag = ref<{
+  paneIdx: number
+  entry: FileEntry
+  startX: number
+  startY: number
+  active: boolean
+  x: number
+  y: number
+} | null>(null)
 
-const connectedHostIds = computed(
-  () => new Set(connectedChoices.value.map((t) => t.hostId)),
-)
+const hoverDrop = ref<{ paneIdx: number; name: string | null } | null>(null)
+let justDragged = false
 
-const pickerResults = computed(() => {
-  const q = pickerQuery.value.trim().toLowerCase()
-  const sorted = [...hosts.hosts].sort((a, b) => {
-    const ca = connectedHostIds.value.has(a.id) ? 0 : 1
-    const cb = connectedHostIds.value.has(b.id) ? 0 : 1
-    return ca - cb || a.label.localeCompare(b.label)
-  })
-  if (!q) return sorted
-  return sorted.filter(
-    (h) =>
-      h.label.toLowerCase().includes(q) ||
-      h.address.toLowerCase().includes(q) ||
-      h.username.toLowerCase().includes(q),
-  )
-})
+function onRowPointerDown(e: PointerEvent, idx: number, entry: FileEntry) {
+  if (e.button !== 0) return
+  if ((e.target as HTMLElement).closest('button')) return // row action buttons
+  drag.value = {
+    paneIdx: idx,
+    entry,
+    startX: e.clientX,
+    startY: e.clientY,
+    active: false,
+    x: e.clientX,
+    y: e.clientY,
+  }
+}
 
-const remoteFiltered = computed(() =>
-  sortEntries(
-    remoteEntries.value.filter((e) =>
-      e.name.toLowerCase().includes(remoteFilter.value.trim().toLowerCase()),
-    ),
-  ),
-)
+function onPointerMove(e: PointerEvent) {
+  const d = drag.value
+  if (!d) return
+  d.x = e.clientX
+  d.y = e.clientY
+  if (!d.active) {
+    const dist = Math.hypot(e.clientX - d.startX, e.clientY - d.startY)
+    if (dist > 6) d.active = true
+  }
+  if (d.active) {
+    const el = document.elementFromPoint(e.clientX, e.clientY)
+    const zone = el?.closest('[data-drop-pane]') as HTMLElement | null
+    if (zone) {
+      const paneIdx = Number(zone.dataset.dropPane)
+      const row = el?.closest('[data-drop-name]') as HTMLElement | null
+      const name = row?.dataset.dropName ?? null
+      const isDir = row?.dataset.dropKind === 'dir'
+      // Targets: the other pane, or a folder row anywhere (incl. same pane)
+      if (paneIdx !== d.paneIdx || isDir) {
+        hoverDrop.value = { paneIdx, name: isDir ? name : null }
+      } else {
+        hoverDrop.value = null
+      }
+    } else {
+      hoverDrop.value = null
+    }
+  }
+}
 
-const localFiltered = computed(() =>
-  sortEntries(
-    localEntries.value.filter((e) =>
-      e.name.toLowerCase().includes(localFilter.value.trim().toLowerCase()),
-    ),
-  ),
-)
+function onPointerUp() {
+  const d = drag.value
+  drag.value = null
+  const target = hoverDrop.value
+  hoverDrop.value = null
+  if (!d || !d.active || !target) return
+  justDragged = true
+  transferFile(d.paneIdx, d.entry, target.paneIdx, target.name)
+}
 
-function sortEntries(list: FileEntry[]): FileEntry[] {
-  return [...list].sort((a, b) => {
-    const da = a.kind === 'dir' ? 0 : 1
-    const db = b.kind === 'dir' ? 0 : 1
-    if (da !== db) return da - db
-    return a.name.localeCompare(b.name)
-  })
+function onWindowClick() {
+  // Swallow the click that follows a completed drag
+  if (justDragged) {
+    justDragged = false
+  }
+}
+
+// ---- helpers ----
+
+function join(dir: string, name: string): string {
+  return dir === '/' ? `/${name}` : `${dir}/${name}`
+}
+
+function joinLocal(dir: string, name: string): string {
+  const sep = dir.includes('\\') ? '\\' : '/'
+  return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`
+}
+
+function localParent(p: string): string | null {
+  const norm = p.replace(/\//g, '\\')
+  if (/^[A-Z]:\\?$/i.test(norm)) return null
+  const idx = norm.lastIndexOf('\\')
+  if (idx <= 2) return norm.slice(0, 3)
+  return norm.slice(0, idx)
+}
+
+function remoteParent(p: string): string {
+  if (p === '/' || p === '') return '/'
+  const idx = p.lastIndexOf('/')
+  return idx <= 0 ? '/' : p.slice(0, idx)
 }
 
 function iconFor(kind: FileEntry['kind']) {
@@ -145,596 +205,501 @@ function kindLabel(e: FileEntry): string {
   return ext.toLowerCase()
 }
 
-// ---- remote ----
-function handleRemoteError(e: unknown) {
-  const msg = errorText(e)
-  // The picked session died — fall back to the host picker
-  if (msg.includes('Session not found') || msg.includes('Not connected')) {
-    remoteSessionId.value = null
-    remoteError.value = null
-  } else {
-    remoteError.value = msg
+function sortedFiltered(pane: PaneState): FileEntry[] {
+  const q = pane.filter.trim().toLowerCase()
+  return [...pane.entries]
+    .filter((e) => !q || e.name.toLowerCase().includes(q))
+    .sort((a, b) => {
+      const da = a.kind === 'dir' ? 0 : 1
+      const db = b.kind === 'dir' ? 0 : 1
+      if (da !== db) return da - db
+      return a.name.localeCompare(b.name)
+    })
+}
+
+function paneCrumbs(pane: PaneState): { name: string; path: string }[] {
+  if (pane.kind === 'ssh') {
+    const parts = pane.path.split('/').filter(Boolean)
+    return [{ name: '/', path: '/' }, ...parts.map((p, i) => ({
+      name: p,
+      path: '/' + parts.slice(0, i + 1).join('/'),
+    }))]
   }
-}
-
-async function openRemote() {
-  const sessionId = remoteSessionId.value
-  if (sessionId === null) return
-  remoteLoading.value = true
-  remoteError.value = null
-  try {
-    await api.sftpOpen(sessionId)
-    const result = await api.sftpList(sessionId, remotePath.value)
-    remoteEntries.value = result
-  } catch (e) {
-    handleRemoteError(e)
-  } finally {
-    remoteLoading.value = false
-  }
-}
-
-async function remoteGo(p: string) {
-  if (remoteSessionId.value === null) return
-  remoteLoading.value = true
-  remoteError.value = null
-  try {
-    const result = await api.sftpList(remoteSessionId.value, p)
-    remotePath.value = p
-    remoteEntries.value = result
-    remoteSelected.value = null
-  } catch (e) {
-    handleRemoteError(e)
-  } finally {
-    remoteLoading.value = false
-  }
-}
-
-function remoteParent(p: string): string {
-  if (p === '/' || p === '') return '/'
-  const idx = p.lastIndexOf('/')
-  return idx <= 0 ? '/' : p.slice(0, idx)
-}
-
-function join(dir: string, name: string): string {
-  return dir === '/' ? `/${name}` : `${dir}/${name}`
-}
-
-const remoteCrumbs = computed(() => {
-  const parts = remotePath.value.split('/').filter(Boolean)
-  return [{ name: '/', path: '/' }, ...parts.map((p, i) => ({
-    name: p,
-    path: '/' + parts.slice(0, i + 1).join('/'),
-  }))]
-})
-
-const localCrumbs = computed(() => {
-  const p = localPath.value
-  if (!p) return []
-  const norm = p.replace(/\//g, '\\')
+  if (!pane.path) return []
+  const norm = pane.path.replace(/\//g, '\\')
   const parts = norm.split('\\').filter(Boolean)
   return parts.map((part, i) => ({
     name: part,
     path: i === 0 ? `${part}\\` : parts.slice(0, i + 1).join('\\') + '\\',
   }))
-})
+}
 
-const selectedRemoteEntry = computed(
-  () => remoteEntries.value.find((e) => e.name === remoteSelected.value) ?? null,
-)
-const selectedLocalEntry = computed(
-  () => localEntries.value.find((e) => e.name === localSelected.value) ?? null,
-)
+// ---- listing ----
 
-async function remoteMkdir() {
-  const name = remoteNewFolderName.value.trim()
-  if (!name || remoteSessionId.value === null) return
+function handlePaneError(pane: PaneState, e: unknown) {
+  const msg = errorText(e)
+  if (
+    pane.kind === 'ssh' &&
+    (msg.includes('Session not found') || msg.includes('Not connected'))
+  ) {
+    pane.sessionId = null
+    pane.error = null
+  } else {
+    pane.error = msg
+  }
+}
+
+async function loadPane(idx: number, path?: string) {
+  const pane = panes[idx]
+  const target = path ?? pane.path
+  if (pane.kind === 'local' && !target) return
+  pane.loading = true
+  pane.error = null
   try {
-    await api.sftpMkdir(remoteSessionId.value, join(remotePath.value, name))
-    remoteNewFolder.value = false
-    remoteNewFolderName.value = ''
-    await remoteGo(remotePath.value)
+    if (pane.kind === 'local') {
+      pane.entries = await api.localList(target)
+    } else if (pane.sessionId !== null) {
+      await api.sftpOpen(pane.sessionId)
+      pane.entries = await api.sftpList(pane.sessionId, target)
+    } else {
+      return
+    }
+    pane.path = target
+    pane.selected = null
+    pane.renaming = null
   } catch (e) {
-    ui.toast('error', `mkdir failed: ${errorText(e)}`)
-  }
-}
-
-async function remoteRemove(entry: FileEntry) {
-  const ok = await dialogs.confirm({
-    title: entry.kind === 'dir' ? `Delete folder “${entry.name}”?` : `Delete “${entry.name}”?`,
-    message:
-      entry.kind === 'dir'
-        ? 'The folder and everything inside it will be deleted on the remote server. This cannot be undone.'
-        : 'This file will be deleted on the remote server. This cannot be undone.',
-    confirmLabel: 'Delete',
-    danger: true,
-  })
-  if (!ok || remoteSessionId.value === null) return
-  try {
-    await api.sftpRemove(remoteSessionId.value, join(remotePath.value, entry.name), entry.kind === 'dir')
-    await remoteGo(remotePath.value)
-  } catch (e) {
-    ui.toast('error', `Delete failed: ${errorText(e)}`)
-  }
-}
-
-function startRename(entry: FileEntry) {
-  remoteSelected.value = entry.name
-  remoteRenaming.value = entry.name
-  remoteRenameValue.value = entry.name
-}
-
-async function remoteCommitRename() {
-  const from = remoteRenaming.value
-  const to = remoteRenameValue.value.trim()
-  remoteRenaming.value = null
-  if (!from || !to || from === to || remoteSessionId.value === null) return
-  try {
-    await api.sftpRename(remoteSessionId.value, join(remotePath.value, from), join(remotePath.value, to))
-    await remoteGo(remotePath.value)
-  } catch (e) {
-    ui.toast('error', `Rename failed: ${errorText(e)}`)
-  }
-}
-
-// ---- transfers ----
-function trackUpload(localPathFull: string, name: string, size: number) {
-  if (remoteSessionId.value === null) return
-  void api
-    .sftpUpload(remoteSessionId.value, localPathFull, join(remotePath.value, name))
-    .then((id) => {
-      sessions.trackTransfer({
-        id,
-        sessionId: remoteSessionId.value!,
-        kind: 'upload',
-        fileName: name,
-        size,
-        transferred: 0,
-        done: false,
-      })
-    })
-    .catch((e) => ui.toast('error', `Upload failed: ${errorText(e)}`))
-}
-
-function trackDownload(name: string, size: number) {
-  if (remoteSessionId.value === null || !localPath.value) return
-  void api
-    .sftpDownload(
-      remoteSessionId.value,
-      join(remotePath.value, name),
-      joinLocal(localPath.value, name),
-    )
-    .then((id) => {
-      sessions.trackTransfer({
-        id,
-        sessionId: remoteSessionId.value!,
-        kind: 'download',
-        fileName: name,
-        size,
-        transferred: 0,
-        done: false,
-      })
-    })
-    .catch((e) => ui.toast('error', `Download failed: ${errorText(e)}`))
-}
-
-function uploadSelected() {
-  const local = selectedLocalEntry.value
-  if (!local || local.kind !== 'file') return
-  trackUpload(joinLocal(localPath.value, local.name), local.name, local.size)
-}
-
-function downloadSelected() {
-  const remote = selectedRemoteEntry.value
-  if (!remote || remote.kind !== 'file') return
-  if (!localPath.value) {
-    ui.toast('info', 'Open a local folder first to choose where the file goes')
-    return
-  }
-  trackDownload(remote.name, remote.size)
-}
-
-async function uploadPicked() {
-  const paths = await api.pickFiles('Choose files to upload')
-  if (!paths.length) return
-  for (const p of paths) {
-    const name = p.split(/[\\/]/).pop() ?? 'file'
-    trackUpload(p, name, 0)
-  }
-}
-
-function joinLocal(dir: string, name: string): string {
-  const sep = dir.includes('\\') ? '\\' : '/'
-  return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`
-}
-
-// ---- local ----
-async function localGo(p: string) {
-  localLoading.value = true
-  localError.value = null
-  try {
-    const result = await api.localList(p)
-    localPath.value = p
-    localEntries.value = result
-    localSelected.value = null
-  } catch (e) {
-    localError.value = errorText(e)
+    handlePaneError(pane, e)
   } finally {
-    localLoading.value = false
+    pane.loading = false
   }
 }
 
-function localUp() {
-  const parent = localParent(localPath.value)
-  if (parent) void localGo(parent)
+async function openEntry(idx: number, entry: FileEntry) {
+  const pane = panes[idx]
+  if (entry.kind !== 'dir') return
+  await loadPane(idx, pane.kind === 'local' ? joinLocal(pane.path, entry.name) : join(pane.path, entry.name))
 }
 
-function localParent(p: string): string | null {
-  const norm = p.replace(/\//g, '\\')
-  if (/^[A-Z]:\\?$/i.test(norm)) return null // drive root
-  const idx = norm.lastIndexOf('\\')
-  if (idx <= 2) return norm.slice(0, 3) // "C:\"
-  return norm.slice(0, idx)
-}
-
-function localOpen(entry: FileEntry) {
-  if (entry.kind === 'dir') {
-    void localGo(joinLocal(localPath.value, entry.name))
+function paneUp(idx: number) {
+  const pane = panes[idx]
+  if (pane.kind === 'ssh') {
+    void loadPane(idx, remoteParent(pane.path))
+  } else {
+    const parent = localParent(pane.path)
+    if (parent) void loadPane(idx, parent)
   }
 }
 
-// ---- host picking ----
-function pickConnected(sessionId: number) {
-  remoteSessionId.value = sessionId
-  remotePath.value = '/'
-  void openRemote()
+// ---- pane side switching ----
+
+const connectedHostIds = computed(
+  () =>
+    new Set(
+      sessions.tabs
+        .filter((t) => t.status === 'connected' && t.kind === 'ssh')
+        .map((t) => t.hostId),
+    ),
+)
+
+function paneTitle(pane: PaneState): string {
+  if (pane.kind === 'local') return 'Local'
+  return pane.sessionId !== null ? pane.hostLabel || 'Remote' : 'Select host'
 }
 
-function pickHost(hostId: number) {
+function openSideSwitcher(e: MouseEvent, idx: number) {
+  const hostItems: MenuItem[] = hosts.hosts.map((h) => ({
+    label: `${h.label} · ${h.username}@${h.address}${connectedHostIds.value.has(h.id) ? '  — live' : ''}`,
+    icon: Server,
+    action: () => void useHost(idx, h.id),
+  }))
+  openMenu(e, [
+    {
+      label: 'Local — this PC',
+      icon: MonitorSmartphone,
+      action: () => useLocal(idx),
+    },
+    ...hostItems,
+  ])
+}
+
+function useLocal(idx: number) {
+  const pane = panes[idx]
+  pane.kind = 'local'
+  pane.sessionId = null
+  pane.hostLabel = ''
+  pane.path = localDrives.value[0] ?? ''
+  void loadPane(idx)
+}
+
+function useHost(idx: number, hostId: number) {
+  const pane = panes[idx]
+  const host = hosts.hostById(hostId)
+  if (!host) return
+
   const existing = sessions.tabs.find(
     (t) => t.hostId === hostId && t.status === 'connected' && t.kind === 'ssh',
   )
   if (existing) {
-    pickConnected(existing.id)
+    pane.kind = 'ssh'
+    pane.sessionId = existing.id
+    pane.hostLabel = host.label
+    pane.path = '/'
+    void loadPane(idx)
     return
   }
-  // Connect on demand; SFTP opens as soon as the session is up
+  // Connect on demand, then bind the pane when the session is up
   const stop = sessions.$subscribe(() => {
     const tab = sessions.tabs.find(
       (t) => t.hostId === hostId && t.status === 'connected' && t.kind === 'ssh',
     )
     if (tab) {
-      pickConnected(tab.id)
+      pane.kind = 'ssh'
+      pane.sessionId = tab.id
+      pane.hostLabel = host.label
+      pane.path = '/'
+      void loadPane(idx)
       stop()
     }
   })
   void sessions.connect(hostId)
 }
 
-// ---- context menus ----
-function openMenu(e: MouseEvent, items: MenuItem[]) {
-  menu.value = { x: e.clientX, y: e.clientY, items }
-}
-
-function remoteEntryMenu(e: MouseEvent, entry: FileEntry) {
-  remoteSelected.value = entry.name
-  openMenu(e, [
-    ...(entry.kind === 'dir'
-      ? [
-          {
-            label: 'Open',
-            icon: FolderOpen,
-            action: () => void remoteGo(join(remotePath.value, entry.name)),
-          },
-        ]
-      : [
-          {
-            label: 'Download to local pane',
-            icon: Download,
-            action: () => {
-              if (!localPath.value) {
-                ui.toast('info', 'Open a local folder first')
-                return
-              }
-              trackDownload(entry.name, entry.size)
-            },
-          },
-        ]),
-    {
-      label: 'Rename',
-      icon: Pencil,
-      action: () => startRename(entry),
-    },
-    {
-      label: 'Delete',
-      icon: Trash2,
-      danger: true,
-      action: () => void remoteRemove(entry),
-    },
-  ])
-}
-
-function remoteBgMenu(e: MouseEvent) {
-  openMenu(e, [
-    {
-      label: 'New folder',
-      icon: FilePlus2,
-      action: () => {
-        remoteNewFolder.value = true
-        remoteNewFolderName.value = ''
-      },
-    },
-    {
-      label: 'Upload files…',
-      icon: Upload,
-      action: () => void uploadPicked(),
-    },
-    {
-      label: 'Refresh',
-      icon: RefreshCw,
-      action: () => void openRemote(),
-    },
-  ])
-}
-
-function localEntryMenu(e: MouseEvent, entry: FileEntry) {
-  localSelected.value = entry.name
-  openMenu(e, [
-    ...(entry.kind === 'dir'
-      ? [
-          {
-            label: 'Open',
-            icon: FolderOpen,
-            action: () => localOpen(entry),
-          },
-        ]
-      : [
-          {
-            label: 'Upload to remote pane',
-            icon: Upload,
-            action: () =>
-              trackUpload(joinLocal(localPath.value, entry.name), entry.name, entry.size),
-          },
-        ]),
-  ])
-}
-
-function localBgMenu(e: MouseEvent) {
-  openMenu(e, [
-    {
-      label: 'Refresh',
-      icon: RefreshCw,
-      action: () => void localGo(localPath.value),
-    },
-  ])
-}
-
-// ---- drag & drop between panes ----
-function onDragStart(e: DragEvent, pane: 'local' | 'remote', entry: FileEntry) {
-  dragSrc.value = { pane, name: entry.name, isDir: entry.kind === 'dir' }
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'copyMove'
-    e.dataTransfer.setData('text/plain', entry.name)
-  }
-}
-
-function onDragEnd() {
-  dragSrc.value = null
-  dropTarget.value = null
-}
-
-/** Resolve a drop: src → target pane + optional folder entry */
-function resolveDrop(
-  targetPane: 'local' | 'remote',
-  targetEntry: FileEntry | null,
-): boolean {
-  const src = dragSrc.value
-  if (!src) return false
-  if (src.pane === targetPane && targetEntry === null) return false
-  if (targetEntry && targetEntry.kind !== 'dir') return false
-
-  if (targetPane === 'remote') {
-    const dir = targetEntry ? join(remotePath.value, targetEntry.name) : remotePath.value
-    if (src.pane === 'local') {
-      if (src.isDir) {
-        ui.toast('info', 'Folder upload is not supported yet — drop files only')
-        return true
+// Reset panes whose session disappeared
+function watchSessions() {
+  sessions.$subscribe(() => {
+    for (const pane of panes) {
+      if (pane.kind === 'ssh' && pane.sessionId !== null) {
+        const alive = sessions.tabs.some((t) => t.id === pane.sessionId)
+        if (!alive) {
+          pane.sessionId = null
+          pane.entries = []
+        }
       }
-      trackUpload(joinLocal(localPath.value, src.name), src.name, 0)
-      return true
     }
-    // remote → remote: move within the server
-    const from = join(remotePath.value, src.name)
-    const to = join(dir, src.name)
-    if (from !== to && remoteSessionId.value !== null) {
-      void api
-        .sftpRename(remoteSessionId.value, from, to)
-        .then(() => remoteGo(remotePath.value))
-        .catch((e) => ui.toast('error', `Move failed: ${errorText(e)}`))
-    }
-    return true
-  }
+  })
+}
 
-  // target = local
-  if (src.pane === 'local') return false
-  if (!localPath.value) return false
-  if (src.isDir) {
-    ui.toast('info', 'Folder download is not supported yet — drop files only')
-    return true
+// ---- drive selector ----
+
+function openDriveMenu(e: MouseEvent, idx: number) {
+  openMenu(
+    e,
+    localDrives.value.map((d) => ({
+      label: d,
+      icon: HardDrive,
+      action: () => void loadPane(idx, d),
+    })),
+  )
+}
+
+// ---- file operations (remote only) ----
+
+async function mkdir(idx: number) {
+  const pane = panes[idx]
+  const name = pane.newFolderName.trim()
+  if (!name || pane.sessionId === null) return
+  try {
+    await api.sftpMkdir(pane.sessionId, join(pane.path, name))
+    pane.newFolder = false
+    pane.newFolderName = ''
+    await loadPane(idx)
+  } catch (e) {
+    ui.toast('error', `mkdir failed: ${errorText(e)}`)
   }
-  const dir = targetEntry ? joinLocal(localPath.value, targetEntry.name) : localPath.value
-  if (remoteSessionId.value === null) return false
+}
+
+async function removeEntry(idx: number, entry: FileEntry) {
+  const pane = panes[idx]
+  if (pane.sessionId === null) return
+  const ok = await dialogs.confirm({
+    title: entry.kind === 'dir' ? `Delete folder “${entry.name}”?` : `Delete “${entry.name}”?`,
+    message:
+      entry.kind === 'dir'
+        ? 'The folder and everything inside it will be deleted on the server. This cannot be undone.'
+        : 'This file will be deleted on the server. This cannot be undone.',
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await api.sftpRemove(pane.sessionId, join(pane.path, entry.name), entry.kind === 'dir')
+    await loadPane(idx)
+  } catch (e) {
+    ui.toast('error', `Delete failed: ${errorText(e)}`)
+  }
+}
+
+function startRename(idx: number, entry: FileEntry) {
+  const pane = panes[idx]
+  pane.selected = entry.name
+  pane.renaming = entry.name
+  pane.renameValue = entry.name
+}
+
+async function commitRename(idx: number) {
+  const pane = panes[idx]
+  const from = pane.renaming
+  const to = pane.renameValue.trim()
+  pane.renaming = null
+  if (!from || !to || from === to || pane.sessionId === null) return
+  try {
+    await api.sftpRename(pane.sessionId, join(pane.path, from), join(pane.path, to))
+    await loadPane(idx)
+  } catch (e) {
+    ui.toast('error', `Rename failed: ${errorText(e)}`)
+  }
+}
+
+// ---- transfers (any direction) ----
+
+function trackUpload(sessionId: number, localPathFull: string, remoteDir: string, name: string, size: number) {
   void api
-    .sftpDownload(remoteSessionId.value, join(remotePath.value, src.name), joinLocal(dir, src.name))
+    .sftpUpload(sessionId, localPathFull, join(remoteDir, name))
     .then((id) => {
       sessions.trackTransfer({
-        id,
-        sessionId: remoteSessionId.value!,
-        kind: 'download',
-        fileName: src.name,
-        size: 0,
-        transferred: 0,
-        done: false,
+        id, sessionId, kind: 'upload', fileName: name, size, transferred: 0, done: false,
+      })
+    })
+    .catch((e) => ui.toast('error', `Upload failed: ${errorText(e)}`))
+}
+
+function trackDownload(sessionId: number, remotePathFull: string, localDir: string, name: string, size: number) {
+  void api
+    .sftpDownload(sessionId, remotePathFull, joinLocal(localDir, name))
+    .then((id) => {
+      sessions.trackTransfer({
+        id, sessionId, kind: 'download', fileName: name, size, transferred: 0, done: false,
       })
     })
     .catch((e) => ui.toast('error', `Download failed: ${errorText(e)}`))
-  return true
 }
 
-function onDrop(e: DragEvent, targetPane: 'local' | 'remote', targetEntry: FileEntry | null) {
-  e.preventDefault()
-  dropTarget.value = null
-  resolveDrop(targetPane, targetEntry)
-  dragSrc.value = null
-}
+/**
+ * Copy one file from pane `fromIdx` into `toIdx` (into its current dir,
+ * or into `dirName` when dropped on a folder row).
+ */
+function transferFile(fromIdx: number, entry: FileEntry, toIdx: number, dirName: string | null) {
+  const from = panes[fromIdx]
+  const to = panes[toIdx]
+  if (entry.kind !== 'file') {
+    ui.toast('info', 'Folder transfer is not supported yet — files only')
+    return
+  }
 
-// Drop-target highlight; `dragover.prevent` on the elements keeps the
-// drop allowed
-function onDragOver(targetEntry: FileEntry | null) {
-  dropTarget.value = targetEntry ? targetEntry.name : '__pane__'
-}
+  const toDir =
+    to.kind === 'ssh'
+      ? dirName ? join(to.path, dirName) : to.path
+      : dirName ? joinLocal(to.path, dirName) : to.path
 
-function onDragLeave(targetEntry: FileEntry | null) {
-  if (dropTarget.value === (targetEntry ? targetEntry.name : '__pane__')) {
-    dropTarget.value = null
+  if (from.kind === 'local' && to.kind === 'ssh' && to.sessionId !== null) {
+    trackUpload(to.sessionId, joinLocal(from.path, entry.name), toDir, entry.name, entry.size)
+    return
+  }
+  if (from.kind === 'ssh' && from.sessionId !== null && to.kind === 'local' && to.path) {
+    trackDownload(from.sessionId, join(from.path, entry.name), toDir, entry.name, entry.size)
+    return
+  }
+  if (from.kind === 'ssh' && to.kind === 'ssh' && from.sessionId !== null && to.sessionId !== null) {
+    if (from.sessionId === to.sessionId) {
+      // Same server: a cheap rename/move
+      const fromPath = join(from.path, entry.name)
+      const toPath = join(toDir, entry.name)
+      if (fromPath !== toPath) {
+        void api
+          .sftpRename(from.sessionId, fromPath, toPath)
+          .then(() => loadPane(fromIdx))
+          .catch((e) => ui.toast('error', `Move failed: ${errorText(e)}`))
+      }
+      return
+    }
+    // Different servers: routed through a temp file in one combined transfer
+    const sessionId = from.sessionId
+    void api
+      .sftpCrossTransfer(sessionId, join(from.path, entry.name), to.sessionId, toDir)
+      .then((id) => {
+        sessions.trackTransfer({
+          id, sessionId, kind: 'upload',
+          fileName: `${entry.name} (${from.hostLabel} → ${to.hostLabel})`,
+          size: entry.size, transferred: 0, done: false,
+        })
+      })
+      .catch((e) => ui.toast('error', `Transfer failed: ${errorText(e)}`))
+    return
+  }
+  if (from.kind === 'local' && to.kind === 'local') {
+    ui.toast('info', 'Local-to-local copy is not supported yet')
   }
 }
 
-// ---- native OS file drop (Explorer → remote pane) ----
+async function uploadPicked(idx: number) {
+  const pane = panes[idx]
+  if (pane.sessionId === null) return
+  const paths = await api.pickFiles('Choose files to upload')
+  if (!paths.length) return
+  for (const p of paths) {
+    const name = p.split(/[\\/]/).pop() ?? 'file'
+    trackUpload(pane.sessionId, p, pane.path, name, 0)
+  }
+}
+
+// ---- context menus per pane ----
+
+function entryMenu(e: MouseEvent, idx: number, entry: FileEntry) {
+  const pane = panes[idx]
+  pane.selected = entry.name
+  const other = panes[1 - idx]
+
+  const items: MenuItem[] = []
+  if (entry.kind === 'dir') {
+    items.push({ label: 'Open', icon: FolderOpen, action: () => void openEntry(idx, entry) })
+  }
+  if (pane.kind === 'ssh') {
+    if (entry.kind === 'file') {
+      const dirLabel = other.kind === 'ssh' ? other.hostLabel : 'Local'
+      items.push({
+        label: `Send to ${dirLabel}`,
+        icon: Download,
+        action: () => transferFile(idx, entry, 1 - idx, null),
+      })
+    }
+    items.push({ label: 'Rename', icon: Pencil, action: () => startRename(idx, entry) })
+    items.push({ label: 'Delete', icon: Trash2, danger: true, action: () => void removeEntry(idx, entry) })
+  } else {
+    if (entry.kind === 'file' && other.kind === 'ssh') {
+      items.push({
+        label: `Upload to ${other.hostLabel || 'remote'}`,
+        icon: Upload,
+        action: () => transferFile(idx, entry, 1 - idx, null),
+      })
+    }
+  }
+  openMenu(e, items)
+}
+
+function bgMenu(e: MouseEvent, idx: number) {
+  const pane = panes[idx]
+  const items: MenuItem[] = []
+  if (pane.kind === 'ssh' && pane.sessionId !== null) {
+    items.push(
+      {
+        label: 'New folder',
+        icon: FilePlus2,
+        action: () => {
+          pane.newFolder = true
+          pane.newFolderName = ''
+        },
+      },
+      { label: 'Upload files…', icon: Upload, action: () => void uploadPicked(idx) },
+    )
+  }
+  items.push(
+    { label: 'Refresh', icon: RefreshCw, action: () => void loadPane(idx) },
+    { label: 'Switch side…', icon: Plug, action: () => openSideSwitcher(e, idx) },
+  )
+  openMenu(e, items)
+}
+
+// ---- native OS file drop (Explorer → pane) ----
 let unlistenDrop: (() => void) | null = null
 
 onMounted(async () => {
+  window.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('pointerup', onPointerUp)
+  window.addEventListener('click', onWindowClick, true)
+
   try {
     localDrives.value = await api.localDrives()
-  } catch (e) {
-    localError.value = errorText(e)
+  } catch {
     localDrives.value = []
   }
-  const firstDrive = localDrives.value[0]
-  if (firstDrive) void localGo(firstDrive)
+  panes[0].path = localDrives.value[0] ?? ''
+  void loadPane(0)
 
-  // Drag-and-drop from the OS delivers absolute file paths via the
-  // webview event; upload them to the current remote folder.
+  // Right pane: prefer an already-connected SSH session
+  const live = sessions.tabs.find((t) => t.status === 'connected' && t.kind === 'ssh')
+  if (live && live.hostId !== null) {
+    void useHost(1, live.hostId)
+  }
+
   unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
     if (event.payload.type !== 'drop') return
-    if (ui.activeView !== 'sftp' || remoteSessionId.value === null) return
+    if (ui.activeView !== 'sftp') return
+    // Map the physical position to a pane
+    const scale = window.devicePixelRatio || 1
+    const el = document.elementFromPoint(
+      event.payload.position.x / scale,
+      event.payload.position.y / scale,
+    )
+    const zone = el?.closest('[data-drop-pane]') as HTMLElement | null
+    const idx = zone ? Number(zone.dataset.dropPane) : 1
+    const pane = panes[idx]
+    if (pane.kind !== 'ssh' || pane.sessionId === null) {
+      ui.toast('info', 'Drop files on an SSH pane to upload')
+      return
+    }
     for (const path of event.payload.paths) {
       const name = path.split(/[\\/]/).pop() ?? 'file'
-      trackUpload(path, name, 0)
+      trackUpload(pane.sessionId, path, pane.path, name, 0)
     }
   })
 
-  // Preselect a connected session if there is exactly one
-  if (connectedChoices.value.length === 1) {
-    pickConnected(connectedChoices.value[0].id)
-  }
+  watchSessions()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('pointermove', onPointerMove)
+  window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('click', onWindowClick, true)
   unlistenDrop?.()
 })
 </script>
 
 <template>
   <div class="sftp-view">
-    <!-- Local pane -->
-    <section class="pane">
+    <section
+      v-for="(pane, idx) in panes"
+      :key="idx"
+      class="pane"
+      :class="{ 'drop-here': hoverDrop?.paneIdx === idx && hoverDrop?.name === null }"
+    >
       <header class="pane-header">
-        <span class="pane-title">Local</span>
-        <input v-model="localFilter" class="pane-filter" type="text" placeholder="Filter" spellcheck="false" aria-label="Filter local files" />
+        <button class="side-switcher" title="Switch this side" @click="openSideSwitcher($event, idx)">
+          <MonitorSmartphone v-if="pane.kind === 'local'" :size="14" :stroke-width="1.5" aria-hidden="true" />
+          <Server v-else :size="14" :stroke-width="1.5" aria-hidden="true" />
+          <span class="side-label text-ellipsis">{{ paneTitle(pane) }}</span>
+          <ChevronDown :size="12" :stroke-width="2" aria-hidden="true" />
+        </button>
+        <button
+          v-if="pane.kind === 'local'"
+          class="crumb-btn drive-btn"
+          title="Go to drive"
+          aria-label="Go to drive"
+          @click="openDriveMenu($event, idx)"
+        >
+          <HardDrive :size="14" :stroke-width="1.5" aria-hidden="true" />
+        </button>
+        <input v-model="pane.filter" class="pane-filter" type="text" placeholder="Filter" spellcheck="false" :aria-label="`Filter pane ${idx + 1}`" />
       </header>
 
-      <nav class="crumbs" aria-label="Local path">
-        <button v-if="localParent(localPath)" class="crumb-btn" aria-label="Up" title="Up" @click="localUp">
-          <ArrowUp :size="14" :stroke-width="1.5" aria-hidden="true" />
-        </button>
-        <button class="crumb-btn" aria-label="Refresh" title="Refresh" @click="localGo(localPath)">
-          <RefreshCw :size="14" :stroke-width="1.5" aria-hidden="true" />
-        </button>
-        <template v-for="(c, i) in localCrumbs" :key="c.path">
-          <button v-if="i < localCrumbs.length - 1" class="crumb text-ellipsis" @click="localGo(c.path)">
-            {{ c.name }}
-          </button>
-          <span v-else class="crumb current text-ellipsis" aria-current="location">{{ c.name }}</span>
-          <span v-if="i < localCrumbs.length - 1" class="crumb-sep">›</span>
-        </template>
-      </nav>
-
-      <div
-        class="file-list"
-        role="listbox"
-        aria-label="Local files"
-        :class="{ 'drop-here': dropTarget === '__pane__' }"
-        @dragover.prevent="onDragOver(null)"
-        @dragleave="onDragLeave(null)"
-        @drop="onDrop($event, 'local', null)"
-        @contextmenu.prevent="localBgMenu"
-      >
-        <div v-if="localLoading && !localEntries.length" class="pane-state">
-          <span class="spinner" aria-hidden="true"></span>
-        </div>
-        <div v-else-if="localError" class="pane-state">
-          <p class="pane-error mono">{{ localError }}</p>
-          <button class="btn btn-secondary" @click="localGo(localPath)">Retry</button>
-        </div>
-
-        <template v-else>
-          <div
-            v-for="entry in localFiltered"
-            :key="entry.name"
-            class="file-row"
-            :class="{ selected: localSelected === entry.name, 'drop-here': dropTarget === entry.name }"
-            role="option"
-            :aria-selected="localSelected === entry.name"
-            draggable="true"
-            @click="localSelected = entry.name"
-            @dblclick="localOpen(entry)"
-            @dragstart="onDragStart($event, 'local', entry)"
-            @dragend="onDragEnd"
-            @dragover.prevent.stop="onDragOver(entry)"
-            @dragleave.stop="onDragLeave(entry)"
-            @drop.stop="onDrop($event, 'local', entry)"
-            @contextmenu.prevent.stop="localEntryMenu($event, entry)"
-          >
-            <component :is="iconFor(entry.kind)" :size="15" :stroke-width="1.5" :class="['file-icon', entry.kind]" aria-hidden="true" />
-            <span class="file-name text-ellipsis">{{ entry.name }}</span>
-            <span class="file-size">{{ formatSize(entry) }}</span>
-            <span class="file-kind">{{ kindLabel(entry) }}</span>
-          </div>
-        </template>
-      </div>
-    </section>
-
-    <!-- Remote pane -->
-    <section class="pane remote">
-      <header class="pane-header">
-        <span class="pane-title" :title="remoteHostLabel">
-          {{ remoteSessionId !== null ? remoteHostLabel || 'Remote' : 'Remote' }}
-        </span>
-        <input v-model="remoteFilter" class="pane-filter" type="text" placeholder="Filter" spellcheck="false" aria-label="Filter remote files" />
-      </header>
-
-      <!-- Host picker: search all saved hosts, click to connect + open -->
-      <div v-if="remoteSessionId === null" class="picker">
+      <!-- SSH side without a session: inline host selector -->
+      <div v-if="pane.kind === 'ssh' && pane.sessionId === null" class="picker">
         <div class="picker-search">
           <Search :size="15" :stroke-width="1.5" aria-hidden="true" />
-          <input
-            v-model="pickerQuery"
-            class="picker-input"
-            type="text"
-            placeholder="Select a host to browse its files…"
-            spellcheck="false"
-            aria-label="Select host"
-          />
+          <input v-model="pane.selectorQuery" class="picker-input" type="text" placeholder="Select a host to browse its files…" spellcheck="false" :aria-label="`Select host for pane ${idx + 1}`" />
         </div>
         <div class="picker-list">
-          <div v-if="!pickerResults.length" class="pane-state">
-            <p>No hosts match. Add one in Hosts first.</p>
+          <div v-if="!hosts.hosts.length" class="pane-state">
+            <p>No hosts yet — add one in Hosts first.</p>
           </div>
           <button
-            v-for="h in pickerResults"
+            v-for="h in hosts.hosts.filter((x) =>
+              !pane.selectorQuery.trim() ||
+              x.label.toLowerCase().includes(pane.selectorQuery.trim().toLowerCase()) ||
+              x.address.toLowerCase().includes(pane.selectorQuery.trim().toLowerCase())
+            )"
             :key="h.id"
             class="picker-row"
-            @click="pickHost(h.id)"
+            @click="useHost(idx, h.id)"
           >
             <OsAvatar :label="h.label" :os="h.os" :size="32" />
             <span class="picker-text">
@@ -750,39 +715,45 @@ onUnmounted(() => {
       </div>
 
       <template v-else>
-        <nav class="crumbs" aria-label="Remote path">
-          <button class="crumb-btn" aria-label="Up" title="Up" @click="remoteGo(remoteParent(remotePath))">
+        <nav class="crumbs" :aria-label="`Pane ${idx + 1} path`">
+          <button class="crumb-btn" aria-label="Up" title="Up" @click="paneUp(idx)">
             <ArrowUp :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
-          <button class="crumb-btn" aria-label="Refresh" title="Refresh" @click="openRemote">
+          <button class="crumb-btn" aria-label="Refresh" title="Refresh" @click="loadPane(idx)">
             <RefreshCw :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
-          <button class="crumb-btn" aria-label="New folder" title="New folder" @click="remoteNewFolder = true; remoteNewFolderName = ''">
+          <button
+            v-if="pane.kind === 'ssh'"
+            class="crumb-btn"
+            aria-label="New folder"
+            title="New folder"
+            @click="pane.newFolder = true; pane.newFolderName = ''"
+          >
             <FilePlus2 :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
-          <template v-for="(c, i) in remoteCrumbs" :key="c.path">
-            <button v-if="i < remoteCrumbs.length - 1" class="crumb text-ellipsis" @click="remoteGo(c.path)">
+          <template v-for="(c, i) in paneCrumbs(pane)" :key="c.path">
+            <button v-if="i < paneCrumbs(pane).length - 1" class="crumb text-ellipsis" @click="loadPane(idx, c.path)">
               {{ c.name }}
             </button>
             <span v-else class="crumb current text-ellipsis" aria-current="location">{{ c.name }}</span>
-            <span v-if="i < remoteCrumbs.length - 1" class="crumb-sep">›</span>
+            <span v-if="i < paneCrumbs(pane).length - 1" class="crumb-sep">›</span>
           </template>
         </nav>
 
-        <div v-if="remoteNewFolder" class="inline-form">
+        <div v-if="pane.newFolder" class="inline-form">
           <input
-            v-model="remoteNewFolderName"
+            v-model="pane.newFolderName"
             class="field-input mono"
             type="text"
             placeholder="folder name"
             spellcheck="false"
-            @keydown.enter="remoteMkdir"
-            @keydown.esc="remoteNewFolder = false"
+            @keydown.enter="mkdir(idx)"
+            @keydown.esc="pane.newFolder = false"
           />
-          <button class="btn-icon" aria-label="Create folder" @click="remoteMkdir">
+          <button class="btn-icon" aria-label="Create folder" @click="mkdir(idx)">
             <Check :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
-          <button class="btn-icon" aria-label="Cancel" @click="remoteNewFolder = false">
+          <button class="btn-icon" aria-label="Cancel" @click="pane.newFolder = false">
             <X :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
         </div>
@@ -790,70 +761,64 @@ onUnmounted(() => {
         <div
           class="file-list"
           role="listbox"
-          aria-label="Remote files"
-          :class="{ 'drop-here': dropTarget === '__pane__' }"
-          @dragover.prevent="onDragOver(null)"
-          @dragleave="onDragLeave(null)"
-          @drop="onDrop($event, 'remote', null)"
-          @contextmenu.prevent="remoteBgMenu"
+          :aria-label="`Pane ${idx + 1} files`"
+          :data-drop-pane="idx"
+          @contextmenu.prevent="bgMenu($event, idx)"
         >
-          <div v-if="remoteLoading && !remoteEntries.length" class="pane-state">
+          <div v-if="pane.loading && !pane.entries.length" class="pane-state">
             <span class="spinner" aria-hidden="true"></span>
           </div>
-          <div v-else-if="remoteError" class="pane-state">
-            <p class="pane-error mono">{{ remoteError }}</p>
-            <button class="btn btn-secondary" @click="openRemote">Retry</button>
+          <div v-else-if="pane.error" class="pane-state">
+            <p class="pane-error mono">{{ pane.error }}</p>
+            <button class="btn btn-secondary" @click="loadPane(idx)">Retry</button>
           </div>
-          <div v-else-if="!remoteFiltered.length" class="pane-state">
-            <p>Empty folder — right-click to create one, or drop files here</p>
+          <div v-else-if="!sortedFiltered(pane).length" class="pane-state">
+            <p>Empty — right-click for actions, or drop files here</p>
           </div>
 
           <template v-else>
             <div
-              v-for="entry in remoteFiltered"
+              v-for="entry in sortedFiltered(pane)"
               :key="entry.name"
               class="file-row"
-              :class="{ selected: remoteSelected === entry.name, 'drop-here': dropTarget === entry.name }"
+              :class="{
+                selected: pane.selected === entry.name,
+                'drop-here': hoverDrop?.paneIdx === idx && hoverDrop?.name === entry.name,
+              }"
               role="option"
-              :aria-selected="remoteSelected === entry.name"
-              draggable="true"
-              @click="remoteSelected = entry.name"
-              @dblclick="entry.kind === 'dir' && remoteGo(join(remotePath, entry.name))"
-              @dragstart="onDragStart($event, 'remote', entry)"
-              @dragend="onDragEnd"
-              @dragover.prevent.stop="onDragOver(entry)"
-              @dragleave.stop="onDragLeave(entry)"
-              @drop.stop="onDrop($event, 'remote', entry)"
-              @contextmenu.prevent.stop="remoteEntryMenu($event, entry)"
+              :aria-selected="pane.selected === entry.name"
+              :data-drop-name="entry.kind === 'dir' ? entry.name : undefined"
+              :data-drop-kind="entry.kind"
+              @pointerdown="onRowPointerDown($event, idx, entry)"
+              @click="pane.selected = entry.name"
+              @dblclick="openEntry(idx, entry)"
+              @contextmenu.prevent.stop="entryMenu($event, idx, entry)"
             >
-              <template v-if="remoteRenaming === entry.name">
+              <template v-if="pane.renaming === entry.name">
                 <component :is="iconFor(entry.kind)" :size="15" :stroke-width="1.5" aria-hidden="true" />
                 <input
-                  v-model="remoteRenameValue"
+                  v-model="pane.renameValue"
                   class="field-input mono rename-input"
                   spellcheck="false"
                   autofocus
-                  @keydown.enter="remoteCommitRename"
-                  @keydown.esc="remoteRenaming = null"
-                  @blur="remoteCommitRename"
+                  @keydown.enter="commitRename(idx)"
+                  @keydown.esc="pane.renaming = null"
+                  @blur="commitRename(idx)"
                 />
               </template>
               <template v-else>
                 <component :is="iconFor(entry.kind)" :size="15" :stroke-width="1.5" :class="['file-icon', entry.kind]" aria-hidden="true" />
                 <span class="file-name">
                   <span class="text-ellipsis">{{ entry.name }}</span>
-                  <span v-if="entry.permissions !== null" class="perm mono">{{ (entry.permissions >>> 0).toString(8).padStart(4, '0') }}</span>
+                  <span v-if="pane.kind === 'ssh' && entry.permissions !== null" class="perm mono">{{ (entry.permissions >>> 0).toString(8).padStart(4, '0') }}</span>
                 </span>
                 <span class="file-size">{{ formatSize(entry) }}</span>
                 <span class="file-kind">{{ kindLabel(entry) }}</span>
-                <span class="file-actions" @click.stop>
-                  <button v-if="entry.kind === 'file'" class="btn-icon" :aria-label="`Download ${entry.name}`" title="Download to local pane" @click="downloadSelected">
-                    <Download :size="13" :stroke-width="1.5" aria-hidden="true" />
-                  </button>
-                  <button class="btn-icon" :aria-label="`Rename ${entry.name}`" title="Rename" @click="startRename(entry)">
+                <span v-if="pane.kind === 'ssh'" class="file-actions" @click.stop>
+                  <button class="btn-icon" :aria-label="`Rename ${entry.name}`" title="Rename" @click="startRename(idx, entry)">
                     <Pencil :size="13" :stroke-width="1.5" aria-hidden="true" />
                   </button>
-                  <button class="btn-icon file-delete" :aria-label="`Delete ${entry.name}`" title="Delete" @click="remoteRemove(entry)">
+                  <button class="btn-icon file-delete" :aria-label="`Delete ${entry.name}`" title="Delete" @click="removeEntry(idx, entry)">
                     <Trash2 :size="13" :stroke-width="1.5" aria-hidden="true" />
                   </button>
                 </span>
@@ -861,49 +826,37 @@ onUnmounted(() => {
             </div>
           </template>
         </div>
-
-        <!-- Transfer action + transfers -->
-        <div class="remote-foot">
-          <button
-            class="btn btn-primary upload-btn"
-            :disabled="!selectedLocalEntry || selectedLocalEntry.kind !== 'file'"
-            :title="selectedLocalEntry ? `Upload ${selectedLocalEntry.name}` : 'Select a file in the local pane first (or drag it here)'"
-            @click="uploadSelected"
-          >
-            <Upload :size="14" :stroke-width="1.5" aria-hidden="true" />
-            Upload to {{ remotePath === '/' ? '/' : remotePath.split('/').pop() }}
-          </button>
-
-          <div v-if="sessions.transfers.filter((t) => t.sessionId === remoteSessionId).length" class="transfers">
-            <div v-for="t in sessions.transfers.filter((t) => t.sessionId === remoteSessionId)" :key="t.id" class="transfer">
-              <div class="transfer-row">
-                <span class="transfer-kind" :class="t.kind">{{ t.kind === 'upload' ? '↑' : '↓' }}</span>
-                <span class="transfer-name text-ellipsis">{{ t.fileName }}</span>
-                <span v-if="!t.done && !t.error" class="spinner small" aria-hidden="true"></span>
-                <button class="btn-icon" :aria-label="t.done || t.error ? 'Dismiss' : 'Cancel transfer'" @click="t.done || t.error ? sessions.removeTransfer(t.id) : sessions.cancelTransfer(t.id)">
-                  <X :size="12" :stroke-width="1.5" aria-hidden="true" />
-                </button>
-              </div>
-              <div v-if="!t.error" class="transfer-bar" role="progressbar" :aria-valuenow="Math.round((t.transferred / Math.max(t.size, 1)) * 100)" aria-valuemin="0" aria-valuemax="100">
-                <div class="transfer-fill" :class="{ indeterminate: !t.done && t.size === 0, complete: t.done }" :style="{ width: t.size ? `${(t.transferred / t.size) * 100}%` : undefined }"></div>
-              </div>
-              <div class="transfer-meta">
-                <span v-if="t.error" class="transfer-error">{{ t.error }}</span>
-                <span v-else-if="t.done" class="transfer-done">Done</span>
-              </div>
-            </div>
-          </div>
-        </div>
       </template>
     </section>
 
-    <ContextMenu
-      v-if="menu"
-      :x="menu.x"
-      :y="menu.y"
-      :items="menu.items"
-      @close="menu = null"
-    />
+    <!-- Transfers strip (all directions) -->
+    <div v-if="sessions.transfers.length" class="transfers-strip">
+      <div v-for="t in sessions.transfers" :key="t.id" class="transfer">
+        <div class="transfer-row">
+          <span class="transfer-kind" :class="t.kind">{{ t.kind === 'upload' ? '↑' : '↓' }}</span>
+          <span class="transfer-name text-ellipsis">{{ t.fileName }}</span>
+          <span v-if="!t.done && !t.error" class="spinner small" aria-hidden="true"></span>
+          <button class="btn-icon" :aria-label="t.done || t.error ? 'Dismiss' : 'Cancel transfer'" @click="t.done || t.error ? sessions.removeTransfer(t.id) : sessions.cancelTransfer(t.id)">
+            <X :size="12" :stroke-width="1.5" aria-hidden="true" />
+          </button>
+        </div>
+        <div v-if="!t.error" class="transfer-bar" role="progressbar" :aria-valuenow="Math.round((t.transferred / Math.max(t.size, 1)) * 100)" aria-valuemin="0" aria-valuemax="100">
+          <div class="transfer-fill" :class="{ indeterminate: !t.done && t.size === 0, complete: t.done }" :style="{ width: t.size ? `${(t.transferred / t.size) * 100}%` : undefined }"></div>
+        </div>
+        <div class="transfer-meta">
+          <span v-if="t.error" class="transfer-error">{{ t.error }}</span>
+          <span v-else-if="t.done" class="transfer-done">Done</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Drag ghost -->
+    <div v-if="drag?.active" class="drag-ghost" :style="{ left: `${drag.x + 12}px`, top: `${drag.y + 12}px` }">
+      <FileIcon :size="12" :stroke-width="1.5" aria-hidden="true" />
+      {{ drag.entry.name }}
+    </div>
+
+    <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" :items="menu.items" @close="menu = null" />
   </div>
 </template>
 
@@ -912,6 +865,7 @@ onUnmounted(() => {
   display: flex;
   height: 100%;
   min-height: 0;
+  position: relative;
 }
 
 .pane {
@@ -922,32 +876,60 @@ onUnmounted(() => {
   border-right: 1px solid var(--border);
 }
 
-.pane.remote {
+.pane:last-of-type {
   border-right: none;
+}
+
+.pane.drop-here {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  background: var(--accent-bg);
 }
 
 .pane-header {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
-.pane-title {
+.side-switcher {
   display: flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
+  max-width: 220px;
+  padding: 5px 9px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-1);
+  transition: border-color var(--dur-hover) ease, background-color var(--dur-hover) ease;
+}
+
+.side-switcher:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.side-label {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-btn {
+  flex-shrink: 0;
 }
 
 .pane-filter {
   margin-left: auto;
-  width: 140px;
+  width: 120px;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -960,7 +942,7 @@ onUnmounted(() => {
   border-color: var(--accent);
 }
 
-/* Host picker */
+/* Inline host selector */
 .picker {
   flex: 1;
   display: flex;
@@ -1099,13 +1081,6 @@ button.crumb:hover {
   padding: var(--space-1);
 }
 
-.file-list.drop-here {
-  outline: 2px dashed var(--accent);
-  outline-offset: -4px;
-  border-radius: var(--radius-md);
-  background: var(--accent-bg);
-}
-
 .file-row {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 80px 64px auto;
@@ -1218,25 +1193,23 @@ button.crumb:hover {
   font-size: var(--text-sm);
 }
 
-.remote-foot {
-  border-top: 1px solid var(--border);
+/* Transfers strip spans the whole view bottom */
+.transfers-strip {
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: var(--space-2);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  max-height: 200px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  max-height: 180px;
   overflow-y: auto;
-}
-
-.upload-btn {
-  align-self: flex-start;
-}
-
-.transfers {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
 }
 
 .transfer-row {
@@ -1297,4 +1270,25 @@ button.crumb:hover {
 
 .transfer-done { color: var(--success); }
 .transfer-error { color: var(--danger); user-select: text; word-break: break-all; }
+
+/* Pointer-drag ghost */
+.drag-ghost {
+  position: fixed;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--text-sm);
+  color: var(--text-1);
+  pointer-events: none;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>

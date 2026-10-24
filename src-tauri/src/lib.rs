@@ -69,6 +69,7 @@ pub fn run() {
             commands::sftp::sftp_upload,
             commands::sftp::sftp_download,
             commands::sftp::sftp_cancel_transfer,
+            commands::sftp::sftp_cross_transfer,
             commands::snippets::list_snippets,
             commands::snippets::upsert_snippet,
             commands::snippets::delete_snippet,

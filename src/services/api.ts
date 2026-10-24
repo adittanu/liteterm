@@ -104,6 +104,13 @@ export const api = {
     invoke('sftp_download', { sessionId, remotePath, localPath }),
   sftpCancelTransfer: (transferId: number): Promise<void> =>
     invoke('sftp_cancel_transfer', { transferId }),
+  sftpCrossTransfer: (
+    srcSessionId: number,
+    srcPath: string,
+    dstSessionId: number,
+    dstDir: string,
+  ): Promise<number> =>
+    invoke('sftp_cross_transfer', { srcSessionId, srcPath, dstSessionId, dstDir }),
 
   // ---- settings ----
   getSettings: (): Promise<AppSettings> => invoke('get_settings'),
