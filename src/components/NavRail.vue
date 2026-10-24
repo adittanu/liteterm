@@ -66,7 +66,6 @@ function isActive(id: ViewId): boolean {
   width: var(--rail-width);
   flex-shrink: 0;
   padding: var(--space-3) var(--space-2);
-  border-right: 1px solid var(--border);
   overflow-y: auto;
   transition: width 180ms var(--ease-out);
 }

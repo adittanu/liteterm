@@ -62,7 +62,7 @@ function closeSession(sessionId: number) {
 </script>
 
 <template>
-  <header class="topbar material">
+  <header class="topbar">
     <button
       class="topbar-btn rail-toggle"
       :aria-label="ui.railCollapsed ? 'Expand navigation' : 'Collapse navigation'"
@@ -98,12 +98,6 @@ function closeSession(sessionId: number) {
         </template>
         <template v-else>
           <span
-            class="status-dot"
-            :class="tab.status === 'connected' ? 'connected' : tab.status === 'error' ? 'error' : tab.status === 'closed' ? 'idle' : 'connecting'"
-          ></span>
-          <TerminalSquare v-if="tab.status === 'connected'" :size="12" :stroke-width="1.5" class="tab-ico" aria-hidden="true" />
-          <span class="top-tab-label text-ellipsis">{{ tab.label }}</span>
-          <span
             class="top-tab-close"
             role="button"
             :aria-label="`Close ${tab.label}`"
@@ -111,6 +105,14 @@ function closeSession(sessionId: number) {
           >
             <X :size="11" :stroke-width="2" aria-hidden="true" />
           </span>
+          <span class="top-tab-label text-ellipsis">{{ tab.label }}</span>
+          <TerminalSquare
+            :size="13"
+            :stroke-width="1.5"
+            class="tab-ico"
+            :class="{ live: tab.status === 'connected' }"
+            aria-hidden="true"
+          />
         </template>
       </div>
 
@@ -156,8 +158,8 @@ function closeSession(sessionId: number) {
   align-items: center;
   height: var(--topbar-height);
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.04);
+  /* seamless with the content below — no border, no raised material */
+  background: var(--bg);
 }
 
 .topbar-btn {
@@ -196,11 +198,10 @@ function closeSession(sessionId: number) {
 .topbar-tabs {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 0 var(--space-1);
 }
 
 .topbar-tabs::-webkit-scrollbar {
@@ -210,14 +211,14 @@ function closeSession(sessionId: number) {
 .top-tab {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 32px;
-  padding: 0 11px;
-  max-width: 190px;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 8px;
+  max-width: 200px;
   min-width: 84px;
   font-size: var(--text-base);
   color: var(--text-2);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   position: relative;
   cursor: pointer;
   user-select: none;
@@ -232,22 +233,15 @@ function closeSession(sessionId: number) {
 
 .top-tab.active {
   color: var(--text-1);
-  background: var(--bg-active);
-}
-
-/* Active indicator sits inside the pill */
-.top-tab.active::after {
-  content: '';
-  position: absolute;
-  bottom: 3px;
-  left: 11px;
-  right: 11px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--accent);
+  background: var(--bg-surface-2);
 }
 
 .tab-ico {
+  color: var(--text-4);
+  flex-shrink: 0;
+}
+
+.tab-ico.live {
   color: var(--success);
 }
 
@@ -260,17 +254,18 @@ function closeSession(sessionId: number) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 17px;
-  height: 17px;
-  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
   color: var(--text-4);
-  opacity: 0;
-  transition: opacity var(--dur-hover) ease, background-color var(--dur-hover) ease;
+  flex-shrink: 0;
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
 }
 
 .top-tab:hover .top-tab-close,
 .top-tab.active .top-tab-close {
   opacity: 1;
+  color: var(--text-3);
 }
 
 .top-tab-close:hover {
