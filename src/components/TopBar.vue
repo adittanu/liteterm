@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { Menu, Plus, X, FolderTree, TerminalSquare } from 'lucide-vue-next'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
@@ -11,6 +12,29 @@ const ui = useUiStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const appWindow = getCurrentWindow()
+
+// Maximize glyph flips to "restore" while the window is maximized
+const isMaximized = ref(false)
+let unlistenResize: (() => void) | null = null
+
+async function syncMaximized() {
+  isMaximized.value = await appWindow.isMaximized()
+}
+
+onMounted(() => {
+  void syncMaximized()
+  void appWindow.onResized(() => void syncMaximized()).then((off) => {
+    unlistenResize = off
+  })
+})
+
+onUnmounted(() => {
+  unlistenResize?.()
+})
+
+function toggleMaximize() {
+  void appWindow.toggleMaximize()
+}
 
 const tabItems = computed(() => {
   const sftp = { kind: 'sftp' as const, id: 'sftp', label: 'SFTP', status: 'idle' }
@@ -103,8 +127,17 @@ function closeSession(sessionId: number) {
           <path d="M2 6h8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
         </svg>
       </button>
-      <button class="win-btn" aria-label="Maximize" @click="appWindow.toggleMaximize()">
-        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+      <button
+        class="win-btn"
+        :aria-label="isMaximized ? 'Restore' : 'Maximize'"
+        @click="toggleMaximize()"
+      >
+        <!-- Restore: two overlapping squares; Maximize: single square -->
+        <svg v-if="isMaximized" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <rect x="1.75" y="3.75" width="6.5" height="6.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.25" />
+          <path d="M4 2.25h4a2 2 0 0 1 2 2v4.5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+        </svg>
+        <svg v-else width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
           <rect x="2.25" y="2.25" width="7.5" height="7.5" rx="1.75" fill="none" stroke="currentColor" stroke-width="1.25" />
         </svg>
       </button>
@@ -120,7 +153,7 @@ function closeSession(sessionId: number) {
 <style scoped>
 .topbar {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   height: var(--topbar-height);
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
@@ -131,11 +164,11 @@ function closeSession(sessionId: number) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  align-self: stretch;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
   color: var(--text-3);
-  border-radius: var(--radius-sm);
-  margin: 4px 2px;
   transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
 }
 
@@ -162,10 +195,12 @@ function closeSession(sessionId: number) {
 
 .topbar-tabs {
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  padding: 0 var(--space-1);
 }
 
 .topbar-tabs::-webkit-scrollbar {
@@ -176,16 +211,17 @@ function closeSession(sessionId: number) {
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 100%;
-  padding: 0 12px;
+  height: 32px;
+  padding: 0 11px;
   max-width: 190px;
   min-width: 84px;
   font-size: var(--text-base);
   color: var(--text-2);
-  border-right: 1px solid var(--border);
+  border-radius: var(--radius-md);
   position: relative;
   cursor: pointer;
   user-select: none;
+  flex-shrink: 0;
   transition: color var(--dur-hover) ease, background-color var(--dur-hover) ease;
 }
 
@@ -196,16 +232,18 @@ function closeSession(sessionId: number) {
 
 .top-tab.active {
   color: var(--text-1);
-  background: var(--bg-hover);
+  background: var(--bg-active);
 }
 
+/* Active indicator sits inside the pill */
 .top-tab.active::after {
   content: '';
   position: absolute;
-  bottom: -1px;
-  left: 0;
-  right: 0;
+  bottom: 3px;
+  left: 11px;
+  right: 11px;
   height: 2px;
+  border-radius: 1px;
   background: var(--accent);
 }
 
@@ -252,8 +290,10 @@ function closeSession(sessionId: number) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 100%;
+  width: 40px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  margin-right: 2px;
   color: var(--text-3);
   transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
 }
