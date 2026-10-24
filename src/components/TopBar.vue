@@ -99,18 +99,18 @@ function closeSession(sessionId: number) {
 
     <div class="window-controls">
       <button class="win-btn" aria-label="Minimize" @click="appWindow.minimize()">
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M0 5h10" stroke="currentColor" stroke-width="1" />
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M2 6h8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
         </svg>
       </button>
       <button class="win-btn" aria-label="Maximize" @click="appWindow.toggleMaximize()">
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <rect x="0.5" y="0.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1" />
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <rect x="2.25" y="2.25" width="7.5" height="7.5" rx="1.75" fill="none" stroke="currentColor" stroke-width="1.25" />
         </svg>
       </button>
       <button class="win-btn win-close" aria-label="Close" @click="appWindow.close()">
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1" />
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
         </svg>
       </button>
     </div>
@@ -149,12 +149,15 @@ function closeSession(sessionId: number) {
 }
 
 .brand-icon {
-  height: 20px;
-  width: 20px;
-  border-radius: 5px;
-  margin: 0 6px 0 2px;
+  height: 16px;
+  width: 16px;
+  border-radius: 4px;
+  margin: 0 7px 0 3px;
+  align-self: center;
   flex-shrink: 0;
   user-select: none;
+  /* neutral 1px outline keeps the dark tile from floating on light themes */
+  box-shadow: 0 0 0 1px var(--border);
 }
 
 .topbar-tabs {
