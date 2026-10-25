@@ -20,3 +20,6 @@ Thumbs.db
 .zcode/
 *.log
 /chk-*.png
+
+# Shell history accidentally dropped in the repo dir
+.bash_history

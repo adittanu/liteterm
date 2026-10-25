@@ -9,6 +9,7 @@ import { useCredentialsStore } from '../stores/credentials'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
 import { api } from '../services/api'
+import { isIpv4 } from '../utils/parseTarget'
 import type { AuthMethod } from '../types'
 
 const dialogs = useDialogsStore()
@@ -20,7 +21,12 @@ const ui = useUiStore()
 const open = computed(() => dialogs.hostDialog.open)
 const editing = computed(() => dialogs.hostDialog.host)
 const connectAfter = computed(() => dialogs.hostDialog.connectAfter && !editing.value)
-const resolveHint = computed(() => dialogs.hostDialog.prefill?.ips ?? [])
+const resolveHint = computed(() => {
+  const ips = dialogs.hostDialog.prefill?.ips ?? []
+  const addr = form.address.trim().toLowerCase()
+  // Once the address holds the resolved IP itself, the hint is just noise
+  return ips.filter((ip) => ip !== addr)
+})
 
 // '' = inline (no credential) · 'new' = create one · '<id>' = use existing
 const credentialChoice = ref<string>('')
@@ -116,8 +122,11 @@ watch(open, (o) => {
     const prefill = dialogs.hostDialog.prefill
     // Name defaults to the hostname; username/address stay in their own
     // fields so they don't get merged into the label
-    form.label = prefill?.address ?? ''
-    form.address = prefill?.address ?? ''
+    const typed = prefill?.address ?? ''
+    form.label = typed
+    // Quick connect saves the resolved IP, not the domain — the typed
+    // domain stays as the label
+    form.address = prefill?.ips?.[0] ?? typed
     form.port = prefill ? String(prefill.port) : '22'
     form.group_id = dialogs.hostDialog.groupId
     form.username = prefill?.username ?? ''
@@ -128,6 +137,16 @@ watch(open, (o) => {
     form.key_passphrase = ''
     form.cred_name = ''
     credentialChoice.value = ''
+    // Resolution can still be in flight when the dialog opens; fill the
+    // IP in once it lands unless the address was already edited
+    if (prefill && !prefill.ips?.length && typed && !isIpv4(typed)) {
+      void api
+        .resolveHost(typed)
+        .then((ips) => {
+          if (ips.length && form.address === typed) form.address = ips[0]
+        })
+        .catch(() => {})
+    }
   }
   errors.label = errors.address = errors.port = errors.username = errors.key_path = errors.cred_name = undefined
 })
