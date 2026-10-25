@@ -441,16 +441,18 @@ async function mkdir(idx: number) {
 async function removeEntry(idx: number, entry: FileEntry) {
   const pane = panes[idx]
   if (pane.sessionId === null) return
-  const ok = await dialogs.confirm({
-    title: entry.kind === 'dir' ? `Delete folder “${entry.name}”?` : `Delete “${entry.name}”?`,
-    message:
-      entry.kind === 'dir'
-        ? 'The folder and everything inside it will be deleted on the server. This cannot be undone.'
-        : 'This file will be deleted on the server. This cannot be undone.',
-    confirmLabel: 'Delete',
-    danger: true,
-  })
-  if (!ok) return
+  if (ui.settings.confirmDeleteFile) {
+    const ok = await dialogs.confirm({
+      title: entry.kind === 'dir' ? `Delete folder “${entry.name}”?` : `Delete “${entry.name}”?`,
+      message:
+        entry.kind === 'dir'
+          ? 'The folder and everything inside it will be deleted on the server. This cannot be undone.'
+          : 'This file will be deleted on the server. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+  }
   try {
     await api.sftpRemove(pane.sessionId, join(pane.path, entry.name), entry.kind === 'dir')
     await loadPane(idx)

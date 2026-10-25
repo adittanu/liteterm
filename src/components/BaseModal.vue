@@ -7,8 +7,10 @@ withDefaults(
     title: string
     width?: number
     closeOnScrim?: boolean
+    /** Render the slot edge-to-edge (no padding, no scroll) — for shells that manage their own panes */
+    flush?: boolean
   }>(),
-  { width: 480, closeOnScrim: true },
+  { width: 480, closeOnScrim: true, flush: false },
 )
 
 const emit = defineEmits<{ close: [] }>()
@@ -43,7 +45,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
                 <X :size="15" :stroke-width="1.5" aria-hidden="true" />
               </button>
             </header>
-            <div class="modal-body">
+            <div class="modal-body" :class="{ flush }">
               <slot />
             </div>
           </div>
@@ -94,5 +96,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   padding: 0 var(--space-5) var(--space-5);
   overflow-y: auto;
   min-height: 0;
+}
+
+.modal-body.flush {
+  padding: 0;
+  overflow: hidden;
 }
 </style>

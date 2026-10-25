@@ -12,6 +12,7 @@ import KnownHostsView from './views/KnownHostsView.vue'
 import LogsView from './views/LogsView.vue'
 import SftpView from './views/SftpView.vue'
 import HostDialog from './components/HostDialog.vue'
+import GroupDialog from './components/GroupDialog.vue'
 import HostKeyDialog from './components/HostKeyDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import PasswordPromptDialog from './components/PasswordPromptDialog.vue'
@@ -119,6 +120,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
     </div>
 
     <HostDialog />
+    <GroupDialog />
     <HostKeyDialog />
     <ConfirmDialog />
     <PasswordPromptDialog />

@@ -1,6 +1,16 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue'
-import { Sun, MoonStar, MonitorCog, RotateCcw } from 'lucide-vue-next'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import {
+  Sun,
+  MoonStar,
+  MonitorCog,
+  RotateCcw,
+  SlidersHorizontal,
+  Palette,
+  TerminalSquare,
+  Keyboard,
+} from 'lucide-vue-next'
+import { getVersion } from '@tauri-apps/api/app'
 import BaseModal from './BaseModal.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
@@ -18,6 +28,24 @@ import {
 const dialogs = useDialogsStore()
 const ui = useUiStore()
 
+// ---- section navigation ----
+const SECTIONS = [
+  { id: 'general', label: 'General', icon: SlidersHorizontal },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'terminal', label: 'Terminal', icon: TerminalSquare },
+  { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
+] as const
+type SectionId = (typeof SECTIONS)[number]['id']
+const section = ref<SectionId>('general')
+
+const appVersion = ref('')
+onMounted(() => {
+  getVersion()
+    .then((v) => (appVersion.value = v))
+    .catch(() => {})
+})
+
+// ---- terminal ----
 const fontSize = ref(ui.settings.terminalFontSize)
 
 watch(fontSize, (v) => {
@@ -102,99 +130,328 @@ onUnmounted(() => {
   <BaseModal
     v-if="dialogs.showSettings"
     title="Settings"
-    :width="520"
+    :width="700"
+    flush
     @close="dialogs.showSettings = false"
   >
-    <div class="settings">
-      <div class="field">
-        <span class="field-label">Theme</span>
-        <div class="theme-grid" role="radiogroup" aria-label="Theme">
-          <button
-            v-for="t in THEMES"
-            :key="t.id"
-            class="theme-card"
-            role="radio"
-            :aria-checked="ui.settings.theme === t.id"
-            :class="{ on: ui.settings.theme === t.id }"
-            @click="ui.updateSettings({ theme: t.id })"
-          >
-            <span class="theme-preview" :style="{ background: t.swatches[0] }">
-              <span class="sw side" :style="{ background: t.swatches[1] }"></span>
-              <span class="sw text" :style="{ background: t.swatches[2] }"></span>
-              <span class="sw accent" :style="{ background: t.swatches[3] }"></span>
-              <span class="sw status" :style="{ background: t.swatches[4] }"></span>
-            </span>
-            <span class="theme-name">
-              <component :is="iconFor(t.id)" v-if="t.id === 'system' || t.id === 'dark' || t.id === 'light'" :size="11" :stroke-width="1.5" aria-hidden="true" />
-              {{ t.name }}
-            </span>
-          </button>
-        </div>
-      </div>
+    <div class="settings-shell">
+      <nav class="settings-nav" aria-label="Settings sections">
+        <button
+          v-for="s in SECTIONS"
+          :key="s.id"
+          class="nav-item"
+          :class="{ on: section === s.id }"
+          :aria-current="section === s.id ? 'true' : undefined"
+          @click="section = s.id"
+        >
+          <component :is="s.icon" :size="15" :stroke-width="1.5" aria-hidden="true" />
+          <span>{{ s.label }}</span>
+        </button>
+        <span v-if="appVersion" class="nav-version">LiteTerm {{ appVersion }}</span>
+      </nav>
 
-      <div class="field">
-        <label class="field-label" for="set-font">Terminal font size — {{ fontSize }}px</label>
-        <input id="set-font" v-model.number="fontSize" type="range" min="10" max="20" step="1" class="range" />
-      </div>
+      <div class="settings-pane">
+        <Transition name="section" mode="out-in">
+          <!-- ============ General ============ -->
+          <div v-if="section === 'general'" key="general" class="pane-page">
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Auto-fill sudo password</span>
+                <span class="row-desc">
+                  Answer sudo password prompts with the host's saved password (only when the
+                  login user matches).
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :checked="ui.settings.autoSudoPassword"
+                  @change="ui.updateSettings({ autoSudoPassword: ($event.target as HTMLInputElement).checked })"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
 
-      <label class="check">
-        <input
-          type="checkbox"
-          :checked="ui.settings.autoSudoPassword"
-          @change="ui.updateSettings({ autoSudoPassword: ($event.target as HTMLInputElement).checked })"
-        />
-        Auto-fill sudo prompts with the saved password (when the login user matches)
-      </label>
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Confirm file deletion</span>
+                <span class="row-desc">
+                  Ask before deleting files or folders in the SFTP file browser.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :checked="ui.settings.confirmDeleteFile"
+                  @change="ui.updateSettings({ confirmDeleteFile: ($event.target as HTMLInputElement).checked })"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+          </div>
 
-      <div class="field">
-        <span class="field-label">Keyboard shortcuts</span>
-        <div class="kb-groups">
-          <div v-for="g in groups" :key="g" class="kb-group">
-            <span class="kb-group-label">{{ g }}</span>
-            <div v-for="s in shortcutsFor(g)" :key="s.id" class="kb-row">
-              <span class="kb-label">{{ s.label }}</span>
+          <!-- ============ Appearance ============ -->
+          <div v-else-if="section === 'appearance'" key="appearance" class="pane-page">
+            <span class="field-label">Theme</span>
+            <div class="theme-grid" role="radiogroup" aria-label="Theme">
               <button
-                class="kb-key"
-                :class="{
-                  capturing: capturingId === s.id,
-                  error: capturingId === s.id && captureError,
-                }"
-                :aria-label="`Change shortcut for ${s.label}`"
-                @click="startCapture(s.id)"
+                v-for="t in THEMES"
+                :key="t.id"
+                class="theme-card"
+                role="radio"
+                :aria-checked="ui.settings.theme === t.id"
+                :class="{ on: ui.settings.theme === t.id }"
+                @click="ui.updateSettings({ theme: t.id })"
               >
-                <span v-if="capturingId === s.id" class="kb-hint">{{ captureError || 'Press keys…' }}</span>
-                <template v-else>
-                  <kbd v-for="(part, i) in comboFor(s.id, ui.settings).split('+')" :key="i">{{ part }}</kbd>
-                </template>
-              </button>
-              <button
-                v-if="!isDefault(s.id, ui.settings)"
-                class="kb-reset"
-                :aria-label="`Reset ${s.label} to default`"
-                title="Reset to default"
-                @click="resetBinding(s.id)"
-              >
-                <RotateCcw :size="12" :stroke-width="1.5" aria-hidden="true" />
+                <span class="theme-preview" :style="{ background: t.swatches[0] }">
+                  <span class="sw side" :style="{ background: t.swatches[1] }"></span>
+                  <span class="sw text" :style="{ background: t.swatches[2] }"></span>
+                  <span class="sw accent" :style="{ background: t.swatches[3] }"></span>
+                  <span class="sw status" :style="{ background: t.swatches[4] }"></span>
+                </span>
+                <span class="theme-name">
+                  <component
+                    :is="iconFor(t.id)"
+                    v-if="t.id === 'system' || t.id === 'dark' || t.id === 'light'"
+                    :size="11"
+                    :stroke-width="1.5"
+                    aria-hidden="true"
+                  />
+                  {{ t.name }}
+                </span>
               </button>
             </div>
           </div>
-        </div>
+
+          <!-- ============ Terminal ============ -->
+          <div v-else-if="section === 'terminal'" key="terminal" class="pane-page">
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Font size</span>
+                <span class="row-desc">{{ fontSize }} px</span>
+              </div>
+              <input
+                v-model.number="fontSize"
+                type="range"
+                min="10"
+                max="20"
+                step="1"
+                class="range"
+                aria-label="Terminal font size"
+              />
+            </div>
+            <div class="font-preview" :style="{ fontSize: `${fontSize}px` }">
+              user@web-01:~$ systemctl status nginx
+            </div>
+          </div>
+
+          <!-- ============ Shortcuts ============ -->
+          <div v-else key="shortcuts" class="pane-page">
+            <div class="kb-groups">
+              <div v-for="g in groups" :key="g" class="kb-group">
+                <span class="kb-group-label">{{ g }}</span>
+                <div v-for="s in shortcutsFor(g)" :key="s.id" class="kb-row">
+                  <span class="kb-label">{{ s.label }}</span>
+                  <button
+                    class="kb-key"
+                    :class="{
+                      capturing: capturingId === s.id,
+                      error: capturingId === s.id && captureError,
+                    }"
+                    :aria-label="`Change shortcut for ${s.label}`"
+                    @click="startCapture(s.id)"
+                  >
+                    <span v-if="capturingId === s.id" class="kb-hint">{{ captureError || 'Press keys…' }}</span>
+                    <template v-else>
+                      <kbd v-for="(part, i) in comboFor(s.id, ui.settings).split('+')" :key="i">{{ part }}</kbd>
+                    </template>
+                  </button>
+                  <button
+                    v-if="!isDefault(s.id, ui.settings)"
+                    class="kb-reset"
+                    :aria-label="`Reset ${s.label} to default`"
+                    title="Reset to default"
+                    @click="resetBinding(s.id)"
+                  >
+                    <RotateCcw :size="12" :stroke-width="1.5" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Transition>
       </div>
     </div>
   </BaseModal>
 </template>
 
 <style scoped>
-.settings {
+.settings-shell {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+  height: min(460px, calc(100vh - 220px));
+  min-height: 300px;
 }
 
+/* ---- sidebar ---- */
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 168px;
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-2) var(--space-3);
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-2);
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+}
+
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.nav-item.on {
+  background: var(--bg-surface-3);
+  color: var(--text-1);
+}
+
+.nav-version {
+  margin-top: auto;
+  padding: var(--space-2) var(--space-2) 0;
+  font-size: var(--text-xs);
+  color: var(--text-4);
+}
+
+/* ---- content pane ---- */
+.settings-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
+}
+
+.pane-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.section-enter-active,
+.section-leave-active {
+  transition: opacity 120ms ease;
+}
+
+.section-enter-from,
+.section-leave-to {
+  opacity: 0;
+}
+
+/* ---- setting rows ---- */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 12px 0;
+}
+
+.row + .row {
+  border-top: 1px solid var(--border);
+}
+
+.row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.row-label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.row-desc {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  line-height: 1.45;
+}
+
+.row .range {
+  margin-left: auto;
+  width: 180px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+/* ---- toggle switch ---- */
+.switch {
+  position: relative;
+  display: inline-flex;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-left: auto;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch .track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--bg-active);
+  transition: background-color var(--dur-hover) ease;
+}
+
+.switch .thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: oklch(1 0 0);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.3);
+  transition: transform var(--dur-hover) ease;
+}
+
+.switch input:checked ~ .track {
+  background: var(--accent);
+}
+
+.switch input:checked ~ .track .thumb {
+  transform: translateX(16px);
+}
+
+.switch input:focus-visible ~ .track {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* ---- appearance ---- */
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .theme-card {
@@ -219,7 +476,7 @@ onUnmounted(() => {
 .theme-preview {
   position: relative;
   display: block;
-  height: 44px;
+  height: 48px;
   border-radius: var(--radius-sm);
   overflow: hidden;
   border: 1px solid var(--border);
@@ -239,21 +496,21 @@ onUnmounted(() => {
 
 .sw.text {
   left: 24px;
-  top: 10px;
+  top: 11px;
   width: 20px;
   height: 4px;
 }
 
 .sw.accent {
   left: 24px;
-  top: 20px;
+  top: 22px;
   width: 14px;
   height: 4px;
 }
 
 .sw.status {
   left: 24px;
-  top: 30px;
+  top: 33px;
   width: 24px;
   height: 4px;
 }
@@ -272,26 +529,22 @@ onUnmounted(() => {
   color: var(--text-1);
 }
 
-.range {
-  accent-color: var(--accent);
-  width: 100%;
-}
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: var(--text-sm);
+/* ---- terminal preview ---- */
+.font-preview {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
   color: var(--text-2);
-  cursor: pointer;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.check input {
-  accent-color: var(--accent);
-  width: 14px;
-  height: 14px;
-}
-
+/* ---- shortcuts ---- */
 .kb-groups {
   display: flex;
   flex-direction: column;

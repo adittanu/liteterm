@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Host } from '../types'
+import type { Host, HostGroup } from '../types'
 
 interface ConfirmOptions {
   title: string
@@ -22,6 +22,19 @@ export const useDialogsStore = defineStore('dialogs', () => {
   }
   function closeHostDialog() {
     hostDialog.value = { open: false, host: null, groupId: null }
+  }
+
+  // Group create/rename
+  const groupDialog = ref<{ open: boolean; group: HostGroup | null }>({
+    open: false,
+    group: null,
+  })
+
+  function openGroupDialog(group: HostGroup | null = null) {
+    groupDialog.value = { open: true, group }
+  }
+  function closeGroupDialog() {
+    groupDialog.value = { open: false, group: null }
   }
 
   // Confirm (destructive only). resolve(true) only on explicit confirm.
@@ -65,6 +78,9 @@ export const useDialogsStore = defineStore('dialogs', () => {
     hostDialog,
     openHostDialog,
     closeHostDialog,
+    groupDialog,
+    openGroupDialog,
+    closeGroupDialog,
     confirmState,
     confirm,
     answerConfirm,
