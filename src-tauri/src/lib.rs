@@ -88,6 +88,8 @@ pub fn run() {
             commands::notes::set_note_pinned,
             commands::notes::set_note_tags,
             commands::notes::set_note_host,
+            commands::notes::reorder_notes,
+            commands::notes::set_note_archived,
             commands::notes::delete_note,
             commands::forwards::list_forwards,
             commands::forwards::list_active_forwards,

@@ -67,6 +67,9 @@ export const api = {
     invoke('update_note', { id, title, body }),
   setNotePinned: (id: number, pinned: boolean): Promise<Note> =>
     invoke('set_note_pinned', { id, pinned }),
+  reorderNotes: (ids: number[]): Promise<void> => invoke('reorder_notes', { ids }),
+  setNoteArchived: (id: number, archived: boolean): Promise<Note> =>
+    invoke('set_note_archived', { id, archived }),
   setNoteTags: (id: number, tags: string[]): Promise<Note> =>
     invoke('set_note_tags', { id, tags }),
   setNoteHost: (id: number, hostId: number | null): Promise<Note> =>

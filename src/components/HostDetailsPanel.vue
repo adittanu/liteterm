@@ -60,7 +60,7 @@ const jumpOptions = computed<ComboOption[]>(() => [
 // ---- notes linked to this host ----
 const hostNotes = computed(() =>
   notes.notes
-    .filter((n) => n.host_id === props.host.id)
+    .filter((n) => n.host_id === props.host.id && !n.archived)
     .sort((a, b) =>
       a.pinned !== b.pinned ? (a.pinned ? -1 : 1) : a.updated_at < b.updated_at ? 1 : -1,
     ),

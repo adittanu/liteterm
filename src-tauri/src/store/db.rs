@@ -120,6 +120,11 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let _ = conn.execute_batch(
         "ALTER TABLE notes ADD COLUMN host_id INTEGER REFERENCES hosts(id) ON DELETE SET NULL",
     );
+    // notes.sort — manual order position. Existing notes all default to 0,
+    // which leaves the list in its current recency order until it's dragged.
+    let _ = conn.execute_batch("ALTER TABLE notes ADD COLUMN sort INTEGER NOT NULL DEFAULT 0");
+    // notes.archived — hidden from All Notes, listed under Archive
+    let _ = conn.execute_batch("ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
 
     // Schema v2: known_hosts keys off (host, key_type) — servers offer
     // several host key types and OpenSSH known_hosts stores one line per
@@ -486,7 +491,7 @@ pub fn delete_snippet(conn: &Connection, id: i64) -> Result<(), rusqlite::Error>
 
 // ---------- notes ----------
 
-const NOTE_COLS: &str = "id, title, body, pinned, tags, created_at, updated_at, host_id";
+const NOTE_COLS: &str = "id, title, body, pinned, tags, created_at, updated_at, host_id, sort, archived";
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
     let tags_json: String = row.get(4)?;
@@ -499,13 +504,15 @@ fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
         host_id: row.get(7)?,
+        sort: row.get(8)?,
+        archived: row.get::<_, i64>(9)? != 0,
     })
 }
 
-/// Pinned first, then most recently edited.
+/// Pinned first, then manual order, then most recently edited.
 pub fn list_notes(conn: &Connection) -> Result<Vec<Note>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {NOTE_COLS} FROM notes ORDER BY pinned DESC, updated_at DESC, id DESC"
+        "SELECT {NOTE_COLS} FROM notes ORDER BY pinned DESC, sort ASC, updated_at DESC, id DESC"
     ))?;
     let rows = stmt.query_map([], row_to_note)?;
     rows.collect()
@@ -517,9 +524,23 @@ pub fn get_note(conn: &Connection, id: i64) -> Result<Option<Note>, rusqlite::Er
     rows.next().transpose()
 }
 
+/// New notes land at the top of the manual order.
 pub fn create_note(conn: &Connection, title: &str, body: &str) -> Result<Note, rusqlite::Error> {
-    conn.execute("INSERT INTO notes (title, body) VALUES (?1, ?2)", params![title, body])?;
+    conn.execute(
+        "INSERT INTO notes (title, body, sort) VALUES (?1, ?2, (SELECT COALESCE(MIN(sort), 0) - 1 FROM notes))",
+        params![title, body],
+    )?;
     get_note(conn, conn.last_insert_rowid())?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// `ids` is every note, top to bottom; each note's sort becomes its index.
+/// One transaction, so an interrupted save can't leave a half-moved list.
+pub fn reorder_notes(conn: &Connection, ids: &[i64]) -> Result<(), rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    for (i, id) in ids.iter().enumerate() {
+        tx.execute("UPDATE notes SET sort=?2 WHERE id=?1", params![id, i as i64])?;
+    }
+    tx.commit()
 }
 
 pub fn update_note(conn: &Connection, id: i64, title: &str, body: &str) -> Result<Note, rusqlite::Error> {
@@ -533,6 +554,12 @@ pub fn update_note(conn: &Connection, id: i64, title: &str, body: &str) -> Resul
 /// Pinning is an organizational action — it does not touch updated_at.
 pub fn set_note_pinned(conn: &Connection, id: i64, pinned: bool) -> Result<Note, rusqlite::Error> {
     conn.execute("UPDATE notes SET pinned=?2 WHERE id=?1", params![id, pinned as i64])?;
+    get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// Archiving is organizational — updated_at stays untouched.
+pub fn set_note_archived(conn: &Connection, id: i64, archived: bool) -> Result<Note, rusqlite::Error> {
+    conn.execute("UPDATE notes SET archived=?2 WHERE id=?1", params![id, archived as i64])?;
     get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 

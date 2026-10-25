@@ -90,6 +90,40 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
+  // Manual order: `ids` is every note, top to bottom. Applied at once and
+  // rolled back if saving fails.
+  async function reorder(ids: number[]) {
+    const prev = new Map<number, number>()
+    ids.forEach((id, i) => {
+      const note = notes.value.find((n) => n.id === id)
+      if (!note) return
+      prev.set(id, note.sort)
+      note.sort = i
+    })
+    try {
+      await api.reorderNotes(ids)
+    } catch (e) {
+      for (const [id, sort] of prev) {
+        const note = notes.value.find((n) => n.id === id)
+        if (note) note.sort = sort
+      }
+      throw e
+    }
+  }
+
+  // Archived notes leave All Notes and show under Archive; no timestamp change
+  async function setArchived(id: number, archived: boolean) {
+    const note = notes.value.find((n) => n.id === id)
+    if (!note) return
+    note.archived = archived
+    try {
+      await api.setNoteArchived(id, archived)
+    } catch (e) {
+      note.archived = !archived
+      throw e
+    }
+  }
+
   // Link (or unlink) a note to a host — shown in that host's details panel
   async function setHost(id: number, hostId: number | null) {
     const note = notes.value.find((n) => n.id === id)
@@ -155,5 +189,18 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
-  return { notes, loaded, load, create, edit, setPinned, setHost, forgetHost, setTags, remove }
+  return {
+    notes,
+    loaded,
+    load,
+    create,
+    edit,
+    setPinned,
+    setArchived,
+    reorder,
+    setHost,
+    forgetHost,
+    setTags,
+    remove,
+  }
 })

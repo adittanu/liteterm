@@ -1,13 +1,29 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Search, X, SquarePen, Pin, StickyNote, LayoutGrid, Rows3 } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowUpDown,
+  Copy,
+  Search,
+  X,
+  SquarePen,
+  Pin,
+  PinOff,
+  StickyNote,
+  LayoutGrid,
+  Rows3,
+  Trash2,
+} from 'lucide-vue-next'
 import { useNotesStore } from '../stores/notes'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
 import { tagColor } from '../utils/tags'
 import { previewOf } from '../utils/notePreview'
+import { copyText } from '../utils/pageHelpers'
 import type { Note } from '../types'
 import NoteEditor from '../components/NoteEditor.vue'
+import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 
 const notes = useNotesStore()
 const ui = useUiStore()
@@ -23,12 +39,42 @@ const activeTag = ref<string | null>(null)
 const selectedId = ref<number | null>(null) // split mode selection
 const galleryId = ref<number | null>(null) // gallery mode open note
 const editorComp = ref<InstanceType<typeof NoteEditor> | null>(null)
+const menu = ref<{ x: number; y: number; items: MenuItem[] } | null>(null)
+// Archive is a folder of its own: archived notes leave All Notes entirely
+const showArchived = ref(false)
+// Drop target shown while dragging a note onto the Archive
+const archiveZone = ref<HTMLElement | null>(null)
 
-// Pinned first, then most recently edited (SQLite timestamps sort
-// lexicographically: 'YYYY-MM-DD HH:MM:SS')
+// ---- sort ----
+
+type SortMode = 'edited' | 'created' | 'title' | 'manual'
+const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+  { value: 'edited', label: 'Date edited' },
+  { value: 'created', label: 'Date created' },
+  { value: 'title', label: 'Title' },
+  { value: 'manual', label: 'Manual order' },
+]
+const savedSort = localStorage.getItem('notes.sort')
+const sortMode = ref<SortMode>(
+  SORT_OPTIONS.some((o) => o.value === savedSort) ? (savedSort as SortMode) : 'edited',
+)
+watch(sortMode, (v) => localStorage.setItem('notes.sort', v))
+const sortLabel = computed(() => SORT_OPTIONS.find((o) => o.value === sortMode.value)?.label ?? '')
+
+const titleOf = (n: Note) => n.title || 'New Note'
+
+// Pinned notes always lead. Within each group the chosen order applies;
+// ties fall back to recency, so the list stays stable. SQLite timestamps
+// sort lexicographically: 'YYYY-MM-DD HH:MM:SS'.
 const sorted = computed(() =>
   [...notes.notes].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+    let c = 0
+    if (sortMode.value === 'manual') c = a.sort - b.sort
+    else if (sortMode.value === 'title')
+      c = titleOf(a).localeCompare(titleOf(b), undefined, { sensitivity: 'base', numeric: true })
+    else if (sortMode.value === 'created') c = a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0
+    if (c) return c
     if (a.updated_at !== b.updated_at) return a.updated_at < b.updated_at ? 1 : -1
     return b.id - a.id
   }),
@@ -36,16 +82,22 @@ const sorted = computed(() =>
 
 const tagList = computed(() => {
   const counts = new Map<string, number>()
-  for (const n of notes.notes) for (const t of n.tags) counts.set(t, (counts.get(t) ?? 0) + 1)
+  for (const n of notes.notes) {
+    if (n.archived) continue
+    for (const t of n.tags) counts.set(t, (counts.get(t) ?? 0) + 1)
+  }
   return [...counts.entries()]
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 })
 
+const activeCount = computed(() => notes.notes.filter((n) => !n.archived).length)
+const archivedCount = computed(() => notes.notes.filter((n) => n.archived).length)
+
 const searching = computed(() => query.value.trim().length > 0)
 
 const matches = computed(() => {
-  let list = sorted.value
+  let list = sorted.value.filter((n) => n.archived === showArchived.value)
   if (activeTag.value) list = list.filter((n) => n.tags.includes(activeTag.value as string))
   if (searching.value) {
     const q = query.value.trim().toLowerCase()
@@ -60,8 +112,10 @@ const matches = computed(() => {
 })
 
 // Pinned/Notes sections only in the unfiltered All Notes view — inside
-// a search or a tag folder the list reads better flat, like Apple Notes
-const sectioned = computed(() => !searching.value && activeTag.value === null)
+// a search, a tag folder or the Archive the list reads better flat
+const sectioned = computed(
+  () => !searching.value && activeTag.value === null && !showArchived.value,
+)
 const pinnedNotes = computed(() =>
   sectioned.value ? matches.value.filter((n) => n.pinned) : [],
 )
@@ -100,7 +154,7 @@ const galleryScroll = ref<HTMLElement | null>(null)
 // bumps a note to the top, pin/unpin, delete, undo). Filtering is typed
 // — keyboard-initiated — so search/tag changes re-render instantly.
 const rowMotion = ref(true)
-watch([query, activeTag], () => {
+watch([query, activeTag, showArchived], () => {
   rowMotion.value = false
   nextTick(() => {
     rowMotion.value = true
@@ -184,7 +238,18 @@ watch(
 )
 
 function toggleTag(name: string) {
+  showArchived.value = false
   activeTag.value = activeTag.value === name ? null : name
+}
+
+function showAll() {
+  showArchived.value = false
+  activeTag.value = null
+}
+
+function openArchive() {
+  activeTag.value = null
+  showArchived.value = !showArchived.value
 }
 
 // Arrow keys walk the list like Apple Notes; selection follows focus
@@ -234,11 +299,360 @@ async function removeNote(id: number) {
     return
   }
   if (layout.value === 'gallery') {
-    closeGallery()
+    if (galleryId.value === id) closeGallery()
     return
   }
+  // Deleting from a row's context menu leaves the open note alone
+  if (selectedId.value !== id) return
   const next = list[idx + 1] ?? list[idx - 1] ?? null
   selectedId.value = next ? next.id : null
+}
+
+// Archive or unarchive, with Undo. Selection moves on like after a delete.
+async function archiveNote(id: number, archived = true) {
+  const list = matches.value
+  const idx = list.findIndex((n) => n.id === id)
+  try {
+    await notes.setArchived(id, archived)
+  } catch (e) {
+    ui.toast('error', `Could not ${archived ? 'archive' : 'unarchive'} note: ${errorText(e)}`)
+    return
+  }
+  ui.toast('info', archived ? 'Note archived' : 'Note unarchived', {
+    actionLabel: 'Undo',
+    duration: 6000,
+    action: () => void notes.setArchived(id, !archived).catch((e) => ui.toast('error', errorText(e))),
+  })
+  if (layout.value === 'gallery') {
+    if (galleryId.value === id) closeGallery()
+    return
+  }
+  if (selectedId.value !== id) return
+  const next = list[idx + 1] ?? list[idx - 1] ?? null
+  selectedId.value = next ? next.id : null
+}
+
+async function togglePinned(n: Note) {
+  try {
+    await notes.setPinned(n.id, !n.pinned)
+  } catch (e) {
+    ui.toast('error', `Could not update note: ${errorText(e)}`)
+  }
+}
+
+function openMenu(n: Note, e: MouseEvent) {
+  menu.value = {
+    x: e.clientX,
+    y: e.clientY,
+    items: [
+      {
+        label: n.pinned ? 'Unpin' : 'Pin',
+        icon: n.pinned ? PinOff : Pin,
+        action: () => void togglePinned(n),
+      },
+      { label: 'Copy', icon: Copy, action: () => void copyText([n.title, n.body].filter(Boolean).join('\n\n'), 'Note copied') },
+      {
+        label: n.archived ? 'Unarchive' : 'Archive',
+        icon: n.archived ? ArchiveRestore : Archive,
+        action: () => void archiveNote(n.id, !n.archived),
+      },
+      { label: 'Delete', icon: Trash2, danger: true, action: () => void removeNote(n.id) },
+    ],
+  }
+}
+
+// ---- drag to reorder ----
+
+// Only in Manual order with nothing filtering the list. Pointer events, not
+// HTML5 drag: Tauri's Windows webview swallows HTML5 drag unless its native
+// file-drop is disabled, and SFTP needs that for OS file drops.
+const reorderable = computed(() => sortMode.value === 'manual' && sectioned.value)
+
+type Pt = { x: number; y: number }
+type Drag = { id: number; overId: number | null; after: boolean; dx: number; dy: number; overArchive: boolean }
+// Cell positions when a drag starts, in scroll-content coordinates so that
+// auto-scroll doesn't skew them. `order` is the displayed order at that time.
+type Shot = { order: number[]; pos: Map<number, Pt>; center: Map<number, Pt> }
+
+const drag = ref<Drag | null>(null)
+const shot = shallowRef<Shot | null>(null)
+let press: { id: number; x: number; y: number; scroll: number } | null = null
+let suppressClick = false
+let scrollStep = 0
+let scrollTimer: ReturnType<typeof setInterval> | undefined
+
+function scopeEl(): HTMLElement | null {
+  return layout.value === 'split' ? listScroll.value : galleryScroll.value
+}
+
+// The order the list would take if dropped now, or null when nothing moves
+// (dropped on itself, or across the pinned/unpinned split)
+function previewOrder(d: Drag, s: Shot): number[] | null {
+  // Only Manual order reorders; other sorts just lift the cell
+  if (sortMode.value !== 'manual' || d.overArchive) return null
+  const overId = d.overId
+  if (overId === null || overId === d.id) return null
+  const from = notes.notes.find((n) => n.id === d.id)
+  const over = notes.notes.find((n) => n.id === overId)
+  if (!from || !over || from.pinned !== over.pinned) return null
+  const ids = s.order.filter((id) => id !== d.id)
+  ids.splice(ids.indexOf(overId) + (d.after ? 1 : 0), 0, d.id)
+  return ids.every((id, i) => id === s.order[i]) ? null : ids
+}
+
+// While one cell is held, every other cell slides into the slot its new
+// position occupies — the gap opens exactly where the drop will land
+const displacement = computed(() => {
+  const out = new Map<number, Pt>()
+  const d = drag.value
+  const s = shot.value
+  const order = d && s ? previewOrder(d, s) : null
+  if (!d || !s || !order) return out
+  order.forEach((id, i) => {
+    const from = s.pos.get(id)
+    const to = s.pos.get(s.order[i])
+    if (id !== d.id && from && to) out.set(id, { x: to.x - from.x, y: to.y - from.y })
+  })
+  return out
+})
+
+function cellClass(id: number) {
+  return { shift: !!drag.value && drag.value.id !== id, 'drag-src': drag.value?.id === id }
+}
+
+function cellStyle(id: number) {
+  const v = displacement.value.get(id)
+  return v ? { transform: `translate(${v.x}px, ${v.y}px)` } : undefined
+}
+
+// The held cell follows the pointer through `translate`, leaving `transform`
+// to the cell wrapper's slide, so the two never fight
+function liftStyle(id: number) {
+  const d = drag.value
+  return d && d.id === id ? { translate: `${d.dx}px ${d.dy}px` } : undefined
+}
+
+function takeShot(scope: HTMLElement): Shot {
+  const sr = scope.getBoundingClientRect()
+  const pos = new Map<number, Pt>()
+  const center = new Map<number, Pt>()
+  scope.querySelectorAll<HTMLElement>('[data-note-id]').forEach((el) => {
+    const id = Number(el.dataset.noteId)
+    const r = (el.closest<HTMLElement>('[data-cell]') ?? el).getBoundingClientRect()
+    const x = r.left - sr.left
+    const y = r.top - sr.top + scope.scrollTop
+    pos.set(id, { x, y })
+    center.set(id, { x: x + r.width / 2, y: y + r.height / 2 })
+  })
+  return { order: matches.value.map((n) => n.id), pos, center }
+}
+
+const SETTLE_MS = 280
+// --ease-move: strong in-out, the curve the list uses for on-screen moves
+const SETTLE_EASE = 'cubic-bezier(0.77, 0, 0.175, 1)'
+function animateBack(el: Element | null | undefined, frames: Keyframe[]) {
+  if (!el || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  el.animate(frames, { duration: SETTLE_MS, easing: SETTLE_EASE })
+}
+
+function onRowPointerDown(e: PointerEvent, n: Note) {
+  if (e.button !== 0) return
+  press = { id: n.id, x: e.clientX, y: e.clientY, scroll: scopeEl()?.scrollTop ?? 0 }
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragEnd)
+  window.addEventListener('pointercancel', onDragEnd)
+}
+
+function onDragMove(e: PointerEvent) {
+  if (!press) return
+  const scope = scopeEl()
+  if (!drag.value) {
+    // A few px of travel separates a drag from a click
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return
+    if (!sectioned.value) {
+      // Say why nothing moves instead of failing silently
+      stopDrag()
+      ui.toast(
+        'info',
+        showArchived.value ? 'Open All Notes to drag notes' : 'Clear the search or tag filter to drag notes',
+        { duration: 4000 },
+      )
+      return
+    }
+    if (!scope) return
+    shot.value = takeShot(scope)
+    drag.value = { id: press.id, overId: null, after: false, dx: 0, dy: 0, overArchive: false }
+    document.body.classList.add('notes-dragging')
+    scrollTimer = setInterval(() => {
+      const s = scopeEl()
+      if (s && scrollStep) s.scrollTop += scrollStep
+    }, 16)
+  }
+  const d = drag.value
+  const s = shot.value
+  if (!scope || !d || !s) return
+  // Offset from the press point with scroll included, so the cell stays
+  // under the pointer while the list auto-scrolls
+  d.dx = e.clientX - press.x
+  d.dy = e.clientY - press.y + (scope.scrollTop - press.scroll)
+  // Over the Archive zone the list stops previewing and stops auto-scrolling
+  const z = archiveZone.value?.getBoundingClientRect()
+  d.overArchive =
+    !!z && e.clientX >= z.left && e.clientX <= z.right && e.clientY >= z.top && e.clientY <= z.bottom
+  // Scroll while the pointer rests near the top or bottom edge
+  const r = scope.getBoundingClientRect()
+  scrollStep = d.overArchive ? 0 : e.clientY < r.top + 40 ? -8 : e.clientY > r.bottom - 40 ? 8 : 0
+  // Target = the cell whose centre is nearest the held cell's centre. Uses the
+  // drag-start snapshot rather than hit-testing, so displaced cells can't flicker it.
+  const own = s.center.get(d.id)
+  if (!own) return
+  const cx = own.x + d.dx
+  const cy = own.y + d.dy
+  let best = own
+  let bestId: number | null = null
+  let bestDist = Infinity
+  for (const [id, c] of s.center) {
+    const dist = (c.x - cx) ** 2 + (c.y - cy) ** 2
+    if (dist < bestDist) {
+      bestDist = dist
+      bestId = id
+      best = c
+    }
+  }
+  d.overId = bestId
+  // Rows stack vertically; gallery cards flow left to right
+  d.after = layout.value === 'split' ? cy > best.y : cx > best.x
+}
+
+function stopDrag(): Drag | null {
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', onDragEnd)
+  window.removeEventListener('pointercancel', onDragEnd)
+  press = null
+  scrollStep = 0
+  clearInterval(scrollTimer)
+  document.body.classList.remove('notes-dragging')
+  const d = drag.value
+  drag.value = null
+  shot.value = null
+  return d
+}
+
+function onDragEnd() {
+  // Decide what the drop does before the state driving it is cleared
+  const d = drag.value
+  const s = shot.value
+  const order = d && s ? previewOrder(d, s) : null
+  const held = displacement.value
+  const scope = scopeEl()
+  stopDrag()
+  if (!d) return
+  // The click that follows this pointer-up belongs to the drag, not a select
+  suppressClick = true
+  setTimeout(() => (suppressClick = false), 0)
+  if (d.overArchive) {
+    archiveDragged(d, scope)
+    return
+  }
+  if (order) {
+    persistOrder(order)
+  } else if (sortMode.value !== 'manual') {
+    ui.toast('info', 'Drag reorders notes in Manual order', {
+      actionLabel: 'Switch',
+      action: () => (sortMode.value = 'manual'),
+      duration: 5000,
+    })
+  }
+  // Runs after Vue has removed the inline offsets, so these animations pick
+  // up exactly where the drag left off. A committed drop needs none for the
+  // other cells: the list's FLIP moves them into their new slots.
+  nextTick(() => {
+    animateBack(scope?.querySelector(`[data-note-id="${d.id}"]`), [
+      { translate: `${d.dx}px ${d.dy}px`, scale: '1.02' },
+      { translate: '0px 0px', scale: '1' },
+    ])
+    if (order) return
+    // Cancelled: the displaced cells glide back to where they were
+    for (const [id, v] of held) {
+      animateBack(scope?.querySelector(`[data-note-id="${id}"]`)?.closest('[data-cell]'), [
+        { transform: `translate(${v.x}px, ${v.y}px)` },
+        { transform: 'translate(0px, 0px)' },
+      ])
+    }
+  })
+}
+
+// Dropped on the Archive: the note fades into the zone, then gets archived
+function archiveDragged(d: Drag, scope: HTMLElement | null) {
+  const el = scope?.querySelector<HTMLElement>(`[data-note-id="${d.id}"]`)
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+  const flight =
+    el && !reduced
+      ? el.animate(
+          [
+            { translate: `${d.dx}px ${d.dy}px`, scale: '1.02', opacity: 1 },
+            { translate: `${d.dx}px ${d.dy + 24}px`, scale: '0.9', opacity: 0 },
+          ],
+          { duration: 200, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' }, // --ease-out
+        )
+      : null
+  void (flight ? flight.finished.catch(() => {}) : Promise.resolve()).then(() => archiveNote(d.id))
+}
+onBeforeUnmount(() => {
+  stopDrag()
+})
+
+// Save a new manual order for the visible notes. Archived notes aren't on
+// screen, so they keep their relative order after the visible ones.
+function persistOrder(visibleIds: number[]) {
+  const archivedIds = sorted.value.filter((n) => n.archived).map((n) => n.id)
+  notes.reorder([...visibleIds, ...archivedIds]).catch((e) => ui.toast('error', `Could not reorder notes: ${errorText(e)}`))
+}
+
+// Place `fromId` just before or after `overId` among the visible notes
+function moveNote(fromId: number, overId: number, after: boolean) {
+  const from = notes.notes.find((n) => n.id === fromId)
+  const over = notes.notes.find((n) => n.id === overId)
+  // Pinned and unpinned notes keep their own sections
+  if (!from || !over || from.pinned !== over.pinned) return
+  const ids = matches.value.map((n) => n.id).filter((id) => id !== fromId)
+  ids.splice(ids.indexOf(overId) + (after ? 1 : 0), 0, fromId)
+  persistOrder(ids)
+}
+
+// Alt+Up/Down moves the focused row, the keyboard route to the same reorder
+function onRowArrow(e: KeyboardEvent, dir: -1 | 1, n: Note) {
+  if (!e.altKey) return step(dir)
+  if (!reorderable.value) return
+  const list = matches.value
+  const other = list[list.findIndex((x) => x.id === n.id) + dir]
+  if (!other || other.pinned !== n.pinned) return
+  moveNote(n.id, other.id, dir > 0)
+  // Moving the row can drop focus; put it back on the same note
+  nextTick(() =>
+    listScroll.value?.querySelector<HTMLElement>(`[data-note-id="${n.id}"]`)?.focus({ preventScroll: true }),
+  )
+}
+
+function onRowClick(id: number) {
+  if (!suppressClick) selectedId.value = id
+}
+
+function onCardClick(e: MouseEvent, id: number) {
+  if (!suppressClick) openCard(e, id)
+}
+
+function openSortMenu(e: MouseEvent) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  menu.value = {
+    x: r.right - 180,
+    y: r.bottom + 6,
+    items: SORT_OPTIONS.map((o) => ({
+      label: o.label,
+      checked: sortMode.value === o.value,
+      action: () => (sortMode.value = o.value),
+    })),
+  }
 }
 
 // Escape closes the full-page editor opened from the gallery — instantly,
@@ -304,6 +718,15 @@ function listDate(s: string): string {
                 <X :size="11" :stroke-width="2" aria-hidden="true" />
               </button>
             </div>
+            <button
+              class="btn-icon sort-btn"
+              aria-label="Sort notes"
+              aria-haspopup="menu"
+              :title="`Sort: ${sortLabel}`"
+              @click="openSortMenu"
+            >
+              <ArrowUpDown :size="14" :stroke-width="1.5" aria-hidden="true" />
+            </button>
             <div class="layout-toggle" role="group" aria-label="Notes layout">
               <button
                 class="on"
@@ -323,16 +746,21 @@ function listDate(s: string): string {
           </div>
 
           <div ref="listScroll" class="list-scroll">
+            <button
+              class="tag-row"
+              :class="{ on: activeTag === null && !showArchived }"
+              @click="showAll"
+            >
+              <StickyNote :size="12" :stroke-width="1.75" aria-hidden="true" />
+              <span class="text-ellipsis">All Notes</span>
+              <span class="tag-count">{{ activeCount }}</span>
+            </button>
+            <button class="tag-row" :class="{ on: showArchived }" @click="openArchive">
+              <Archive :size="12" :stroke-width="1.75" aria-hidden="true" />
+              <span class="text-ellipsis">Archive</span>
+              <span class="tag-count">{{ archivedCount }}</span>
+            </button>
             <template v-if="tagList.length">
-              <button
-                class="tag-row"
-                :class="{ on: activeTag === null }"
-                @click="activeTag = null"
-              >
-                <StickyNote :size="12" :stroke-width="1.75" aria-hidden="true" />
-                <span class="text-ellipsis">All Notes</span>
-                <span class="tag-count">{{ notes.notes.length }}</span>
-              </button>
               <p class="section-label list-label">Tags</p>
               <button
                 v-for="t in tagList"
@@ -357,24 +785,33 @@ function listDate(s: string): string {
                 v-for="item in listItems"
                 :key="item.key"
                 class="list-item"
-                :class="
+                data-cell
+                :class="[
                   item.kind === 'note'
                     ? { 'is-note': true, 'is-selected': item.note.id === selectedId }
-                    : null
-                "
+                    : null,
+                  item.kind === 'note' ? cellClass(item.note.id) : null,
+                ]"
+                :style="item.kind === 'note' ? cellStyle(item.note.id) : undefined"
               >
                 <p v-if="item.kind === 'label'" class="section-label list-label">{{ item.text }}</p>
                 <!-- Select on press, like a native list: feedback on pointer-down -->
                 <button
                   v-else
                   class="note-row"
-                  :class="{ selected: item.note.id === selectedId }"
+                  :class="{
+                    selected: item.note.id === selectedId,
+                    dragging: drag?.id === item.note.id,
+                  }"
+                  :style="liftStyle(item.note.id)"
                   :data-note-id="item.note.id"
                   :aria-current="item.note.id === selectedId ? 'true' : undefined"
                   @mousedown.left="selectedId = item.note.id"
-                  @click="selectedId = item.note.id"
-                  @keydown.down.prevent="step(1)"
-                  @keydown.up.prevent="step(-1)"
+                  @pointerdown="onRowPointerDown($event, item.note)"
+                  @click="onRowClick(item.note.id)"
+                  @contextmenu.prevent="openMenu(item.note, $event)"
+                  @keydown.down.prevent="onRowArrow($event, 1, item.note)"
+                  @keydown.up.prevent="onRowArrow($event, -1, item.note)"
                 >
                   <span class="row-title text-ellipsis">{{ item.note.title || 'New Note' }}</span>
                   <span class="row-sub">
@@ -385,13 +822,24 @@ function listDate(s: string): string {
               </div>
             </TransitionGroup>
 
-            <div v-else-if="searching || activeTag" class="list-empty">
+            <div v-else-if="searching || activeTag || showArchived" class="list-empty">
               <p v-if="searching">No notes match “{{ query.trim() }}”</p>
+              <p v-else-if="showArchived">No archived notes</p>
               <p v-else>No notes with this tag</p>
             </div>
             <div v-else class="list-empty">
               <p>No notes yet</p>
             </div>
+          </div>
+
+          <div
+            ref="archiveZone"
+            class="archive-zone"
+            :class="{ on: drag !== null, over: drag?.overArchive }"
+            aria-hidden="true"
+          >
+            <Archive :size="14" :stroke-width="1.75" aria-hidden="true" />
+            {{ drag?.overArchive ? 'Release to archive' : 'Drop here to archive' }}
           </div>
         </aside>
 
@@ -442,6 +890,15 @@ function listDate(s: string): string {
               </button>
             </div>
             <div class="gallery-spacer"></div>
+            <button
+              class="btn-icon sort-btn"
+              aria-label="Sort notes"
+              aria-haspopup="menu"
+              :title="`Sort: ${sortLabel}`"
+              @click="openSortMenu"
+            >
+              <ArrowUpDown :size="14" :stroke-width="1.5" aria-hidden="true" />
+            </button>
             <div class="layout-toggle" role="group" aria-label="Notes layout">
               <button aria-label="List layout" title="List layout" @click="layout = 'split'">
                 <Rows3 :size="13" :stroke-width="1.75" aria-hidden="true" />
@@ -459,9 +916,19 @@ function listDate(s: string): string {
               <SquarePen :size="15" :stroke-width="1.5" aria-hidden="true" />
             </button>
           </div>
-          <div v-if="tagList.length" class="gallery-tags">
-            <button class="gchip" :class="{ on: activeTag === null }" @click="activeTag = null">
+          <div class="gallery-tags">
+            <button
+              class="gchip"
+              :class="{ on: activeTag === null && !showArchived }"
+              @click="showAll"
+            >
               All
+              <span class="gchip-count">{{ activeCount }}</span>
+            </button>
+            <button class="gchip" :class="{ on: showArchived }" @click="openArchive">
+              <Archive :size="11" :stroke-width="1.75" aria-hidden="true" />
+              Archive
+              <span class="gchip-count">{{ archivedCount }}</span>
             </button>
             <button
               v-for="t in tagList"
@@ -478,14 +945,29 @@ function listDate(s: string): string {
         </header>
 
         <div ref="galleryScroll" class="gallery-scroll">
-          <div v-if="matches.length" class="card-grid" :class="{ intro: galleryIntro }">
-            <button
+          <TransitionGroup
+            v-if="matches.length"
+            tag="div"
+            class="card-grid"
+            :class="{ intro: galleryIntro }"
+            :name="rowMotion ? 'row' : 'row-off'"
+          >
+            <div
               v-for="(n, i) in matches"
               :key="n.id"
+              class="card-cell"
+              data-cell
+              :class="cellClass(n.id)"
+              :style="cellStyle(n.id)"
+            >
+            <button
               class="card"
+              :class="{ dragging: drag?.id === n.id }"
               :data-note-id="n.id"
-              :style="{ '--d': `${Math.min(i, 12) * 28}ms` }"
-              @click="openCard($event, n.id)"
+              :style="[{ '--d': `${Math.min(i, 12) * 28}ms` }, liftStyle(n.id)]"
+              @click="onCardClick($event, n.id)"
+              @pointerdown="onRowPointerDown($event, n)"
+              @contextmenu.prevent="openMenu(n, $event)"
             >
               <span class="card-top">
                 <span class="card-title">{{ n.title || 'New Note' }}</span>
@@ -506,10 +988,12 @@ function listDate(s: string): string {
                 </span>
               </span>
             </button>
-          </div>
+            </div>
+          </TransitionGroup>
 
-          <div v-else-if="searching || activeTag" class="list-empty gallery-empty">
+          <div v-else-if="searching || activeTag || showArchived" class="list-empty gallery-empty">
             <p v-if="searching">No notes match “{{ query.trim() }}”</p>
+            <p v-else-if="showArchived">No archived notes</p>
             <p v-else>No notes with this tag</p>
           </div>
           <div v-else class="list-empty gallery-empty">
@@ -521,6 +1005,16 @@ function listDate(s: string): string {
               New note
             </button>
           </div>
+        </div>
+
+        <div
+          ref="archiveZone"
+          class="archive-zone"
+          :class="{ on: drag !== null, over: drag?.overArchive }"
+          aria-hidden="true"
+        >
+          <Archive :size="14" :stroke-width="1.75" aria-hidden="true" />
+          {{ drag?.overArchive ? 'Release to archive' : 'Drop here to archive' }}
         </div>
 
         <Transition name="page" :css="!instantClose">
@@ -540,6 +1034,8 @@ function listDate(s: string): string {
         </Transition>
       </div>
     </Transition>
+
+    <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" :items="menu.items" @close="menu = null" />
   </div>
 </template>
 
@@ -692,6 +1188,7 @@ function listDate(s: string): string {
 /* ==== Split mode ==== */
 
 .notes-list {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 264px;
@@ -965,6 +1462,100 @@ function listDate(s: string): string {
   animation-delay: var(--d, 0ms);
 }
 
+/* Cells in a drag: the held one lifts under the pointer, the others slide
+   to make room (`shift`). Settling on drop is handled by the script. */
+.note-row,
+.card {
+  user-select: none;
+}
+
+.shift {
+  transition: transform 200ms var(--ease-move);
+}
+
+.drag-src {
+  z-index: 2;
+}
+
+.note-row.dragging,
+.card.dragging {
+  scale: 1.02;
+  box-shadow: var(--shadow-3);
+  cursor: grabbing;
+  transition: scale 160ms var(--ease-out), box-shadow 160ms var(--ease-out);
+}
+
+/* Grid cell wrapper: the card fills it, so the cell is the moving unit */
+.card-cell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.card-cell > .card {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Drop zone for archiving: floats over the bottom of the list while a note is
+   held, so showing it never shifts the rows (the snapshot depends on that) */
+.archive-zone {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 52px;
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--border-strong);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition: opacity 160ms var(--ease-out), transform 200ms var(--ease-out),
+    border-color var(--dur-hover) ease, background-color var(--dur-hover) ease,
+    color var(--dur-hover) ease;
+}
+
+.archive-zone.on {
+  opacity: 1;
+  transform: none;
+}
+
+.archive-zone.over {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+/* Gallery: the zone is centred under the grid instead of spanning a column */
+.gallery-root > .archive-zone {
+  left: 50%;
+  right: auto;
+  bottom: 16px;
+  width: 320px;
+  margin-left: -160px;
+  transform: translateY(12px);
+}
+
+.gallery-root > .archive-zone.on {
+  transform: none;
+}
+
+:global(body.notes-dragging),
+:global(body.notes-dragging *) {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
 /* Hover is hit constantly while scanning the grid: no lift, just the
    edge and shadow coming up */
 @media (hover: hover) and (pointer: fine) {
@@ -1081,6 +1672,11 @@ function listDate(s: string): string {
 @media (prefers-reduced-motion: reduce) {
   .card-grid.intro .card {
     animation: none;
+  }
+
+  .row-move,
+  .shift {
+    transition: none;
   }
 
   .page-enter-active,

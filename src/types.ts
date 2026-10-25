@@ -82,6 +82,8 @@ export interface Note {
   created_at: string
   updated_at: string
   host_id: number | null // host this note belongs to
+  sort: number // position in the manual order (lower = higher)
+  archived: boolean // hidden from All Notes; listed under Archive
 }
 
 export interface PortForward {

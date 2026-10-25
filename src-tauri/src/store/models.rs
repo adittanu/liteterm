@@ -89,6 +89,10 @@ pub struct Note {
     pub updated_at: String,
     /// Host this note belongs to (shown in its details panel); None = unlinked
     pub host_id: Option<i64>,
+    /// Position in the manual order (lower = higher in the list)
+    pub sort: i64,
+    /// Hidden from All Notes; lives in the Archive
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

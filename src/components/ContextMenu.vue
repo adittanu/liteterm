@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
+import { Check } from 'lucide-vue-next'
 
 export interface MenuItem {
   label: string
   icon?: unknown // Lucide component
   danger?: boolean
   disabled?: boolean
+  checked?: boolean // radio-style choice: shows a check on the right
   action: () => void
 }
 
@@ -65,12 +67,14 @@ onUnmounted(() => {
         :key="item.label"
         class="ctx-item"
         :class="{ danger: item.danger, disabled: item.disabled }"
-        role="menuitem"
+        :role="item.checked === undefined ? 'menuitem' : 'menuitemradio'"
+        :aria-checked="item.checked"
         :disabled="item.disabled"
         @click="run(item)"
       >
         <component :is="item.icon" v-if="item.icon" :size="14" :stroke-width="1.5" aria-hidden="true" />
         {{ item.label }}
+        <Check v-if="item.checked" class="ctx-check" :size="13" :stroke-width="2" aria-hidden="true" />
       </button>
     </div>
   </Teleport>
@@ -124,5 +128,10 @@ onUnmounted(() => {
 .ctx-item.disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.ctx-check {
+  margin-left: auto;
+  color: var(--accent);
 }
 </style>
