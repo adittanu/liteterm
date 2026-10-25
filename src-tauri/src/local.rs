@@ -29,6 +29,10 @@ fn in_home(mut cmd: CommandBuilder) -> CommandBuilder {
     if let Some(home) = std::env::var("USERPROFILE").ok() {
         cmd.cwd(home);
     }
+    // A GUI process has no TERM. Windows Terminal advertises these; TUIs
+    // such as opencode fall back to a slower, broken renderer without them.
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
     cmd
 }
 
@@ -103,27 +107,21 @@ pub fn spawn_local(state: &AppState, command: Option<&str>) -> Result<u32, Strin
     // Drop our slave handle so the reader sees EOF when the shell exits
     drop(pair.slave);
 
-    // Reader thread: blocking reads, emits to the same channel as SSH
+    // Each read is forwarded as soon as it arrives. A short echo (typing)
+    // must not wait, and a fullscreen redraw is not held either — whatever
+    // the console already wrote is what we send.
     let app = state.app.clone();
     let session_for_reader = session.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 32 * 1024];
         loop {
             if session_for_reader.closed.is_cancelled() {
                 break;
             }
             match reader.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => {
-                    let _ = app.emit(
-                        "ssh:stdout",
-                        StdoutEvent {
-                            session_id: session_for_reader.id,
-                            data: B64.encode(&buf[..n]),
-                        },
-                    );
-                }
+                Ok(n) => emit_stdout(&app, session_for_reader.id, &buf[..n]),
                 Err(_) => break,
             }
         }
@@ -140,6 +138,19 @@ pub fn spawn_local(state: &AppState, command: Option<&str>) -> Result<u32, Strin
 
     crate::ssh::pool::emit_status(&state.app, id, "connected", None);
     Ok(id)
+}
+
+fn emit_stdout(app: &tauri::AppHandle, session_id: u32, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "ssh:stdout",
+        StdoutEvent {
+            session_id,
+            data: B64.encode(bytes),
+        },
+    );
 }
 
 pub fn local_write(session: &LocalSession, data: &str) -> Result<(), String> {

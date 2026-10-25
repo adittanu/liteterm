@@ -32,6 +32,15 @@ export const useUiStore = defineStore('ui', () => {
   // returning to a page restores it; manual collapse stays collapsed.
   const railAutoCollapsed = ref(false)
 
+  // A host the SFTP view should open on its server side next time it looks
+  // (set from Hosts / the palette, consumed by SftpView)
+  const sftpHostRequest = ref<number | null>(null)
+
+  function openSftpFor(hostId: number) {
+    sftpHostRequest.value = hostId
+    openView('sftp')
+  }
+
   function openView(view: ViewId) {
     const immersive = view === 'sftp' || view.startsWith('session:')
     if (immersive) {
@@ -53,6 +62,7 @@ export const useUiStore = defineStore('ui', () => {
     confirmDeleteFile: true,
     autoSudoPassword: true,
     keybindings: {},
+    hostsLayout: 'modern',
   })
 
   async function loadSettings() {
@@ -65,6 +75,27 @@ export const useUiStore = defineStore('ui', () => {
     await api.setSettings(settings.value)
     if (patch.theme) applyTheme(patch.theme)
   }
+
+  // ---- terminal render A/B (temporary, per-machine in localStorage) ----
+  // Compares xterm's WebGL renderer against the DOM renderer, and real bold
+  // weight against regular weight, to match Windows Terminal's text.
+  const RENDER_KEY = 'liteterm.terminalRender'
+  const terminalRender = ref<{ webgl: boolean; realBold: boolean }>({
+    webgl: true,
+    realBold: false,
+    ...(() => {
+      try {
+        return JSON.parse(localStorage.getItem(RENDER_KEY) || '{}')
+      } catch {
+        return {}
+      }
+    })(),
+  })
+  watch(
+    terminalRender,
+    (v) => localStorage.setItem(RENDER_KEY, JSON.stringify(v)),
+    { deep: true },
+  )
 
   // ---- theme: snap, never smear (design contract) ----
   const systemDark = ref(
@@ -121,11 +152,14 @@ export const useUiStore = defineStore('ui', () => {
     activeView,
     railCollapsed,
     openView,
+    sftpHostRequest,
+    openSftpFor,
     settings,
     resolvedThemeId,
     systemDark,
     loadSettings,
     updateSettings,
+    terminalRender,
     toasts,
     toast,
     dismissToast,

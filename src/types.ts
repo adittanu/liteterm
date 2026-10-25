@@ -129,6 +129,7 @@ export interface AppSettings {
   confirmDeleteFile: boolean
   autoSudoPassword: boolean
   keybindings: Record<string, string> // action id -> combo ("Ctrl+K"); absent = default
+  hostsLayout: 'modern' | 'classic' // Hosts page: chips + quick actions, or Termius-style folders
 }
 
 export interface HostKeyEvent {

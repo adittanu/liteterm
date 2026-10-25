@@ -4,6 +4,7 @@ import TopBar from './components/TopBar.vue'
 import NavRail from './components/NavRail.vue'
 import SessionPage from './components/SessionPage.vue'
 import HostsView from './views/HostsView.vue'
+import HostsClassicView from './views/HostsClassicView.vue'
 import KeychainView from './views/KeychainView.vue'
 import ForwardsView from './views/ForwardsView.vue'
 import SnippetsView from './views/SnippetsView.vue'
@@ -148,7 +149,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
           :session-id="tab.id"
         />
 
-        <HostsView v-if="ui.activeView === 'hosts'" />
+        <template v-if="ui.activeView === 'hosts'">
+          <HostsClassicView v-if="ui.settings.hostsLayout === 'classic'" />
+          <HostsView v-else />
+        </template>
         <KeychainView v-else-if="ui.activeView === 'keychain'" />
         <ForwardsView v-else-if="ui.activeView === 'forwards'" />
         <SnippetsView v-else-if="ui.activeView === 'snippets'" />

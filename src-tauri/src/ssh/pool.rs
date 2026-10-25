@@ -751,15 +751,57 @@ pub async fn sftp_mkdir(session: &SshSession, path: &str) -> Result<(), String> 
         .map_err(|e| format!("mkdir failed: {e}"))
 }
 
+pub async fn sftp_home(session: &SshSession) -> Result<String, String> {
+    let guard = session.sftp.lock().await;
+    let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
+    sftp.canonicalize(".")
+        .await
+        .map_err(|e| format!("Could not resolve home folder: {e}"))
+}
+
+/// Delete a file, or a folder with everything inside it. SFTP's rmdir only
+/// removes empty folders, so walk the tree: delete files (and symlinks —
+/// the link itself, never its target) on the way down, then the emptied
+/// folders deepest-first.
 pub async fn sftp_remove(session: &SshSession, path: &str, is_dir: bool) -> Result<(), String> {
     let guard = session.sftp.lock().await;
     let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
-    let result = if is_dir {
-        sftp.remove_dir(path).await
-    } else {
-        sftp.remove_file(path).await
-    };
-    result.map_err(|e| format!("Delete failed: {e}"))
+    if !is_dir {
+        return sftp
+            .remove_file(path)
+            .await
+            .map_err(|e| format!("Delete failed: {e}"));
+    }
+
+    let mut pending = vec![path.to_string()];
+    let mut dirs = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let entries = sftp
+            .read_dir(&dir)
+            .await
+            .map_err(|e| format!("Delete failed: could not list {dir}: {e}"))?;
+        for entry in entries {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child = if dir.ends_with('/') { format!("{dir}{name}") } else { format!("{dir}/{name}") };
+            match entry.file_type() {
+                russh_sftp::protocol::FileType::Dir => pending.push(child),
+                _ => sftp
+                    .remove_file(&child)
+                    .await
+                    .map_err(|e| format!("Delete failed on {child}: {e}"))?,
+            }
+        }
+        dirs.push(dir);
+    }
+    for dir in dirs.iter().rev() {
+        sftp.remove_dir(dir)
+            .await
+            .map_err(|e| format!("Delete failed on {dir}: {e}"))?;
+    }
+    Ok(())
 }
 
 pub async fn sftp_rename(session: &SshSession, from: &str, to: &str) -> Result<(), String> {

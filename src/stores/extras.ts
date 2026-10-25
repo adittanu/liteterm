@@ -39,6 +39,12 @@ export const useForwardsStore = defineStore('forwards', () => {
     loaded.value = true
   }
 
+  // The backend starts auto-start forwards on connect and drops them when a
+  // session ends — re-read which tunnels are really up.
+  async function refreshActive() {
+    activeIds.value = await api.listActiveForwards()
+  }
+
   async function save(input: Omit<PortForward, 'id'> & { id?: number }) {
     const f = await api.upsertForward(
       input.id ?? null,
@@ -71,5 +77,5 @@ export const useForwardsStore = defineStore('forwards', () => {
     activeIds.value = activeIds.value.filter((x) => x !== id)
   }
 
-  return { forwards, activeIds, loaded, load, save, remove, start, stop }
+  return { forwards, activeIds, loaded, load, refreshActive, save, remove, start, stop }
 })

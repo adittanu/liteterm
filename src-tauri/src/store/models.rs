@@ -114,6 +114,12 @@ pub struct AppSettings {
     pub auto_sudo_password: bool,
     #[serde(default)]
     pub keybindings: HashMap<String, String>, // action id -> combo ("Ctrl+K")
+    #[serde(default = "default_hosts_layout")]
+    pub hosts_layout: String, // "modern" | "classic" (Termius-style folders)
+}
+
+fn default_hosts_layout() -> String {
+    "modern".into()
 }
 
 impl Default for AppSettings {
@@ -124,6 +130,7 @@ impl Default for AppSettings {
             confirm_delete_file: true,
             auto_sudo_password: true,
             keybindings: HashMap::new(),
+            hosts_layout: default_hosts_layout(),
         }
     }
 }

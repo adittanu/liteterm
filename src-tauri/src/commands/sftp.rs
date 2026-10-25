@@ -20,6 +20,13 @@ pub async fn sftp_list(
     pool::sftp_list(&session, &path).await
 }
 
+/// The login directory on the server — where a shell would start.
+#[tauri::command]
+pub async fn sftp_home(state: State<'_, Arc<AppState>>, session_id: u32) -> Result<String, String> {
+    let session = pool_session(state.inner(), session_id)?;
+    pool::sftp_home(&session).await
+}
+
 #[tauri::command]
 pub async fn sftp_mkdir(state: State<'_, Arc<AppState>>, session_id: u32, path: String) -> Result<(), String> {
     let session = pool_session(state.inner(), session_id)?;

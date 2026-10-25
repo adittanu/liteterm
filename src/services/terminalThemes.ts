@@ -62,11 +62,14 @@ const PALETTES: Record<string, TerminalPalette> = {
   // Terminal bg = the theme's rendered --bg (exact oklch→sRGB conversion),
   // so the canvas blends into the app chrome with no visible seam
   dark: {
-    bg: '#090c11', fg: '#e8e8ee', cursor: '#6c8cff', cursorAccent: '#090c11', selectionBackground: '#6c8cff38',
-    black: '#3a3a46', red: '#ff6b6b', green: '#5fd49a', yellow: '#e8c468', blue: '#6c9bff',
-    magenta: '#c792ea', cyan: '#5cd6d6', white: '#d6d6de',
-    brightBlack: '#5a5a6a', brightRed: '#ff8b8b', brightGreen: '#7ee8b4', brightYellow: '#f5d98a',
-    brightBlue: '#8fb5ff', brightMagenta: '#dab3f5', brightCyan: '#7ee3e3', brightWhite: '#f0f0f6',
+    // This machine's Windows Terminal defaults to One Half Dark, not Campbell.
+    // Bright and normal slots are the same colors there, so bold text does
+    // not jump to a louder ramp.
+    bg: '#282c34', fg: '#dcdfe4', cursor: '#a3b3cc', cursorAccent: '#282c34', selectionBackground: '#dcdfe433',
+    black: '#282c34', red: '#e06c75', green: '#98c379', yellow: '#e5c07b', blue: '#61afef',
+    magenta: '#c678dd', cyan: '#56b6c2', white: '#dcdfe4',
+    brightBlack: '#5a6374', brightRed: '#e06c75', brightGreen: '#98c379', brightYellow: '#e5c07b',
+    brightBlue: '#61afef', brightMagenta: '#c678dd', brightCyan: '#56b6c2', brightWhite: '#dcdfe4',
   },
   light: {
     bg: '#f2f3f5', fg: '#1c1c24', cursor: '#4a6ee0', cursorAccent: '#f2f3f5', selectionBackground: '#4a6ee038',

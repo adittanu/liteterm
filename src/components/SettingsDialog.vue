@@ -41,6 +41,11 @@ const SECTIONS = [
 type SectionId = (typeof SECTIONS)[number]['id']
 const section = ref<SectionId>('general')
 
+const HOST_LAYOUTS = [
+  { id: 'modern', name: 'Modern', desc: 'Group chips, fuzzy search, hover Connect & SFTP' },
+  { id: 'classic', name: 'Classic', desc: 'Termius-style: group folders you open, then hosts' },
+] as const
+
 const appVersion = ref('')
 onMounted(() => {
   getVersion()
@@ -209,7 +214,46 @@ onUnmounted(() => {
 
           <!-- ============ Appearance ============ -->
           <div v-else-if="section === 'appearance'" key="appearance" class="pane-page">
-            <span class="field-label">Theme</span>
+            <span class="field-label">Hosts layout</span>
+            <div class="layout-grid" role="radiogroup" aria-label="Hosts layout">
+              <button
+                v-for="l in HOST_LAYOUTS"
+                :key="l.id"
+                class="layout-card"
+                role="radio"
+                :aria-checked="ui.settings.hostsLayout === l.id"
+                :class="{ on: ui.settings.hostsLayout === l.id }"
+                @click="ui.updateSettings({ hostsLayout: l.id })"
+              >
+                <!-- Miniature of the page, so the choice is visual, not verbal -->
+                <span class="lp" :class="l.id" aria-hidden="true">
+                  <span class="lp-search"></span>
+                  <template v-if="l.id === 'classic'">
+                    <span class="lp-row">
+                      <span class="lp-folder"></span><span class="lp-folder"></span><span class="lp-folder dashed"></span>
+                    </span>
+                    <span class="lp-row">
+                      <span class="lp-card"></span><span class="lp-card"></span><span class="lp-card"></span>
+                    </span>
+                  </template>
+                  <template v-else>
+                    <span class="lp-chips"><span class="on"></span><span></span><span></span><span></span></span>
+                    <span class="lp-row">
+                      <span class="lp-card live"><i></i></span><span class="lp-card"><i></i></span><span class="lp-card"><i></i></span>
+                    </span>
+                    <span class="lp-row">
+                      <span class="lp-card"><i></i></span><span class="lp-card"><i></i></span><span class="lp-card ghost"></span>
+                    </span>
+                  </template>
+                </span>
+                <span class="layout-text">
+                  <span class="layout-name">{{ l.name }}</span>
+                  <span class="layout-desc">{{ l.desc }}</span>
+                </span>
+              </button>
+            </div>
+
+            <span class="field-label theme-label">Theme</span>
             <div class="theme-grid" role="radiogroup" aria-label="Theme">
               <button
                 v-for="t in THEMES"
@@ -259,6 +303,41 @@ onUnmounted(() => {
             </div>
             <div class="font-preview" :style="{ fontSize: `${fontSize}px` }">
               user@web-01:~$ systemctl status nginx
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">GPU text rendering (WebGL)</span>
+                <span class="row-desc">
+                  Off uses the browser's own text renderer, closer to Windows Terminal's
+                  thinner glyphs but heavier on CPU for full-screen TUIs.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  v-model="ui.terminalRender.webgl"
+                  type="checkbox"
+                  aria-label="GPU text rendering"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Bold text uses bold weight</span>
+                <span class="row-desc">
+                  Draw SGR bold with the heavy face, as Windows Terminal does here.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  v-model="ui.terminalRender.realBold"
+                  type="checkbox"
+                  aria-label="Bold text uses bold weight"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
             </div>
           </div>
 
@@ -477,6 +556,167 @@ onUnmounted(() => {
 }
 
 /* ---- appearance ---- */
+.layout-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3);
+  margin: var(--space-2) 0 var(--space-5);
+}
+
+.layout-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 8px 8px 10px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  text-align: left;
+  transition:
+    background-color var(--dur-hover) ease,
+    border-color var(--dur-hover) ease,
+    box-shadow var(--dur-hover) ease,
+    transform var(--dur-press) ease-out;
+}
+
+.layout-card:hover {
+  background: var(--bg-hover);
+}
+
+.layout-card:active {
+  transform: scale(0.98);
+}
+
+.layout-card.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.layout-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 2px;
+}
+
+.layout-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.layout-desc {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+/* Miniature page preview — 6px radius inside the 12px card (8px inset) */
+.lp {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  height: 92px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.lp-search {
+  height: 9px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+}
+
+.lp-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.lp-folder,
+.lp-card {
+  position: relative;
+  height: 17px;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+
+.lp-folder::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--accent-bg-hover);
+}
+
+.lp-folder.dashed {
+  border-style: dashed;
+  background: transparent;
+}
+
+.lp-folder.dashed::before {
+  background: var(--bg-surface-3);
+}
+
+.lp.classic .lp-row + .lp-row {
+  margin-top: 4px;
+}
+
+.lp-card.ghost {
+  opacity: 0;
+}
+
+/* Modern: the play button and presence dot are the tell */
+.lp-card i {
+  position: absolute;
+  right: 3px;
+  top: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+.lp-card.live::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.lp-chips {
+  display: flex;
+  gap: 3px;
+}
+
+.lp-chips span {
+  width: 16px;
+  height: 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+}
+
+.lp-chips span.on {
+  background: var(--accent-bg-hover);
+  border-color: var(--accent);
+}
+
+.theme-label {
+  display: block;
+}
+
 .theme-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

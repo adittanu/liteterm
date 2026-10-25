@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, watch } from 'vue'
-import { X, KeyRound, IdCard } from 'lucide-vue-next'
+import { X, KeyRound, IdCard, FolderTree } from 'lucide-vue-next'
 import { useHostsStore } from '../stores/hosts'
 import { useCredentialsStore } from '../stores/credentials'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
+import { useUiStore } from '../stores/ui'
 import { api } from '../services/api'
 import PlanetAvatar from './PlanetAvatar.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
@@ -17,6 +18,7 @@ const hosts = useHostsStore()
 const credentials = useCredentialsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
+const ui = useUiStore()
 
 const form = reactive({
   label: props.host.label,
@@ -278,6 +280,15 @@ function connect() {
 
     <footer class="panel-footer">
       <button class="btn btn-primary connect-btn" @click="connect">Connect</button>
+      <button
+        class="btn btn-secondary sftp-btn"
+        :aria-label="`Browse files on ${host.label}`"
+        title="Browse files (SFTP)"
+        @click="saveField().then(() => ui.openSftpFor(host.id))"
+      >
+        <FolderTree :size="15" :stroke-width="1.5" aria-hidden="true" />
+        SFTP
+      </button>
     </footer>
   </aside>
 </template>
@@ -452,13 +463,19 @@ function connect() {
 }
 
 .panel-footer {
+  display: flex;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border);
 }
 
 .connect-btn {
-  width: 100%;
+  flex: 1;
   padding: 10px;
   font-size: var(--text-md);
+}
+
+.sftp-btn {
+  padding: 10px 14px;
 }
 </style>

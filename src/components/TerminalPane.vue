@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
@@ -19,17 +20,35 @@ const container = ref<HTMLElement | null>(null)
 let term: Terminal | null = null
 let fit: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
+let fitFrame = 0
+
+function scheduleFit() {
+  if (fitFrame) return
+  fitFrame = requestAnimationFrame(() => {
+    fitFrame = 0
+    if (!term || !fit) return
+    try {
+      const dims = fit.proposeDimensions()
+      if (!dims || (term.cols === dims.cols && term.rows === dims.rows)) return
+      fit.fit()
+    } catch {
+      // container hidden — fit() can throw when dimensions are 0
+    }
+  })
+}
 
 function terminalTheme() {
   return xtermThemeFor(ui.settings.theme, ui.systemDark)
 }
 
-// Coalesce keystrokes into ~16ms batches so fast typing costs one invoke per frame
+// One key can emit more than one sequence. Fold those into a single write
+// before paint, but don't wait a frame — a 16ms timer is enough to feel
+// the echo lag behind Windows Terminal.
 let inputBuf = ''
-let flushTimer: number | null = null
+let inputQueued = false
 
 function flushInput() {
-  flushTimer = null
+  inputQueued = false
   if (!inputBuf || !term) return
   const data = inputBuf
   inputBuf = ''
@@ -38,9 +57,9 @@ function flushInput() {
 
 function queueInput(data: string) {
   inputBuf += data
-  if (flushTimer === null) {
-    flushTimer = window.setTimeout(flushInput, 16)
-  }
+  if (inputQueued) return
+  inputQueued = true
+  queueMicrotask(flushInput)
 }
 
 // Kitty keyboard protocol state, tracked from the app's output stream:
@@ -51,8 +70,11 @@ let kittyActive = false
 let vtTail = ''
 const KITTY_MODE = /\x1b\[(>|<|=)([^u]*)u/g
 
-function scanKitty(data: string) {
-  vtTail = (vtTail + data).slice(-32)
+function scanKitty(bytes: Uint8Array) {
+  const start = Math.max(0, bytes.length - 48)
+  let piece = ''
+  for (let i = start; i < bytes.length; i++) piece += String.fromCharCode(bytes[i])
+  vtTail = (vtTail + piece).slice(-48)
   KITTY_MODE.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = KITTY_MODE.exec(vtTail))) {
@@ -74,19 +96,60 @@ function applyFont() {
   fit?.fit()
 }
 
+// WebGL repaints a full-screen TUI on the GPU; the DOM renderer draws text
+// through Chromium's own DirectWrite path (closer to Windows Terminal's
+// glyph weight) but costs more CPU. Disposing the addon falls back to DOM.
+let webgl: WebglAddon | null = null
+
+function applyRenderer() {
+  if (!term) return
+  const want = ui.terminalRender.webgl
+  if (want && !webgl) {
+    try {
+      const addon = new WebglAddon()
+      addon.onContextLoss(() => {
+        addon.dispose()
+        if (webgl === addon) webgl = null
+      })
+      term.loadAddon(addon)
+      webgl = addon
+    } catch {
+      // no WebGL — DOM renderer stays in place
+    }
+  } else if (!want && webgl) {
+    webgl.dispose()
+    webgl = null
+  }
+  term.refresh(0, term.rows - 1)
+}
+
 onMounted(() => {
   if (!container.value) return
 
   term = new Terminal({
     // Nerd Font variants come after the base family so icon glyphs
     // (oh-my-posh, agent prompts) fall back per-glyph instead of tofu
+    // Same face as this machine's Windows Terminal defaults (MesloLGM Nerd Font Mono).
     fontFamily:
-      '"Cascadia Code", "Cascadia Code NF", "Cascadia Mono NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Hack Nerd Font", ui-monospace, Consolas, monospace',
+      '"MesloLGM Nerd Font Mono", "Cascadia Code", "Cascadia Code NF", "Cascadia Mono NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Hack Nerd Font", ui-monospace, Consolas, monospace',
     fontSize: ui.settings.terminalFontSize,
-    lineHeight: 1.2,
+    fontWeight: 'normal',
+    // Windows Terminal's documented default intenseTextStyle is "bright"
+    // (regular weight), but on this machine WT visibly draws SGR bold heavy.
+    // Toggleable from Settings → Terminal while comparing.
+    fontWeightBold: ui.terminalRender.realBold ? 'bold' : 'normal',
+    // 1.0 keeps block-character art (opencode's splash, box drawing) flush.
+    // A taller line height opens a gap between rows and the mark looks sliced.
+    lineHeight: 1,
     cursorBlink: true,
     cursorStyle: 'bar',
     scrollback: 10000,
+    // Instant scroll. A non-zero duration animates the viewport and reads as lag.
+    smoothScrollDuration: 0,
+    // One Half Dark uses the same yellow for the bright slot. Promoting bold
+    // to that slot is a no-op here, and a bright ramp would lighten the gold.
+    drawBoldTextInBrightColors: false,
+    minimumContrastRatio: 1,
     allowTransparency: false,
     theme: terminalTheme(),
     // Lets kitty-aware apps (opencode, Claude Code, …) turn on enhanced
@@ -96,10 +159,12 @@ onMounted(() => {
     // negotiation responses.
     vtExtensions: { kittyKeyboard: true },
   })
+  term.options.theme = terminalTheme()
   fit = new FitAddon()
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon())
   term.open(container.value)
+  applyRenderer()
 
   // App shortcuts are handled by App.vue's capture-phase listener; returning
   // false here keeps xterm from forwarding bound combos into the shell as
@@ -127,10 +192,10 @@ onMounted(() => {
 
   sessions.attachSink(props.session.id, (data) => {
     // xterm gets raw bytes (it buffers partial UTF-8 itself); the kitty
-    // scan runs on the binary string — its patterns are ASCII-only, so
-    // multibyte split boundaries can't produce false matches
-    scanKitty(atob(data))
-    term?.write(b64ToBytes(data))
+    // scan only looks at the ASCII tail, so a multibyte split can't match
+    const bytes = b64ToBytes(data)
+    scanKitty(bytes)
+    term?.write(bytes)
   })
 
   term.onData(queueInput)
@@ -141,13 +206,7 @@ onMounted(() => {
   })
 
   resizeObserver = new ResizeObserver(() => {
-    if (props.session.status === 'connected') {
-      try {
-        fit?.fit()
-      } catch {
-        // container hidden — fit() can throw when dimensions are 0
-      }
-    }
+    if (props.session.status === 'connected') scheduleFit()
   })
   resizeObserver.observe(container.value)
 
@@ -226,18 +285,27 @@ watch(
 )
 
 watch(() => ui.settings.terminalFontSize, applyFont)
+watch(() => ui.terminalRender.webgl, applyRenderer)
+watch(
+  () => ui.terminalRender.realBold,
+  (bold) => {
+    if (term) term.options.fontWeightBold = bold ? 'bold' : 'normal'
+  },
+)
 watch(
   [() => ui.settings.theme, () => ui.systemDark],
   () => {
     if (term) term.options.theme = terminalTheme()
   },
+  { immediate: true },
 )
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  if (fitFrame) cancelAnimationFrame(fitFrame)
   sessions.detachSink(props.session.id)
   resizeObserver?.disconnect()
-  if (flushTimer !== null) window.clearTimeout(flushTimer)
+  webgl = null
   term?.dispose()
   term = null
 })
@@ -256,6 +324,7 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   padding: 8px 0 0 10px;
+  overflow: hidden;
 }
 
 .terminal-container :deep(.xterm) {
@@ -264,5 +333,27 @@ onUnmounted(() => {
 
 .terminal-container :deep(.xterm-viewport) {
   background-color: transparent !important;
+  /* The app-wide scrollbar uses a transparent border and background-clip.
+     On this overlay that disables fast scrolling in WebView2 and each
+     wheel notch waits on the main thread. A plain thumb does not. */
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.terminal-container :deep(.xterm-viewport)::-webkit-scrollbar {
+  width: 8px;
+  background: transparent;
+}
+
+.terminal-container :deep(.xterm-viewport)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.terminal-container :deep(.xterm-viewport)::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: none;
+  border-radius: 4px;
 }
 </style>

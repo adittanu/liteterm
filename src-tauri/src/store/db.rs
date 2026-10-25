@@ -719,6 +719,11 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, rusqlite::Error> {
             "confirmDeleteFile" => settings.confirm_delete_file = v == "true",
             "autoSudoPassword" => settings.auto_sudo_password = v != "false",
             "keybindings" => settings.keybindings = serde_json::from_str(&v).unwrap_or_default(),
+            "hostsLayout" => {
+                if v == "classic" || v == "modern" {
+                    settings.hosts_layout = v
+                }
+            }
             _ => {}
         }
     }
@@ -735,6 +740,7 @@ pub fn set_settings(conn: &Connection, settings: &AppSettings) -> Result<(), rus
             "keybindings",
             serde_json::to_string(&settings.keybindings).unwrap_or_else(|_| "{}".into()),
         ),
+        ("hostsLayout", settings.hosts_layout.clone()),
     ] {
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=?2",

@@ -44,6 +44,9 @@ export const api = {
   // ---- local filesystem (SFTP local pane) ----
   localDrives: (): Promise<string[]> => invoke('local_drives'),
   localList: (path: string): Promise<FileEntry[]> => invoke('local_list', { path }),
+  localPlaces: (): Promise<{ label: string; path: string }[]> => invoke('local_places'),
+  localMkdir: (path: string): Promise<void> => invoke('local_mkdir', { path }),
+  localRename: (from: string, to: string): Promise<void> => invoke('local_rename', { from, to }),
 
   // ---- credentials ----
   listCredentials: (): Promise<Credential[]> => invoke('list_credentials'),
@@ -120,8 +123,9 @@ export const api = {
     invoke('sftp_upload', { sessionId, localPath, remotePath }),
   sftpDownload: (sessionId: number, remotePath: string, localPath: string): Promise<number> =>
     invoke('sftp_download', { sessionId, remotePath, localPath }),
-  sftpCancelTransfer: (transferId: number): Promise<void> =>
-    invoke('sftp_cancel_transfer', { transferId }),
+  sftpCancelTransfer: (sessionId: number, transferId: number): Promise<void> =>
+    invoke('sftp_cancel_transfer', { sessionId, transferId }),
+  sftpHome: (sessionId: number): Promise<string> => invoke('sftp_home', { sessionId }),
   sftpCrossTransfer: (
     srcSessionId: number,
     srcPath: string,

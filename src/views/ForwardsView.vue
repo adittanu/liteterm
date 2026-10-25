@@ -1,312 +1,353 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { Plus, Play, Square, Pencil, Trash2, ArrowLeftRight } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ArrowLeftRight, ArrowRight, Copy, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import { useForwardsStore } from '../stores/extras'
 import { useHostsStore } from '../stores/hosts'
+import { useSessionsStore, errorText } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
-import { errorText } from '../stores/sessions'
-import SearchSelect, { type ComboOption } from '../components/SearchSelect.vue'
+import ForwardDialog from '../components/ForwardDialog.vue'
+import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
+import SearchField from '../components/SearchField.vue'
+import { copyText, matchesQuery } from '../utils/pageHelpers'
+import { waitForConnection } from '../utils/sessionWait'
+import type { PortForward } from '../types'
 
 const forwards = useForwardsStore()
 const hosts = useHostsStore()
+const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
 
-const editingId = ref<number | null>(null)
-const form = reactive({
-  name: '',
-  host_id: 0,
-  local_port: '',
-  remote_host: 'localhost',
-  remote_port: '',
-  auto_start: false,
-})
+const query = ref('')
+const editorOpen = ref(false)
+const editing = ref<PortForward | null>(null)
+const menu = ref<{ x: number; y: number; items: MenuItem[] } | null>(null)
+// Forwards mid start/stop — the switch shows busy and ignores repeat clicks
+const pending = ref(new Map<number, 'connecting' | 'starting' | 'stopping'>())
 
-function startCreate() {
-  editingId.value = null
-  form.name = ''
-  form.host_id = hosts.hosts[0]?.id ?? 0
-  form.local_port = ''
-  form.remote_host = 'localhost'
-  form.remote_port = ''
-  form.auto_start = false
-}
+const activeCount = computed(() => forwards.forwards.filter((f) => isActive(f.id)).length)
 
-function startEdit(id: number) {
-  const f = forwards.forwards.find((x) => x.id === id)
-  if (!f) return
-  editingId.value = id
-  form.name = f.name
-  form.host_id = f.host_id
-  form.local_port = String(f.local_port)
-  form.remote_host = f.remote_host
-  form.remote_port = String(f.remote_port)
-  form.auto_start = f.auto_start
-}
-
-const valid = computed(() => {
-  const lp = Number(form.local_port)
-  const rp = Number(form.remote_port)
-  return (
-    form.name.trim().length > 0 &&
-    form.host_id > 0 &&
-    Number.isInteger(lp) && lp >= 1 && lp <= 65535 &&
-    form.remote_host.trim().length > 0 &&
-    Number.isInteger(rp) && rp >= 1 && rp <= 65535
-  )
-})
-
-const hostOptions = computed<ComboOption[]>(() =>
-  hosts.hosts.map((h) => ({ value: h.id, label: h.label, hint: h.address })),
+const visible = computed(() =>
+  [...forwards.forwards]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .filter((f) =>
+      matchesQuery(query.value, f.name, hostLabel(f.host_id), f.remote_host, String(f.local_port), String(f.remote_port)),
+    ),
 )
 
-async function save() {
-  if (!valid.value) return
-  try {
-    await forwards.save({
-      id: editingId.value ?? undefined,
-      host_id: form.host_id,
-      name: form.name.trim(),
-      local_port: Number(form.local_port),
-      remote_host: form.remote_host.trim(),
-      remote_port: Number(form.remote_port),
-      auto_start: form.auto_start,
-    })
-    startCreate()
-  } catch (e) {
-    ui.toast('error', `Save failed: ${errorText(e)}`)
-  }
-}
-
-async function remove(id: number) {
-  const f = forwards.forwards.find((x) => x.id === id)
-  const ok = await dialogs.confirm({
-    title: `Delete forward “${f?.name ?? id}”?`,
-    message: 'This cannot be undone.',
-    confirmLabel: 'Delete',
-    danger: true,
-  })
-  if (!ok) return
-  await forwards.remove(id)
+function isActive(id: number): boolean {
+  return forwards.activeIds.includes(id)
 }
 
 function hostLabel(id: number): string {
   return hosts.hostById(id)?.label ?? `host #${id}`
 }
 
-function onToggle(id: number, active: boolean) {
-  void (active ? forwards.start(id) : forwards.stop(id)).catch((e) =>
-    ui.toast('error', errorText(e)),
-  )
+function hostStatus(hostId: number): 'connected' | 'connecting' | 'idle' {
+  const tab = sessions.tabs.find((t) => t.hostId === hostId)
+  if (!tab) return 'idle'
+  if (tab.status === 'connected') return 'connected'
+  if (tab.status === 'connecting' || tab.status === 'hostkey') return 'connecting'
+  return 'idle'
 }
+
+function statusText(f: PortForward): string {
+  const p = pending.value.get(f.id)
+  if (p === 'connecting') return `Connecting to ${hostLabel(f.host_id)}…`
+  if (p === 'starting') return 'Starting…'
+  if (p === 'stopping') return 'Stopping…'
+  if (isActive(f.id)) return 'Listening'
+  return hostStatus(f.host_id) === 'connected' ? 'Stopped' : 'Host offline'
+}
+
+function setPending(id: number, state: 'connecting' | 'starting' | 'stopping' | null) {
+  const next = new Map(pending.value)
+  if (state) next.set(id, state)
+  else next.delete(id)
+  pending.value = next
+}
+
+async function toggle(f: PortForward) {
+  if (pending.value.has(f.id)) return
+  const turnOn = !isActive(f.id)
+  try {
+    if (!turnOn) {
+      setPending(f.id, 'stopping')
+      await forwards.stop(f.id)
+      return
+    }
+    if (hostStatus(f.host_id) !== 'connected') {
+      setPending(f.id, 'connecting')
+      await sessions.connect(f.host_id, undefined, { silent: true })
+      if ((await waitForConnection(f.host_id)) === null) {
+        ui.toast('error', `Couldn’t connect to ${hostLabel(f.host_id)} — the tunnel was not started`)
+        return
+      }
+    }
+    setPending(f.id, 'starting')
+    await forwards.start(f.id)
+    ui.toast('success', `Listening on localhost:${f.local_port}`, {
+      actionLabel: 'Copy',
+      action: () => void copyText(`localhost:${f.local_port}`, 'Address copied'),
+    })
+  } catch (e) {
+    ui.toast('error', errorText(e))
+  } finally {
+    setPending(f.id, null)
+  }
+}
+
+function openNew() {
+  editing.value = null
+  editorOpen.value = true
+}
+
+function openEdit(f: PortForward) {
+  editing.value = f
+  editorOpen.value = true
+}
+
+function openMenu(f: PortForward, e: MouseEvent) {
+  menu.value = {
+    x: e.clientX,
+    y: e.clientY,
+    items: [
+      { label: 'Edit', icon: Pencil, action: () => openEdit(f) },
+      { label: 'Copy local address', icon: Copy, action: () => void copyText(`localhost:${f.local_port}`, 'Address copied') },
+      { label: 'Delete', icon: Trash2, danger: true, action: () => void remove(f) },
+    ],
+  }
+}
+
+// Forgiveness over confirmation: delete immediately, offer Undo
+async function remove(f: PortForward) {
+  try {
+    await forwards.remove(f.id)
+  } catch (e) {
+    ui.toast('error', `Could not delete: ${errorText(e)}`)
+    return
+  }
+  const restore = {
+    host_id: f.host_id,
+    name: f.name,
+    local_port: f.local_port,
+    remote_host: f.remote_host,
+    remote_port: f.remote_port,
+    auto_start: f.auto_start,
+  }
+  ui.toast('info', `Deleted “${f.name}”`, {
+    actionLabel: 'Undo',
+    duration: 6000,
+    action: () => void forwards.save(restore).catch((e) => ui.toast('error', errorText(e))),
+  })
+}
+
+// Keep switches honest: auto-start tunnels come up on connect and die with
+// their session, both outside this page's control
+const sessionKey = computed(() => sessions.tabs.map((t) => `${t.hostId}:${t.status}`).join('|'))
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+watch(sessionKey, () => {
+  clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => void forwards.refreshActive().catch(() => {}), 400)
+})
 
 onMounted(() => {
   if (!hosts.loaded) void hosts.load()
   if (!forwards.loaded) void forwards.load()
-  startCreate()
+  else void forwards.refreshActive().catch(() => {})
 })
+onBeforeUnmount(() => clearTimeout(refreshTimer))
 </script>
 
 <template>
   <div class="page">
     <header class="page-header">
-      <div>
-        <h2 class="page-title">Port Forwarding</h2>
-        <p class="page-sub">Tunnel a local port through SSH. A forward needs a connected host while active.</p>
+      <div class="page-heading">
+        <h2 class="page-title">
+          Port Forwarding
+          <span v-if="forwards.forwards.length" class="page-count">{{ forwards.forwards.length }}</span>
+        </h2>
+        <p class="page-sub">Reach a service behind an SSH host as if it ran on this PC.</p>
+      </div>
+      <div v-if="hosts.hosts.length" class="page-actions">
+        <button class="btn btn-primary" @click="openNew">
+          <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+          New forward
+        </button>
       </div>
     </header>
 
-    <div class="page-scroll">
-      <template v-if="hosts.hosts.length">
-        <!-- Editor -->
-        <form class="fwd-editor" @submit.prevent="save">
-          <div class="fwd-grid">
-            <div class="field">
-              <label class="field-label" for="fw-name">Name</label>
-              <input id="fw-name" v-model="form.name" class="field-input" type="text" placeholder="db tunnel" spellcheck="false" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="fw-host">Via host</label>
-              <SearchSelect id="fw-host" v-model="form.host_id" :options="hostOptions" aria-label="Via host" />
-            </div>
-          </div>
-          <div class="fwd-grid3">
-            <div class="field">
-              <label class="field-label" for="fw-lport">Local port</label>
-              <input id="fw-lport" v-model="form.local_port" class="field-input mono" type="text" inputmode="numeric" placeholder="5432" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="fw-rhost">Remote host</label>
-              <input id="fw-rhost" v-model="form.remote_host" class="field-input mono" type="text" placeholder="localhost" spellcheck="false" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="fw-rport">Remote port</label>
-              <input id="fw-rport" v-model="form.remote_port" class="field-input mono" type="text" inputmode="numeric" placeholder="5432" />
-            </div>
-          </div>
-          <div class="fwd-editor-foot">
-            <label class="check">
-              <input v-model="form.auto_start" type="checkbox" />
-              Start automatically when the host connects
-            </label>
-            <button type="submit" class="btn btn-primary" :disabled="!valid">
-              <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-              {{ editingId !== null ? 'Update' : 'Add forward' }}
-            </button>
-          </div>
-        </form>
-
-        <!-- List -->
-        <div v-if="!forwards.forwards.length" class="empty-state page-empty">
-          <ArrowLeftRight :size="22" :stroke-width="1.5" aria-hidden="true" />
-          <p>No forwards yet. Add one above to tunnel a local port through SSH.</p>
-        </div>
-
-        <ul v-else class="fwd-list">
-          <li v-for="f in forwards.forwards" :key="f.id" class="fwd-card">
-            <span
-              class="status-dot"
-              :class="forwards.activeIds.includes(f.id) ? 'connected' : 'idle'"
-              :title="forwards.activeIds.includes(f.id) ? 'Active' : 'Stopped'"
-            ></span>
-            <div class="fwd-info">
-              <span class="fwd-name">{{ f.name }}</span>
-              <code class="fwd-detail mono text-ellipsis">
-                localhost:{{ f.local_port }} → {{ hostLabel(f.host_id) }} → {{ f.remote_host }}:{{ f.remote_port }}
-              </code>
-            </div>
-            <div class="fwd-actions">
-              <button
-                class="btn-icon"
-                :aria-label="forwards.activeIds.includes(f.id) ? `Stop ${f.name}` : `Start ${f.name}`"
-                :title="forwards.activeIds.includes(f.id) ? 'Stop' : 'Start'"
-                @click="onToggle(f.id, !forwards.activeIds.includes(f.id))"
-              >
-                <Square v-if="forwards.activeIds.includes(f.id)" :size="14" :stroke-width="1.5" aria-hidden="true" />
-                <Play v-else :size="14" :stroke-width="1.5" aria-hidden="true" />
-              </button>
-              <button class="btn-icon" :aria-label="`Edit ${f.name}`" title="Edit" @click="startEdit(f.id)">
-                <Pencil :size="13" :stroke-width="1.5" aria-hidden="true" />
-              </button>
-              <button class="btn-icon fwd-delete" :aria-label="`Delete ${f.name}`" title="Delete" @click="remove(f.id)">
-                <Trash2 :size="13" :stroke-width="1.5" aria-hidden="true" />
-              </button>
-            </div>
-          </li>
-        </ul>
-      </template>
-
-      <div v-else class="empty-state page-empty">
-        <ArrowLeftRight :size="22" :stroke-width="1.5" aria-hidden="true" />
-        <p>Add a host first — forwards tunnel through an SSH connection.</p>
-      </div>
+    <div v-if="forwards.forwards.length" class="page-toolbar">
+      <SearchField v-model="query" label="Search forwards" placeholder="Search by name, host or port" />
+      <span class="toolbar-spacer"></span>
+      <span class="toolbar-label">
+        <span class="status-dot" :class="activeCount ? 'connected' : 'idle'" aria-hidden="true"></span>
+        {{ activeCount ? `${activeCount} active` : 'None active' }}
+      </span>
     </div>
+
+    <div class="page-scroll">
+      <div v-if="!hosts.hosts.length" class="empty-hero">
+        <span class="empty-icon"><ArrowLeftRight :size="22" :stroke-width="1.5" aria-hidden="true" /></span>
+        <p class="empty-title">Add a host first</p>
+        <p class="empty-sub">Forwards tunnel through an SSH connection, so they need a saved host to go through.</p>
+        <button class="btn btn-primary" @click="dialogs.openHostDialog(null)">
+          <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+          New host
+        </button>
+      </div>
+
+      <div v-else-if="!forwards.forwards.length" class="empty-hero">
+        <span class="empty-icon"><ArrowLeftRight :size="22" :stroke-width="1.5" aria-hidden="true" /></span>
+        <p class="empty-title">No forwards yet</p>
+        <p class="empty-sub">
+          For example, open a database that only listens on the server at
+          <code class="mono">localhost:5432</code> on this PC.
+        </p>
+        <button class="btn btn-primary" @click="openNew">
+          <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+          New forward
+        </button>
+      </div>
+
+      <p v-else-if="!visible.length" class="no-results">No forwards match “{{ query.trim() }}”</p>
+
+      <ul v-else class="inset-list">
+        <li
+          v-for="f in visible"
+          :key="f.id"
+          class="list-row fwd-row"
+          :class="{ on: isActive(f.id) }"
+          @contextmenu.prevent="openMenu(f, $event)"
+        >
+          <span class="row-tile fwd-tile" aria-hidden="true">
+            <ArrowLeftRight :size="15" :stroke-width="1.75" />
+          </span>
+
+          <button class="row-main fwd-main" :aria-label="`Edit ${f.name}`" @click="openEdit(f)">
+            <span class="row-title">
+              <span class="text-ellipsis">{{ f.name }}</span>
+              <span v-if="f.auto_start" class="chip" title="Starts whenever the host connects">Auto</span>
+            </span>
+            <span class="fwd-route mono">
+              <span class="fwd-local">localhost:{{ f.local_port }}</span>
+              <ArrowRight :size="11" :stroke-width="1.75" class="fwd-arrow" aria-hidden="true" />
+              <span class="text-ellipsis">{{ f.remote_host }}:{{ f.remote_port }}</span>
+            </span>
+            <span class="row-sub fwd-via">
+              <span class="status-dot" :class="hostStatus(f.host_id)" aria-hidden="true"></span>
+              <span class="text-ellipsis">via {{ hostLabel(f.host_id) }}</span>
+              <span class="fwd-state" :class="{ live: isActive(f.id) && !pending.has(f.id) }">· {{ statusText(f) }}</span>
+            </span>
+          </button>
+
+          <span class="row-actions">
+            <button
+              class="btn-icon"
+              :aria-label="`Copy localhost:${f.local_port}`"
+              title="Copy local address"
+              @click="copyText(`localhost:${f.local_port}`, 'Address copied')"
+            >
+              <Copy :size="14" :stroke-width="1.5" aria-hidden="true" />
+            </button>
+            <button class="btn-icon" :aria-label="`Options for ${f.name}`" @click.stop="openMenu(f, $event)">
+              <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
+            </button>
+          </span>
+
+          <button
+            class="switch"
+            role="switch"
+            :aria-checked="isActive(f.id) || pending.get(f.id) === 'connecting' || pending.get(f.id) === 'starting'"
+            :aria-busy="pending.has(f.id)"
+            :aria-label="`${isActive(f.id) ? 'Stop' : 'Start'} ${f.name}`"
+            :title="isActive(f.id) ? 'Stop tunnel' : hostStatus(f.host_id) === 'connected' ? 'Start tunnel' : 'Connect and start'"
+            @click="toggle(f)"
+          ></button>
+        </li>
+      </ul>
+    </div>
+
+    <ForwardDialog v-if="editorOpen" :forward="editing" @close="editorOpen = false" />
+    <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" :items="menu.items" @close="menu = null" />
   </div>
 </template>
 
 <style scoped>
 @import '../styles/page.css';
 
-.fwd-editor {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
-  margin-bottom: var(--space-5);
-  box-shadow: var(--shadow-1);
+.toolbar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.fwd-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
+.fwd-row {
+  --row-inset: 58px;
+  padding-block: 11px;
 }
 
-.fwd-grid3 {
-  display: grid;
-  grid-template-columns: 110px 1fr 110px;
-  gap: var(--space-3);
+.fwd-tile {
+  transition: background-color 200ms ease, color 200ms ease;
 }
 
-.fwd-editor-foot {
+.fwd-row.on .fwd-tile {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.fwd-main {
+  gap: 3px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.fwd-route {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-}
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  gap: 6px;
+  min-width: 0;
   font-size: var(--text-sm);
   color: var(--text-2);
-  cursor: pointer;
 }
 
-.check input {
-  accent-color: var(--accent);
-  width: 14px;
-  height: 14px;
+.fwd-local {
+  color: var(--text-1);
+  flex-shrink: 0;
 }
 
-.fwd-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+.fwd-arrow {
+  color: var(--text-4);
+  flex-shrink: 0;
 }
 
-.fwd-card {
+.fwd-via {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
-  transition: background-color var(--dur-hover) ease;
+  gap: 6px;
 }
 
-.fwd-card:hover {
-  background: var(--bg-hover);
+.fwd-via .status-dot {
+  width: 6px;
+  height: 6px;
 }
 
-.fwd-info {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1;
-  min-width: 0;
+.fwd-state {
+  flex-shrink: 0;
+  color: var(--text-4);
 }
 
-.fwd-name {
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--text-1);
+.fwd-state.live {
+  color: var(--success);
 }
 
-.fwd-detail {
-  font-size: var(--text-xs);
-  color: var(--text-3);
+.fwd-row .switch {
+  margin-left: var(--space-1);
 }
 
-.fwd-actions {
-  display: flex;
-  gap: 2px;
-  opacity: 0;
-  transition: opacity var(--dur-hover) ease;
-}
-
-.fwd-card:hover .fwd-actions,
-.fwd-card:focus-within .fwd-actions {
-  opacity: 1;
-}
-
-.fwd-delete:hover {
-  color: var(--danger);
+code {
+  font-size: 0.95em;
+  color: var(--text-2);
 }
 </style>

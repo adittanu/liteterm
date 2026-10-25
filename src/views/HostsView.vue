@@ -1,29 +1,38 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  Search,
-  Plus,
-  SquareTerminal,
-  Pencil,
-  Trash2,
+  ClipboardCopy,
+  Copy,
+  Download,
   Folder,
   FolderPlus,
-  ChevronLeft,
-  ChevronRight,
+  FolderTree,
+  LayoutGrid,
   MoreHorizontal,
+  Pencil,
+  Play,
+  Plus,
   PlugZap,
-  Download,
+  Rows3,
+  Search,
+  Server,
+  SquareTerminal,
+  Trash2,
   Upload,
+  X,
 } from 'lucide-vue-next'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
-import { useHostsStore } from '../stores/hosts'
-import { useSessionsStore } from '../stores/sessions'
-import { useDialogsStore } from '../stores/dialogs'
-import { useUiStore } from '../stores/ui'
 import HostDetailsPanel from '../components/HostDetailsPanel.vue'
 import PlanetAvatar from '../components/PlanetAvatar.vue'
+import { useHostsStore } from '../stores/hosts'
+import { useSessionsStore, errorText } from '../stores/sessions'
+import { useDialogsStore } from '../stores/dialogs'
+import { useUiStore } from '../stores/ui'
 import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
+import { fuzzy, highlight } from '../utils/fuzzy'
+import { copyText, plural, relativeAge } from '../utils/pageHelpers'
+import { comboFor } from '../services/shortcuts'
 import type { Host, HostGroup } from '../types'
 
 const hosts = useHostsStore()
@@ -31,14 +40,37 @@ const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
 
+type GroupFilter = 'all' | 'ungrouped' | number
+type Layout = 'grid' | 'list'
+
 const query = ref('')
 const selectedId = ref<number | null>(null)
-// null = root (folders + all hosts) · a group id = inside that folder
-const currentGroupId = ref<number | null>(null)
 const menu = ref<{ x: number; y: number; items: MenuItem[] } | null>(null)
-// Direction of the last folder navigation, so the transition mirrors it:
-// drilling in slides forward, going back slides backward
-const navDir = ref<'fwd' | 'back'>('fwd')
+const searchEl = ref<HTMLInputElement | null>(null)
+const bodyEl = ref<HTMLElement | null>(null)
+const focusKey = ref<number | null>(null)
+
+const layout = ref<Layout>(localStorage.getItem('hosts.layout') === 'list' ? 'list' : 'grid')
+watch(layout, (v) => localStorage.setItem('hosts.layout', v))
+
+const groupFilter = ref<GroupFilter>(readGroupFilter())
+function readGroupFilter(): GroupFilter {
+  const raw = localStorage.getItem('hosts.group')
+  if (raw === 'ungrouped') return 'ungrouped'
+  const n = Number(raw)
+  return raw && Number.isInteger(n) ? n : 'all'
+}
+watch(groupFilter, (v) => localStorage.setItem('hosts.group', String(v)))
+
+// A remembered group that no longer exists falls back to All
+watch(
+  () => hosts.groups.map((g) => g.id).join(','),
+  () => {
+    const g = groupFilter.value
+    if (typeof g === 'number' && hosts.loaded && !hosts.groups.some((x) => x.id === g)) groupFilter.value = 'all'
+  },
+  { immediate: true },
+)
 
 const searching = computed(() => query.value.trim().length > 0)
 
@@ -53,108 +85,11 @@ const {
 } = useSmartConnect(query)
 const smartDisplay = computed(() => (smartTarget.value ? targetDisplay(smartTarget.value) : ''))
 
-const currentGroup = computed(
-  () => hosts.groups.find((g) => g.id === currentGroupId.value) ?? null,
-)
+// ---- status ----
 
-const groupCards = computed(() =>
-  hosts.groups.map((g) => ({
-    ...g,
-    count: hosts.hosts.filter((h) => h.group_id === g.id).length,
-  })),
-)
+type Status = 'connected' | 'connecting' | 'error' | 'idle'
 
-function hostMatches(h: Host, q: string): boolean {
-  return (
-    h.label.toLowerCase().includes(q) ||
-    h.address.toLowerCase().includes(q) ||
-    h.username.toLowerCase().includes(q)
-  )
-}
-
-// Root: folders (searched by name). Hidden entirely while inside a group.
-const visibleFolders = computed(() => {
-  if (currentGroupId.value !== null) return []
-  const q = query.value.trim().toLowerCase()
-  if (!q) return groupCards.value
-  return groupCards.value.filter((g) => g.name.toLowerCase().includes(q))
-})
-
-// Root shows every host (folders are just a way in); inside a folder, only
-// its hosts. Search filters whichever scope is active.
-const visibleHosts = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  let list = hosts.hosts
-  if (currentGroupId.value !== null) {
-    list = list.filter((h) => h.group_id === currentGroupId.value)
-  }
-  if (q) list = list.filter((h) => hostMatches(h, q))
-  return [...list].sort(byRecent)
-})
-
-// Most recently accessed first; hosts never connected stay alphabetical
-function byRecent(a: Host, b: Host): number {
-  return (b.last_used_at ?? 0) - (a.last_used_at ?? 0) || a.label.localeCompare(b.label)
-}
-
-function groupName(id: number | null): string {
-  if (id === null) return ''
-  return hosts.groups.find((g) => g.id === id)?.name ?? ''
-}
-
-const selectedHost = computed(
-  () => hosts.hosts.find((h) => h.id === selectedId.value) ?? null,
-)
-
-function select(host: Host) {
-  selectedId.value = host.id
-}
-
-// Entering or leaving a folder ends the search — intent shifts to browsing.
-function openGroup(g: HostGroup) {
-  navDir.value = 'fwd'
-  currentGroupId.value = g.id
-  query.value = ''
-  selectedId.value = null
-}
-
-function goRoot() {
-  navDir.value = 'back'
-  currentGroupId.value = null
-  query.value = ''
-}
-
-function connectFirst() {
-  // A parsed quick-connect target wins over the filtered list
-  if (smartMatches.value.length) {
-    void sessions.connect(smartMatches.value[0].host.id)
-    return
-  }
-  if (smartTarget.value) {
-    openQuickAdd()
-    return
-  }
-  const first = visibleHosts.value[0]
-  if (first) void sessions.connect(first.id)
-}
-
-function openQuickAdd() {
-  const t = smartTarget.value
-  if (!t) return
-  dialogs.openHostDialog(
-    null,
-    currentGroupId.value,
-    {
-      address: t.host,
-      port: t.port ?? 22,
-      username: t.username,
-      ips: t.kind === 'domain' ? smartIps.value : [],
-    },
-    true,
-  )
-}
-
-function statusFor(hostId: number): string {
+function statusFor(hostId: number): Status {
   const tab = sessions.tabs.find((t) => t.hostId === hostId)
   if (!tab) return 'idle'
   if (tab.status === 'connected') return 'connected'
@@ -163,7 +98,191 @@ function statusFor(hostId: number): string {
   return 'idle'
 }
 
-function openFolderMenu(g: HostGroup, e: MouseEvent) {
+const statusLabel: Record<Status, string> = {
+  connected: 'Connected',
+  connecting: 'Connecting…',
+  error: 'Connection failed',
+  idle: '',
+}
+
+// ---- groups ----
+
+const groupCounts = computed(() => {
+  const m = new Map<number | null, number>()
+  for (const h of hosts.hosts) m.set(h.group_id, (m.get(h.group_id) ?? 0) + 1)
+  return m
+})
+const ungroupedCount = computed(() => groupCounts.value.get(null) ?? 0)
+const currentGroup = computed(() =>
+  typeof groupFilter.value === 'number' ? hosts.groups.find((g) => g.id === groupFilter.value) ?? null : null,
+)
+
+function groupName(id: number | null): string {
+  if (id === null) return ''
+  return hosts.groups.find((g) => g.id === id)?.name ?? ''
+}
+
+// ---- what's listed ----
+
+interface Row {
+  host: Host
+  status: Status
+  label: { text: string; hit: boolean }[]
+  score: number
+}
+
+const scoped = computed(() => {
+  const g = groupFilter.value
+  if (g === 'all') return hosts.hosts
+  if (g === 'ungrouped') return hosts.hosts.filter((h) => h.group_id === null)
+  return hosts.hosts.filter((h) => h.group_id === g)
+})
+
+const rows = computed<Row[]>(() => {
+  const q = query.value.trim()
+  const out: Row[] = []
+  for (const host of scoped.value) {
+    let score = 0
+    let hits: number[] = []
+    if (q) {
+      const l = fuzzy(q, host.label)
+      const a = fuzzy(q, `${host.username}@${host.address}`)
+      const best = Math.max(l?.score ?? -Infinity, (a?.score ?? -Infinity) * 0.85, (fuzzy(q, groupName(host.group_id))?.score ?? -Infinity) * 0.5)
+      if (best === -Infinity) continue
+      score = best
+      hits = l && l.score >= (a?.score ?? -Infinity) * 0.85 ? l.hits : []
+    }
+    out.push({ host, status: statusFor(host.id), label: highlight(host.label, hits), score })
+  }
+  return out.sort((a, b) =>
+    q
+      ? b.score - a.score
+      : (b.host.last_used_at ?? 0) - (a.host.last_used_at ?? 0) || a.host.label.localeCompare(b.host.label),
+  )
+})
+
+// Live sessions get their own section in the unfiltered view
+const showActiveSection = computed(() => !searching.value && rows.value.some((r) => r.status !== 'idle'))
+const activeRows = computed(() => (showActiveSection.value ? rows.value.filter((r) => r.status !== 'idle') : []))
+const restRows = computed(() => (showActiveSection.value ? rows.value.filter((r) => r.status === 'idle') : rows.value))
+const ordered = computed(() => [...activeRows.value, ...restRows.value])
+
+const sectionTitle = computed(() => {
+  if (searching.value) return 'Matching hosts'
+  if (currentGroup.value) return currentGroup.value.name
+  if (groupFilter.value === 'ungrouped') return 'Ungrouped'
+  return showActiveSection.value ? 'All hosts' : 'Hosts'
+})
+
+const selectedHost = computed(() => hosts.hosts.find((h) => h.id === selectedId.value) ?? null)
+
+// ---- actions ----
+
+function connect(host: Host) {
+  void sessions.connect(host.id)
+}
+
+function openSftp(host: Host) {
+  ui.openSftpFor(host.id)
+}
+
+function sshCommand(h: Host): string {
+  return `ssh ${h.username}@${h.address}${h.port !== 22 ? ` -p ${h.port}` : ''}`
+}
+
+async function duplicate(h: Host) {
+  try {
+    const copy = await hosts.saveHost({
+      group_id: h.group_id,
+      label: `${h.label} copy`,
+      address: h.address,
+      port: h.port,
+      username: h.username,
+      auth_method: h.auth_method,
+      key_path: h.key_path,
+      credential_id: h.credential_id,
+      save_password: false,
+    })
+    selectedId.value = copy.id
+    ui.toast('success', `Duplicated “${h.label}”${h.has_password && !h.credential_id ? ' — the password isn’t copied' : ''}`)
+  } catch (e) {
+    ui.toast('error', `Could not duplicate: ${errorText(e)}`)
+  }
+}
+
+async function removeHost(host: Host) {
+  const ok = await dialogs.confirm({
+    title: `Delete “${host.label}”?`,
+    message: 'The saved connection is removed. Open sessions stay open.',
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!ok) return
+  if (selectedId.value === host.id) selectedId.value = null
+  await hosts.removeHost(host.id)
+  ui.toast('info', `Deleted “${host.label}”`)
+}
+
+function newHost() {
+  dialogs.openHostDialog(null, typeof groupFilter.value === 'number' ? groupFilter.value : null)
+}
+
+/** Enter in the search box: a quick-connect target wins, else the top match. */
+function connectFirst() {
+  if (smartMatches.value.length) return connect(smartMatches.value[0].host)
+  if (smartTarget.value) return openQuickAdd()
+  const first = ordered.value[0]
+  if (first) connect(first.host)
+}
+
+function openQuickAdd() {
+  const t = smartTarget.value
+  if (!t) return
+  dialogs.openHostDialog(
+    null,
+    typeof groupFilter.value === 'number' ? groupFilter.value : null,
+    { address: t.host, port: t.port ?? 22, username: t.username, ips: t.kind === 'domain' ? smartIps.value : [] },
+    true,
+  )
+}
+
+// ---- menus ----
+
+function hostMenu(host: Host, e: MouseEvent) {
+  selectedId.value = host.id
+  const live = statusFor(host.id) === 'connected'
+  menu.value = {
+    x: e.clientX,
+    y: e.clientY,
+    items: [
+      { label: live ? 'Open terminal' : 'Connect', icon: Play, action: () => connect(host) },
+      { label: 'Browse files (SFTP)', icon: FolderTree, action: () => openSftp(host) },
+      { label: 'Edit', icon: Pencil, action: () => dialogs.openHostDialog(host) },
+      { label: 'Duplicate', icon: Copy, action: () => void duplicate(host) },
+      { label: 'Copy SSH command', icon: ClipboardCopy, action: () => void copyText(sshCommand(host), 'SSH command copied') },
+      { label: 'Delete', icon: Trash2, danger: true, action: () => void removeHost(host) },
+    ],
+  }
+}
+
+function menuAt(e: MouseEvent, items: MenuItem[], alignRight = false) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  menu.value = { x: alignRight ? r.right - 200 : r.left, y: r.bottom + 6, items }
+}
+
+function moreMenu(e: MouseEvent) {
+  menuAt(
+    e,
+    [
+      { label: 'New group', icon: FolderPlus, action: () => dialogs.openGroupDialog(null) },
+      { label: 'Import hosts…', icon: Download, action: () => (dialogs.showImport = true) },
+      { label: 'Export hosts…', icon: Upload, action: () => (dialogs.showExport = true) },
+    ],
+    true,
+  )
+}
+
+function groupMenu(g: HostGroup, e: MouseEvent) {
   menu.value = {
     x: e.clientX,
     y: e.clientY,
@@ -176,261 +295,368 @@ function openFolderMenu(g: HostGroup, e: MouseEvent) {
 }
 
 async function deleteGroup(g: HostGroup) {
+  const n = groupCounts.value.get(g.id) ?? 0
   const ok = await dialogs.confirm({
-    title: `Delete “${g.name}”?`,
-    message: 'The group is removed. Its hosts are kept and become ungrouped.',
+    title: `Delete group “${g.name}”?`,
+    message: n ? `Its ${plural(n, 'host')} are kept and become ungrouped.` : 'The group is empty.',
     confirmLabel: 'Delete group',
     danger: true,
   })
   if (!ok) return
-  if (currentGroupId.value === g.id) currentGroupId.value = null
+  if (groupFilter.value === g.id) groupFilter.value = 'all'
   await hosts.removeGroup(g.id)
-  ui.toast('info', 'Group deleted')
+  ui.toast('info', `Deleted group “${g.name}”`)
 }
 
-async function deleteSelected() {
-  const host = selectedHost.value
-  if (!host) return
-  const ok = await dialogs.confirm({
-    title: `Delete “${host.label}”?`,
-    message: 'The saved connection will be removed. Active sessions stay open.',
-    confirmLabel: 'Delete',
-    danger: true,
-  })
-  if (!ok) return
-  selectedId.value = null
-  await hosts.removeHost(host.id)
-  ui.toast('info', 'Host deleted')
+// ---- keyboard: arrows move across the grid, Enter connects ----
+
+function cards(): HTMLElement[] {
+  return [...(bodyEl.value?.querySelectorAll<HTMLElement>('[data-host-id]') ?? [])]
+}
+
+function focusCard(el: HTMLElement | undefined) {
+  if (!el) return
+  focusKey.value = Number(el.dataset.hostId)
+  el.focus()
+  el.scrollIntoView({ block: 'nearest' })
+}
+
+function columns(list: HTMLElement[]): number {
+  if (layout.value === 'list' || list.length < 2) return 1
+  const top = list[0].offsetTop
+  const n = list.findIndex((c) => c.offsetTop !== top)
+  return n === -1 ? list.length : n
+}
+
+function onCardKey(e: KeyboardEvent, host: Host) {
+  const list = cards()
+  const i = list.findIndex((c) => Number(c.dataset.hostId) === host.id)
+  const cols = columns(list)
+  const go = (j: number) => {
+    e.preventDefault()
+    focusCard(list[Math.max(0, Math.min(list.length - 1, j))])
+  }
+  switch (e.key) {
+    case 'ArrowRight': return go(i + 1)
+    case 'ArrowLeft': return go(i - 1)
+    case 'ArrowDown': return go(i + cols)
+    case 'ArrowUp':
+      if (i - cols < 0) {
+        e.preventDefault()
+        return searchEl.value?.focus()
+      }
+      return go(i - cols)
+    case 'Home': return go(0)
+    case 'End': return go(list.length - 1)
+    case 'Enter':
+      e.preventDefault()
+      return connect(host)
+    case ' ':
+      e.preventDefault()
+      selectedId.value = selectedId.value === host.id ? null : host.id
+      return
+    case 'Delete':
+      e.preventDefault()
+      return void removeHost(host)
+    case 'F2':
+      e.preventDefault()
+      return dialogs.openHostDialog(host)
+  }
+}
+
+function onSearchKey(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    connectFirst()
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    focusCard(cards()[0])
+  } else if (e.key === 'Escape' && query.value) {
+    e.stopPropagation()
+    query.value = ''
+  }
+}
+
+// "/" or Ctrl+F jumps to search from anywhere on the page
+function onGlobalKey(e: KeyboardEvent) {
+  if (ui.activeView !== 'hosts') return
+  const t = e.target as HTMLElement | null
+  const typing = t?.closest('input, textarea, [contenteditable="true"]')
+  if ((e.key === '/' && !typing) || (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'f')) {
+    if (document.querySelector('[role="dialog"]')) return
+    e.preventDefault()
+    searchEl.value?.focus()
+    searchEl.value?.select()
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onGlobalKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
+
+// Filtering never strands keyboard focus on a card that vanished
+watch(ordered, () => {
+  if (focusKey.value !== null && !ordered.value.some((r) => r.host.id === focusKey.value)) focusKey.value = null
+})
+
+function tabIndexFor(id: number, i: number): number {
+  if (focusKey.value !== null) return focusKey.value === id ? 0 : -1
+  return i === 0 ? 0 : -1
+}
+
+function pickGroup(g: GroupFilter) {
+  groupFilter.value = g
+  void nextTick(() => bodyEl.value?.scrollTo({ top: 0 }))
 }
 </script>
 
 <template>
   <div class="hosts-view">
     <div class="hosts-main">
-      <!-- Search + connect bar -->
-      <div class="find-bar">
-        <div class="find-wrap">
-          <Search :size="15" :stroke-width="1.5" class="find-icon" aria-hidden="true" />
-          <input
-            v-model="query"
-            class="find-input"
-            type="text"
-            placeholder="Find a host or ssh user@hostname…"
-            spellcheck="false"
-            data-host-search
-            aria-label="Find a host"
-            @keydown.enter="connectFirst"
-          />
+      <!-- ===== Header ===== -->
+      <header class="hv-header">
+        <div class="hv-heading">
+          <h2 class="hv-title">
+            Hosts
+            <span v-if="hosts.hosts.length" class="hv-count">{{ hosts.hosts.length }}</span>
+          </h2>
         </div>
-        <button
-          class="btn btn-primary"
-          :disabled="!visibleHosts.length && !smartTarget"
-          @click="connectFirst"
-        >
-          Connect
-        </button>
-      </div>
-
-      <!-- Toolbar -->
-      <div class="toolbar">
-        <button class="btn btn-secondary" @click="dialogs.openHostDialog(null, currentGroupId)">
-          <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-          {{ currentGroup ? 'New host in group' : 'New host' }}
-        </button>
-        <button class="btn btn-secondary" @click="sessions.connectLocal()">
-          <SquareTerminal :size="14" :stroke-width="1.5" aria-hidden="true" />
-          Local terminal
-        </button>
-        <span class="toolbar-spacer"></span>
-        <button class="btn btn-secondary" @click="dialogs.showImport = true">
-          <Download :size="14" :stroke-width="1.5" aria-hidden="true" />
-          Import
-        </button>
-        <button class="btn btn-secondary" @click="dialogs.showExport = true">
-          <Upload :size="14" :stroke-width="1.5" aria-hidden="true" />
-          Export
-        </button>
-      </div>
-
-      <div class="dash-scroll">
-        <!-- Inside a group: breadcrumb back to root -->
-        <div v-if="currentGroup" class="crumbs">
-          <button class="btn-icon" aria-label="Back to all hosts" @click="goRoot">
-            <ChevronLeft :size="16" :stroke-width="1.5" aria-hidden="true" />
+        <div class="hv-actions">
+          <button class="btn btn-secondary" :title="`Open a terminal on this PC (${comboFor('newLocal', ui.settings)})`" @click="sessions.connectLocal()">
+            <SquareTerminal :size="14" :stroke-width="1.5" aria-hidden="true" />
+            Local terminal
           </button>
-          <button class="crumb-link" @click="goRoot">Hosts</button>
-          <ChevronRight :size="13" :stroke-width="1.5" class="crumb-sep" aria-hidden="true" />
-          <span class="crumb-current" aria-current="true">
-            <Folder :size="14" :stroke-width="1.5" aria-hidden="true" />
-            <span class="text-ellipsis">{{ currentGroup.name }}</span>
-          </span>
-          <span class="crumb-count">
-            {{ visibleHosts.length }} {{ visibleHosts.length === 1 ? 'host' : 'hosts' }}
-          </span>
-          <span class="crumbs-spacer"></span>
-          <button
-            class="btn-icon"
-            aria-label="Group options"
-            @click="openFolderMenu(currentGroup, $event)"
-          >
+          <button class="btn btn-primary" @click="newHost">
+            <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+            {{ currentGroup ? `New host in ${currentGroup.name}` : 'New host' }}
+          </button>
+          <button class="btn-icon hv-more" aria-label="More host actions" title="Groups, import & export" @click="moreMenu">
             <MoreHorizontal :size="16" :stroke-width="1.5" aria-hidden="true" />
           </button>
         </div>
+      </header>
 
-        <Transition :name="navDir === 'fwd' ? 'nav-fwd' : 'nav-back'" mode="out-in">
-          <div :key="currentGroupId ?? 'root'" class="dash-body">
-            <!-- Quick connect: target parsed from the search box -->
-            <div v-if="smartTarget" class="smart-card">
-              <PlugZap :size="15" :stroke-width="1.5" class="smart-icon" aria-hidden="true" />
-              <div class="smart-text">
-                <span class="smart-title">
-                  Connect to <span class="mono">{{ smartDisplay }}</span>
+      <!-- ===== Search = filter + quick connect ===== -->
+      <div class="hv-toolbar">
+        <label class="find">
+          <Search :size="15" :stroke-width="1.5" class="find-icon" aria-hidden="true" />
+          <input
+            ref="searchEl"
+            v-model="query"
+            class="find-input"
+            type="text"
+            placeholder="Search hosts, or type user@host to connect"
+            spellcheck="false"
+            autocomplete="off"
+            data-host-search
+            aria-label="Search hosts or quick connect"
+            @keydown="onSearchKey"
+          />
+          <button v-if="query" class="find-clear" aria-label="Clear search" @click="query = ''; searchEl?.focus()">
+            <X :size="11" :stroke-width="2" aria-hidden="true" />
+          </button>
+          <kbd v-else class="find-kbd" aria-hidden="true">/</kbd>
+        </label>
+
+        <div class="seg" role="group" aria-label="Layout">
+          <button :class="{ on: layout === 'grid' }" :aria-pressed="layout === 'grid'" aria-label="Grid" title="Grid" @click="layout = 'grid'">
+            <LayoutGrid :size="14" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+          <button :class="{ on: layout === 'list' }" :aria-pressed="layout === 'list'" aria-label="List" title="List" @click="layout = 'list'">
+            <Rows3 :size="14" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      <!-- ===== Group filter chips ===== -->
+      <nav v-if="hosts.groups.length" class="chips" aria-label="Groups">
+        <button class="chip-btn" :class="{ on: groupFilter === 'all' }" :aria-pressed="groupFilter === 'all'" @click="pickGroup('all')">
+          All <span class="chip-n">{{ hosts.hosts.length }}</span>
+        </button>
+        <button
+          v-for="g in hosts.groups"
+          :key="g.id"
+          class="chip-btn"
+          :class="{ on: groupFilter === g.id }"
+          :aria-pressed="groupFilter === g.id"
+          @click="pickGroup(g.id)"
+          @contextmenu.prevent="groupMenu(g, $event)"
+        >
+          <Folder :size="12" :stroke-width="1.75" aria-hidden="true" />
+          {{ g.name }}
+          <span class="chip-n">{{ groupCounts.get(g.id) ?? 0 }}</span>
+        </button>
+        <button
+          v-if="ungroupedCount"
+          class="chip-btn"
+          :class="{ on: groupFilter === 'ungrouped' }"
+          :aria-pressed="groupFilter === 'ungrouped'"
+          @click="pickGroup('ungrouped')"
+        >
+          Ungrouped <span class="chip-n">{{ ungroupedCount }}</span>
+        </button>
+        <button class="chip-btn add" title="New group" @click="dialogs.openGroupDialog(null)">
+          <Plus :size="12" :stroke-width="2" aria-hidden="true" />
+          Group
+        </button>
+      </nav>
+
+      <div ref="bodyEl" class="hv-scroll">
+        <!-- Quick connect: the search box parsed as a target -->
+        <div v-if="smartTarget" class="smart">
+          <span class="smart-icon"><PlugZap :size="16" :stroke-width="1.6" aria-hidden="true" /></span>
+          <div class="smart-text">
+            <span class="smart-title">
+              {{ smartMatches.length ? 'Connect to' : 'New connection to' }}
+              <span class="mono">{{ smartDisplay }}</span>
+            </span>
+            <span class="smart-sub">
+              <template v-if="smartMatches.length">
+                Saved as “{{ smartMatches[0].host.label }}”<template v-if="smartMatches[0].reason === 'ip'"> · resolves to {{ smartMatches[0].ip }}</template><template v-if="smartMatches.length > 1"> · +{{ smartMatches.length - 1 }} more</template>
+              </template>
+              <template v-else-if="smartResolving">Resolving address…</template>
+              <template v-else-if="smartResolveFailed">Address didn’t resolve — you can still try</template>
+              <template v-else>Not saved yet — it will be added to your hosts</template>
+            </span>
+          </div>
+          <button class="btn btn-primary" @click="connectFirst">
+            {{ smartMatches.length ? 'Connect' : 'Add & connect' }}
+            <kbd class="btn-kbd" aria-hidden="true">↵</kbd>
+          </button>
+        </div>
+
+        <!-- ===== Empty: no hosts at all ===== -->
+        <div v-if="!hosts.hosts.length" class="hero">
+          <span class="hero-icon"><Server :size="24" :stroke-width="1.5" aria-hidden="true" /></span>
+          <p class="hero-title">Add your first host</p>
+          <p class="hero-sub">
+            Save a server once and connect with a double-click. Or just type
+            <code class="mono">user@host</code> in the search box and press Enter.
+          </p>
+          <div class="hero-actions">
+            <button class="btn btn-primary" @click="newHost">
+              <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+              New host
+            </button>
+            <button class="btn btn-secondary" @click="dialogs.showImport = true">
+              <Download :size="14" :stroke-width="1.5" aria-hidden="true" />
+              Import from ~/.ssh or Termius
+            </button>
+          </div>
+        </div>
+
+        <!-- ===== Empty: group / search ===== -->
+        <div v-else-if="!ordered.length && !searching" class="hero small">
+          <p class="hero-title">No hosts in {{ currentGroup ? `“${currentGroup.name}”` : 'this view' }}</p>
+          <button class="btn btn-secondary" @click="newHost">
+            <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+            {{ currentGroup ? `New host in ${currentGroup.name}` : 'New host' }}
+          </button>
+        </div>
+        <p v-else-if="!ordered.length && !smartTarget" class="no-match">
+          No hosts match “{{ query.trim() }}”<template v-if="groupFilter !== 'all'">
+            in this group · <button class="link" @click="pickGroup('all')">search all</button></template>
+        </p>
+
+        <template v-else>
+          <section v-for="sec in (showActiveSection ? [{ key: 'active', title: 'Active', rows: activeRows }, { key: 'rest', title: sectionTitle, rows: restRows }] : [{ key: 'rest', title: sectionTitle, rows: restRows }])" :key="sec.key" class="sec">
+            <h3 v-if="sec.rows.length" class="sec-title">
+              {{ sec.title }}
+              <span class="sec-n">{{ sec.rows.length }}</span>
+            </h3>
+
+            <div class="host-grid" :class="layout">
+              <div
+                v-for="(r, i) in sec.rows"
+                :key="r.host.id"
+                class="host"
+                :class="[r.status, { selected: selectedId === r.host.id }]"
+                role="button"
+                :tabindex="tabIndexFor(r.host.id, sec.key === 'rest' && activeRows.length ? i + activeRows.length : i)"
+                :data-host-id="r.host.id"
+                :aria-label="`${r.host.label}, ${r.host.username}@${r.host.address}${r.status !== 'idle' ? ', ' + statusLabel[r.status] : ''}. Enter to connect`"
+                @click="selectedId = r.host.id; focusKey = r.host.id"
+                @dblclick="connect(r.host)"
+                @keydown.self="onCardKey($event, r.host)"
+                @contextmenu.prevent="hostMenu(r.host, $event)"
+              >
+                <span class="avatar">
+                  <PlanetAvatar :host="r.host" :size="layout === 'grid' ? 40 : 30" />
+                  <span v-if="r.status !== 'idle'" class="presence" :class="r.status" :title="statusLabel[r.status]"></span>
                 </span>
-                <span class="smart-sub">
-                  <template v-if="smartMatches.length">
-                    Matches “{{ smartMatches[0].host.label }}”<template v-if="smartMatches[0].reason === 'ip'"> · resolves to {{ smartMatches[0].ip }}</template><template v-if="smartMatches.length > 1"> · +{{ smartMatches.length - 1 }} more</template>
+
+                <span class="host-text">
+                  <span class="host-name text-ellipsis">
+                    <template v-for="(seg, k) in r.label" :key="k"><mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
+                  </span>
+                  <span class="host-sub mono text-ellipsis">{{ r.host.username }}@{{ r.host.address }}<template v-if="r.host.port !== 22">:{{ r.host.port }}</template></span>
+                </span>
+
+                <span v-if="layout === 'list'" class="host-col group-col text-ellipsis">
+                  <template v-if="r.host.group_id">
+                    <Folder :size="12" :stroke-width="1.75" aria-hidden="true" />
+                    {{ groupName(r.host.group_id) }}
                   </template>
-                  <template v-else-if="smartResolving">Resolving address…</template>
-                  <template v-else-if="smartResolveFailed">Address didn’t resolve</template>
-                  <template v-else>Not saved yet</template>
                 </span>
-              </div>
-              <button class="btn btn-primary smart-btn" @click="connectFirst">
-                <template v-if="smartMatches.length">Connect</template>
-                <template v-else>
-                  <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-                  Add &amp; connect
-                </template>
-              </button>
-            </div>
+                <span v-if="layout === 'list'" class="host-col used-col">
+                  {{ r.status !== 'idle' ? statusLabel[r.status] : r.host.last_used_at ? relativeAge(new Date(r.host.last_used_at)) : 'Never' }}
+                </span>
 
-            <!-- Root: group folders -->
-            <section
-              v-if="!currentGroup && (!searching || visibleFolders.length)"
-              class="dash-section"
-            >
-              <h3 class="section-title">{{ searching ? 'Matching groups' : 'Groups' }}</h3>
-              <div class="card-grid">
-                <div
-                  v-for="g in visibleFolders"
-                  :key="g.id"
-                  class="folder-card"
-                  role="button"
-                  tabindex="0"
-                  :aria-label="`Open group ${g.name}`"
-                  @click="openGroup(g)"
-                  @keydown.enter="openGroup(g)"
-                  @keydown.space.prevent="openGroup(g)"
-                  @contextmenu.prevent="openFolderMenu(g, $event)"
-                >
-                  <span class="folder-avatar">
-                    <Folder :size="19" :stroke-width="1.5" aria-hidden="true" />
+                <span class="host-trail">
+                  <span v-if="layout === 'grid'" class="trail-meta">
+                    <template v-if="r.status !== 'idle'">{{ statusLabel[r.status] }}</template>
+                    <template v-else-if="groupFilter === 'all' && r.host.group_id">{{ groupName(r.host.group_id) }}</template>
                   </span>
-                  <span class="folder-text">
-                    <span class="folder-name text-ellipsis">{{ g.name }}</span>
-                    <span class="folder-sub">{{ g.count }} {{ g.count === 1 ? 'host' : 'hosts' }}</span>
-                  </span>
-                  <span class="folder-go">
-                    <ChevronRight :size="15" :stroke-width="1.5" class="folder-chev" aria-hidden="true" />
+                  <span class="trail-actions">
                     <button
-                      class="btn-icon folder-more"
-                      aria-label="Group options"
-                      @click.stop="openFolderMenu(g, $event)"
+                      class="act"
+                      :aria-label="`Browse files on ${r.host.label}`"
+                      title="Browse files (SFTP)"
+                      tabindex="-1"
+                      @click.stop="openSftp(r.host)"
                     >
-                      <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
+                      <FolderTree :size="14" :stroke-width="1.6" aria-hidden="true" />
+                    </button>
+                    <button
+                      class="act"
+                      :aria-label="`More for ${r.host.label}`"
+                      title="More"
+                      tabindex="-1"
+                      @click.stop="hostMenu(r.host, $event)"
+                    >
+                      <MoreHorizontal :size="15" :stroke-width="1.6" aria-hidden="true" />
+                    </button>
+                    <button
+                      class="act go"
+                      :aria-label="r.status === 'connected' ? `Open terminal for ${r.host.label}` : `Connect to ${r.host.label}`"
+                      :title="r.status === 'connected' ? 'Open terminal' : 'Connect (Enter)'"
+                      tabindex="-1"
+                      @click.stop="connect(r.host)"
+                    >
+                      <Play :size="12" :stroke-width="2.25" aria-hidden="true" />
                     </button>
                   </span>
-                </div>
-                <button
-                  v-if="!searching"
-                  class="folder-card new-folder"
-                  @click="dialogs.openGroupDialog(null)"
-                >
-                  <span class="folder-avatar new">
-                    <FolderPlus :size="19" :stroke-width="1.5" aria-hidden="true" />
-                  </span>
-                  <span class="folder-text">
-                    <span class="folder-name">New group</span>
-                    <span class="folder-sub">Organize hosts into folders</span>
-                  </span>
-                </button>
+                </span>
               </div>
-            </section>
+            </div>
+          </section>
 
-            <!-- Hosts -->
-            <section class="dash-section">
-              <h3 class="section-title">
-                <template v-if="currentGroup">{{ searching ? 'Matches in this group' : 'Hosts' }}</template>
-                <template v-else>{{ searching ? 'Matching hosts' : 'Hosts' }}</template>
-              </h3>
-
-              <div
-                v-if="!hosts.hosts.length && !searching"
-                class="empty-state dash-empty"
-              >
-                <p>No hosts yet — add your first one or import from ~/.ssh/config or a Termius export.</p>
-                <button class="btn btn-secondary" @click="dialogs.showImport = true">
-                  Import hosts
-                </button>
-              </div>
-              <div
-                v-else-if="currentGroup && !visibleHosts.length && !searching"
-                class="empty-state dash-empty"
-              >
-                <p>Nothing in “{{ currentGroup.name }}” yet.</p>
-                <button class="btn btn-secondary" @click="dialogs.openHostDialog(null, currentGroupId)">
-                  <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-                  Add host to this group
-                </button>
-              </div>
-              <p
-                v-else-if="searching && !visibleHosts.length && !visibleFolders.length"
-                class="quiet-hint"
-              >
-                No matches for “{{ query }}”
-              </p>
-              <div v-else-if="visibleHosts.length" class="card-grid">
-                <div
-                  v-for="host in visibleHosts"
-                  :key="host.id"
-                  class="host-card"
-                  :class="{ selected: selectedId === host.id }"
-                  role="button"
-                  tabindex="0"
-                  @click="select(host)"
-                  @dblclick="sessions.connect(host.id)"
-                  @keydown.enter="sessions.connect(host.id)"
-                >
-                  <PlanetAvatar :host="host" :size="40" />
-                  <span class="host-card-text">
-                    <span class="host-card-name text-ellipsis">{{ host.label }}</span>
-                    <span class="host-card-sub text-ellipsis">
-                      ssh, {{ host.username }}<template v-if="host.group_id && host.group_id !== currentGroupId"> · {{ groupName(host.group_id) }}</template>
-                    </span>
-                  </span>
-                  <span class="host-card-status" :class="statusFor(host.id)" :title="statusFor(host.id)"></span>
-                </div>
-              </div>
-            </section>
-          </div>
-        </Transition>
+          <p v-if="ordered.length > 3 && !searching" class="hint">
+            Double-click or press <kbd>Enter</kbd> to connect · right-click for more
+          </p>
+        </template>
       </div>
     </div>
 
     <!-- Details panel -->
     <Transition name="panel">
-      <HostDetailsPanel
-        v-if="selectedHost"
-        :host="selectedHost"
-        @close="selectedId = null"
-      >
+      <HostDetailsPanel v-if="selectedHost" :host="selectedHost" @close="selectedId = null">
         <template #actions>
           <button class="btn-icon" aria-label="Edit host" title="Edit host" @click="dialogs.openHostDialog(selectedHost!)">
             <Pencil :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
         </template>
         <template #danger>
-          <button class="btn btn-danger panel-delete" @click="deleteSelected">
+          <button class="btn btn-danger panel-delete" @click="removeHost(selectedHost!)">
             <Trash2 :size="14" :stroke-width="1.5" aria-hidden="true" />
             Delete host
           </button>
@@ -438,13 +664,7 @@ async function deleteSelected() {
       </HostDetailsPanel>
     </Transition>
 
-    <ContextMenu
-      v-if="menu"
-      :x="menu.x"
-      :y="menu.y"
-      :items="menu.items"
-      @close="menu = null"
-    />
+    <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" :items="menu.items" @close="menu = null" />
   </div>
 </template>
 
@@ -464,79 +684,256 @@ async function deleteSelected() {
   min-width: 0;
 }
 
-.find-bar {
+/* ---- header ---- */
+
+.hv-header {
   display: flex;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-5) var(--space-3);
 }
 
-.find-wrap {
+.hv-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-xl);
+  font-weight: 650;
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-1);
+}
+
+.hv-count {
+  font-size: var(--text-md);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.hv-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.hv-more {
+  width: 32px;
+  height: 32px;
+}
+
+/* ---- search ---- */
+
+.hv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-5) var(--space-3);
+}
+
+.find {
   position: relative;
   display: flex;
   align-items: center;
   flex: 1;
-}
-
-.find-icon {
-  position: absolute;
-  left: 12px;
-  color: var(--text-4);
-  pointer-events: none;
-}
-
-.find-input {
-  width: 100%;
+  height: 38px;
+  padding: 0 10px 0 12px;
+  gap: 9px;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 9px 12px 9px 34px;
-  font-size: var(--text-md);
-  transition: border-color var(--dur-hover) ease;
+  border-radius: 10px;
+  color: var(--text-4);
+  cursor: text;
+  transition: border-color var(--dur-hover) ease, box-shadow var(--dur-hover) ease;
 }
 
-.find-input:hover {
+.find:hover {
   border-color: var(--border-strong);
 }
 
-.find-input:focus {
-  outline: none;
+.find:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-bg);
+  color: var(--text-3);
+}
+
+.find-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  font-size: var(--text-md);
+  color: var(--text-1);
 }
 
 .find-input::placeholder {
   color: var(--text-4);
 }
 
-.toolbar {
+.find-kbd,
+.btn-kbd,
+.hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface-2);
+  color: var(--text-3);
+}
+
+.btn-kbd {
+  margin-left: 2px;
+  border-color: transparent;
+  background: oklch(1 0 0 / 0.16);
+  color: inherit;
+}
+
+.find-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-surface-3);
+  color: var(--text-2);
+  transition: background-color var(--dur-hover) ease, transform var(--dur-press) ease-out;
+}
+
+.find-clear:hover {
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+.find-clear:active {
+  transform: scale(0.9);
+}
+
+.seg {
   display: flex;
-  gap: var(--space-2);
-  padding: 0 var(--space-4) var(--space-3);
+  padding: 2px;
+  gap: 2px;
+  border-radius: 9px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
 }
 
-.toolbar-spacer {
-  flex: 1;
+.seg button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  color: var(--text-3);
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
 }
 
-.dash-scroll {
+.seg button:hover {
+  color: var(--text-1);
+}
+
+.seg button.on {
+  background: var(--bg-surface-3);
+  color: var(--text-1);
+  box-shadow: var(--shadow-1);
+}
+
+/* ---- group chips ---- */
+
+.chips {
+  display: flex;
+  gap: 6px;
+  padding: 0 var(--space-5) var(--space-3);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+  mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+}
+
+.chips::-webkit-scrollbar {
+  display: none;
+}
+
+.chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-hover) ease,
+    border-color var(--dur-hover) ease,
+    color var(--dur-hover) ease,
+    transform var(--dur-press) ease-out;
+}
+
+.chip-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.chip-btn:active {
+  transform: scale(0.96);
+}
+
+.chip-btn.on {
+  background: var(--accent-bg);
+  border-color: color-mix(in oklch, var(--accent) 40%, transparent);
+  color: var(--accent);
+}
+
+.chip-btn.add {
+  border-style: dashed;
+  color: var(--text-3);
+}
+
+.chip-n {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+}
+
+/* ---- body ---- */
+
+.hv-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 0 var(--space-4) var(--space-5);
+  padding: var(--space-1) var(--space-5) var(--space-6);
   min-height: 0;
 }
 
-.smart-card {
+.smart {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
+  padding: 12px 12px 12px 14px;
   margin-bottom: var(--space-5);
+  border-radius: var(--radius-lg);
   background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in oklch, var(--accent) 35%, var(--border));
+  box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
 .smart-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--accent-bg);
   color: var(--accent);
   flex-shrink: 0;
 }
@@ -544,14 +941,18 @@ async function deleteSelected() {
 .smart-text {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
   flex: 1;
-  line-height: 1.35;
 }
 
 .smart-title {
-  font-size: var(--text-sm);
+  font-size: var(--text-base);
+  font-weight: 600;
   color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .smart-sub {
@@ -559,271 +960,384 @@ async function deleteSelected() {
   color: var(--text-3);
 }
 
-.smart-btn {
-  flex-shrink: 0;
-}
-
-.dash-section + .dash-section {
+.sec + .sec {
   margin-top: var(--space-5);
 }
 
-.crumbs {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+.sec-title {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
-  padding: var(--space-2) 0;
-  margin: 0 calc(-1 * var(--space-4)) var(--space-2);
-  padding-left: var(--space-4);
-  padding-right: var(--space-4);
-  background: var(--bg);
-}
-
-/* Folder drill-in / go-back: content slides along the navigation
-   direction. Enter ease-out; exits softer and faster, per motion contract. */
-.nav-fwd-enter-active,
-.nav-back-enter-active {
-  transition: transform 180ms var(--ease-out), opacity 180ms var(--ease-out);
-}
-
-.nav-fwd-leave-active,
-.nav-back-leave-active {
-  transition: transform 120ms var(--ease-out), opacity 120ms var(--ease-out);
-}
-
-.nav-fwd-enter-from {
-  transform: translateX(14px);
-  opacity: 0;
-}
-
-.nav-fwd-leave-to {
-  transform: translateX(-10px);
-  opacity: 0;
-}
-
-.nav-back-enter-from {
-  transform: translateX(-14px);
-  opacity: 0;
-}
-
-.nav-back-leave-to {
-  transform: translateX(10px);
-  opacity: 0;
-}
-
-.crumb-link {
-  font-size: var(--text-base);
-  color: var(--text-3);
-  padding: 3px 6px;
-  border-radius: var(--radius-sm);
-  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
-}
-
-.crumb-link:hover {
-  background: var(--bg-hover);
-  color: var(--text-1);
-}
-
-.crumb-sep {
-  color: var(--text-4);
-  flex-shrink: 0;
-}
-
-.crumb-current {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--text-1);
-  padding: 3px 6px;
-}
-
-.crumb-current svg {
-  color: var(--accent);
-  flex-shrink: 0;
-}
-
-.crumb-count {
-  font-size: var(--text-xs);
-  color: var(--text-4);
-  margin-left: 4px;
-}
-
-.crumbs-spacer {
-  flex: 1;
-}
-
-.section-title {
+  margin-bottom: var(--space-3);
   font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-1);
-  margin-bottom: var(--space-3);
 }
 
-.card-grid {
+.sec-n {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- host cards: grid ---- */
+
+.host-grid.grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--space-3);
 }
 
-.folder-card,
-.host-card {
+.host {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 14px;
+  min-width: 0;
+  padding: 12px 12px 12px 14px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-1);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--dur-hover) ease, border-color var(--dur-hover) ease;
+  cursor: default;
+  outline: none;
+  transition:
+    background-color var(--dur-hover) ease,
+    border-color var(--dur-hover) ease,
+    box-shadow var(--dur-hover) ease,
+    transform var(--dur-press) ease-out;
 }
 
-.folder-card:hover,
-.host-card:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
+@media (hover: hover) and (pointer: fine) {
+  .host:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+  }
 }
 
-.folder-card:focus-visible,
-.host-card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+.host:active:not(:has(.act:active)) {
+  transform: scale(0.985);
 }
 
-.host-card.selected {
+.host:focus-visible {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
-.folder-avatar {
+.host.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.avatar {
+  position: relative;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-md);
-  background: var(--accent-bg);
-  color: var(--accent);
   flex-shrink: 0;
 }
 
-.folder-avatar.new {
-  background: var(--bg-surface-3);
-  color: var(--text-3);
+/* Presence dot with a ring cut from the card colour */
+.presence {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-surface);
+  transition: border-color var(--dur-hover) ease;
 }
 
-.folder-card.new-folder {
-  border-style: dashed;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-3);
+.host:hover .presence {
+  border-color: var(--bg-hover);
 }
 
-.folder-card.new-folder:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-  color: var(--text-1);
-}
+.presence.connected { background: var(--success); }
+.presence.connecting { background: var(--warning); }
+.presence.error { background: var(--danger); }
 
-.folder-text,
-.host-card-text {
+.host-text {
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  gap: 1px;
   flex: 1;
-  line-height: 1.3;
+  min-width: 0;
+  line-height: 1.35;
 }
 
-.folder-name,
-.host-card-name {
+.host-name {
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-1);
 }
 
-.new-folder .folder-name {
-  color: inherit;
+.host-name mark {
+  background: none;
+  color: var(--accent);
+  border-radius: 2px;
 }
 
-.folder-sub,
-.host-card-sub {
+.host-sub {
   font-size: var(--text-xs);
   color: var(--text-3);
 }
 
-.folder-go {
+/* Trailing area: quiet metadata at rest, actions on hover/focus/selection */
+.host-trail {
   position: relative;
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-}
-
-.folder-chev,
-.folder-more {
-  position: absolute;
-  inset: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  min-width: 28px;
+  height: 30px;
+}
+
+.trail-meta {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--text-4);
   transition: opacity var(--dur-hover) ease;
 }
 
-.folder-chev {
-  color: var(--text-4);
+.host.connected .trail-meta { color: var(--success); }
+.host.connecting .trail-meta { color: var(--warning); }
+.host.error .trail-meta { color: var(--danger); }
+
+.trail-actions {
+  position: absolute;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition: opacity var(--dur-hover) ease, transform 180ms var(--ease-out);
 }
 
-.folder-more {
+.host:hover .trail-actions,
+.host:focus-visible .trail-actions,
+.host.selected .trail-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.host:hover .trail-meta,
+.host:focus-visible .trail-meta,
+.host.selected .trail-meta {
   opacity: 0;
+}
+
+@media (hover: none) {
+  .trail-actions { opacity: 1; pointer-events: auto; transform: none; }
+  .trail-meta { display: none; }
+}
+
+.act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   border-radius: var(--radius-sm);
+  color: var(--text-3);
+  transition:
+    background-color var(--dur-hover) ease,
+    color var(--dur-hover) ease,
+    transform var(--dur-press) ease-out;
 }
 
-.folder-more:hover {
+.act:hover {
   background: var(--bg-active);
+  color: var(--text-1);
 }
 
-.folder-card:hover .folder-chev {
-  opacity: 0;
+.act:active {
+  transform: scale(0.92);
 }
 
-.folder-card:hover .folder-more {
-  opacity: 1;
+.act.go {
+  width: 30px;
+  height: 30px;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  box-shadow: var(--shadow-1);
 }
 
-.folder-card:focus-visible .folder-more,
-.folder-card:focus-within .folder-more {
-  opacity: 1;
+.act.go:hover {
+  background: var(--accent-hover);
+  color: var(--accent-text);
 }
 
-.host-card-status {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
+.act.go svg {
+  margin-left: 1px; /* optical centre of the play triangle */
 }
 
-.host-card-status.connected { background: var(--success); }
-.host-card-status.connecting { background: var(--warning); }
-.host-card-status.error { background: var(--danger); }
-.host-card-status.idle { background: transparent; }
+/* ---- host rows: list ---- */
 
-.dash-empty {
-  padding: var(--space-7);
+.host-grid.list {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
 }
 
-.quiet-hint {
+.host-grid.list .host {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1.4fr) minmax(0, 0.8fr) 110px 104px;
+  gap: 12px;
+  min-height: 50px;
+  padding: 9px 10px 9px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.host-grid.list .host + .host::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 56px;
+  right: 0;
+  border-top: 1px solid var(--border);
+}
+
+.host-grid.list .host:active {
+  transform: none;
+}
+
+.host-grid.list .host.selected,
+.host-grid.list .host:focus-visible {
+  background: var(--accent-bg);
+  box-shadow: none;
+}
+
+.host-grid.list .presence {
+  border-color: var(--bg-surface);
+}
+
+.host-col {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.used-col {
+  font-variant-numeric: tabular-nums;
+}
+
+.host.connected .used-col { color: var(--success); }
+.host.connecting .used-col { color: var(--warning); }
+
+@container (max-width: 640px) {
+  .host-grid.list .host {
+    grid-template-columns: 30px minmax(0, 1fr) 104px;
+  }
+  .host-grid.list .host-col {
+    display: none;
+  }
+}
+
+.hosts-main {
+  container-type: inline-size;
+}
+
+/* ---- empty / hints ---- */
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-7) var(--space-5);
+  text-align: center;
+}
+
+.hero.small {
+  padding-top: var(--space-6);
+}
+
+.hero-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: var(--space-2);
+  border-radius: 15px;
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.hero-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-1);
+}
+
+.hero-sub {
+  max-width: 46ch;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.hero.small .btn {
+  margin-top: var(--space-2);
+}
+
+.no-match {
+  padding: var(--space-6) 0;
+  text-align: center;
   font-size: var(--text-sm);
   color: var(--text-4);
-  padding: var(--space-2) 0;
 }
 
-/* Details panel */
+.link {
+  color: var(--accent);
+  font-size: inherit;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.hint {
+  margin-top: var(--space-5);
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-4);
+}
+
+code {
+  font-size: 0.95em;
+  color: var(--text-2);
+}
+
+/* ---- details panel ---- */
+
 .hosts-view > :deep(.details-panel) {
   border-left: 1px solid var(--border);
 }
@@ -831,5 +1345,11 @@ async function deleteSelected() {
 .panel-delete {
   margin-top: var(--space-3);
   width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trail-actions {
+    transform: none;
+  }
 }
 </style>

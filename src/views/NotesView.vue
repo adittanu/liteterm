@@ -68,8 +68,97 @@ const otherNotes = computed(() =>
   sectioned.value ? matches.value.filter((n) => !n.pinned) : matches.value,
 )
 
+// One flat list (labels + rows) so a single TransitionGroup can glide
+// rows between sections when a note is pinned, edited or deleted
+type ListItem =
+  | { kind: 'label'; key: string; text: string }
+  | { kind: 'note'; key: string; note: Note }
+
+const listItems = computed<ListItem[]>(() => {
+  const out: ListItem[] = []
+  const pinned = pinnedNotes.value
+  const other = otherNotes.value
+  if (pinned.length) out.push({ kind: 'label', key: 'label:pinned', text: 'Pinned' })
+  for (const n of pinned) out.push({ kind: 'note', key: `n${n.id}`, note: n })
+  if (pinned.length && other.length) out.push({ kind: 'label', key: 'label:notes', text: 'Notes' })
+  for (const n of other) out.push({ kind: 'note', key: `n${n.id}`, note: n })
+  return out
+})
+
+const visibleIds = computed(() => [...pinnedNotes.value, ...otherNotes.value].map((n) => n.id))
+
 const selectedNote = computed(() => notes.notes.find((n) => n.id === selectedId.value) ?? null)
 const galleryNote = computed(() => notes.notes.find((n) => n.id === galleryId.value) ?? null)
+
+const listScroll = ref<HTMLElement | null>(null)
+const galleryScroll = ref<HTMLElement | null>(null)
+
+// ---- motion policy ----
+
+// Rows glide to their new slot when the *data* reorders them (an edit
+// bumps a note to the top, pin/unpin, delete, undo). Filtering is typed
+// — keyboard-initiated — so search/tag changes re-render instantly.
+const rowMotion = ref(true)
+watch([query, activeTag], () => {
+  rowMotion.value = false
+  nextTick(() => {
+    rowMotion.value = true
+  })
+})
+
+// Gallery cards stagger in once when the gallery appears — never again
+// while typing in search (that would replay on every keystroke).
+const galleryIntro = ref(false)
+let introTimer: ReturnType<typeof setTimeout> | undefined
+watch(
+  layout,
+  (v) => {
+    clearTimeout(introTimer)
+    galleryIntro.value = v === 'gallery'
+    // swap out (130ms) + max stagger (336ms) + card-in (280ms), with slack
+    if (v === 'gallery') introTimer = setTimeout(() => (galleryIntro.value = false), 900)
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => clearTimeout(introTimer))
+
+// The full-page editor zooms out of the card that opened it and back
+// into that card on close (spatial consistency). Escape closes instantly.
+const pageOrigin = ref('50% 30%')
+const instantClose = ref(false)
+watch(galleryId, (v) => {
+  if (v !== null) instantClose.value = false
+})
+
+function originFrom(el: Element) {
+  const root = el.closest('.gallery-root')
+  if (!root) return
+  const a = root.getBoundingClientRect()
+  const b = el.getBoundingClientRect()
+  const x = Math.min(a.width, Math.max(0, b.left + b.width / 2 - a.left))
+  const y = Math.min(a.height, Math.max(0, b.top + b.height / 2 - a.top))
+  pageOrigin.value = `${Math.round(x)}px ${Math.round(y)}px`
+}
+
+function openCard(e: MouseEvent, id: number) {
+  originFrom(e.currentTarget as Element)
+  galleryId.value = id
+}
+
+function closeGallery(instant = false) {
+  const id = galleryId.value
+  if (id === null) return
+  // The note may have moved while being edited — return to where its
+  // card lives now, scrolled into view under the page first.
+  const card = galleryScroll.value?.querySelector<HTMLElement>(`.card[data-note-id="${id}"]`)
+  if (card) {
+    card.scrollIntoView({ block: 'nearest' })
+    originFrom(card)
+  }
+  instantClose.value = instant
+  galleryId.value = null
+  if (card) nextTick(() => card.focus({ preventScroll: true }))
+}
 
 onMounted(async () => {
   if (!notes.loaded) await notes.load()
@@ -80,11 +169,36 @@ function toggleTag(name: string) {
   activeTag.value = activeTag.value === name ? null : name
 }
 
-async function createNote() {
+// Arrow keys walk the list like Apple Notes; selection follows focus
+// instantly (keyboard navigation never animates).
+function step(dir: -1 | 0 | 1) {
+  const ids = visibleIds.value
+  if (!ids.length) return
+  const i = selectedId.value === null ? -1 : ids.indexOf(selectedId.value)
+  const next = i === -1 ? ids[0] : ids[Math.min(ids.length - 1, Math.max(0, i + dir))]
+  selectedId.value = next
+  nextTick(() => {
+    const el = listScroll.value?.querySelector<HTMLElement>(`[data-note-id="${next}"]`)
+    el?.focus({ preventScroll: true })
+    el?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+function onSearchEscape(e: KeyboardEvent) {
+  if (!query.value) return
+  e.stopPropagation()
+  query.value = ''
+}
+
+async function createNote(e?: Event) {
+  const trigger = e?.currentTarget instanceof Element ? e.currentTarget : null
   try {
     const note = await notes.create()
     if (layout.value === 'split') selectedId.value = note.id
-    else galleryId.value = note.id
+    else {
+      if (trigger) originFrom(trigger)
+      galleryId.value = note.id
+    }
     nextTick(() => editorComp.value?.focusTitle())
   } catch (e) {
     ui.toast('error', `Could not create note: ${errorText(e)}`)
@@ -102,17 +216,19 @@ async function removeNote(id: number) {
     return
   }
   if (layout.value === 'gallery') {
-    galleryId.value = null
+    closeGallery()
     return
   }
   const next = list[idx + 1] ?? list[idx - 1] ?? null
   selectedId.value = next ? next.id : null
 }
 
-// Escape closes the full-page editor opened from the gallery
+// Escape closes the full-page editor opened from the gallery — instantly,
+// since it's keyboard-initiated
 function onKeydown(e: KeyboardEvent) {
+  if (e.defaultPrevented) return
   if (e.key === 'Escape' && layout.value === 'gallery' && galleryId.value !== null) {
-    galleryId.value = null
+    closeGallery(true)
   }
 }
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -171,6 +287,8 @@ function previewOf(n: Note): string {
                 placeholder="Search"
                 aria-label="Search notes"
                 spellcheck="false"
+                @keydown.esc="onSearchEscape"
+                @keydown.down.prevent="step(0)"
               />
               <button
                 v-if="query"
@@ -199,7 +317,7 @@ function previewOf(n: Note): string {
             </button>
           </div>
 
-          <div class="list-scroll">
+          <div ref="listScroll" class="list-scroll">
             <template v-if="tagList.length">
               <button
                 class="tag-row"
@@ -224,39 +342,43 @@ function previewOf(n: Note): string {
               </button>
             </template>
 
-            <template v-if="pinnedNotes.length || otherNotes.length">
-              <p v-if="pinnedNotes.length" class="section-label list-label">Pinned</p>
-              <button
-                v-for="n in pinnedNotes"
-                :key="n.id"
-                class="note-row"
-                :class="{ selected: n.id === selectedId }"
-                @click="selectedId = n.id"
+            <TransitionGroup
+              v-if="listItems.length"
+              tag="div"
+              class="note-list"
+              :name="rowMotion ? 'row' : 'row-off'"
+            >
+              <div
+                v-for="item in listItems"
+                :key="item.key"
+                class="list-item"
+                :class="
+                  item.kind === 'note'
+                    ? { 'is-note': true, 'is-selected': item.note.id === selectedId }
+                    : null
+                "
               >
-                <span class="row-title text-ellipsis">{{ n.title || 'New Note' }}</span>
-                <span class="row-sub">
-                  <span class="row-date">{{ listDate(n.updated_at) }}</span>
-                  {{ previewOf(n) || 'No additional text' }}
-                </span>
-              </button>
-
-              <p v-if="pinnedNotes.length && otherNotes.length" class="section-label list-label">
-                Notes
-              </p>
-              <button
-                v-for="n in otherNotes"
-                :key="n.id"
-                class="note-row"
-                :class="{ selected: n.id === selectedId }"
-                @click="selectedId = n.id"
-              >
-                <span class="row-title text-ellipsis">{{ n.title || 'New Note' }}</span>
-                <span class="row-sub">
-                  <span class="row-date">{{ listDate(n.updated_at) }}</span>
-                  {{ previewOf(n) || 'No additional text' }}
-                </span>
-              </button>
-            </template>
+                <p v-if="item.kind === 'label'" class="section-label list-label">{{ item.text }}</p>
+                <!-- Select on press, like a native list: feedback on pointer-down -->
+                <button
+                  v-else
+                  class="note-row"
+                  :class="{ selected: item.note.id === selectedId }"
+                  :data-note-id="item.note.id"
+                  :aria-current="item.note.id === selectedId ? 'true' : undefined"
+                  @mousedown.left="selectedId = item.note.id"
+                  @click="selectedId = item.note.id"
+                  @keydown.down.prevent="step(1)"
+                  @keydown.up.prevent="step(-1)"
+                >
+                  <span class="row-title text-ellipsis">{{ item.note.title || 'New Note' }}</span>
+                  <span class="row-sub">
+                    <span class="row-date">{{ listDate(item.note.updated_at) }}</span>
+                    {{ previewOf(item.note) || 'No additional text' }}
+                  </span>
+                </button>
+              </div>
+            </TransitionGroup>
 
             <div v-else-if="searching || activeTag" class="list-empty">
               <p v-if="searching">No notes match “{{ query.trim() }}”</p>
@@ -303,6 +425,7 @@ function previewOf(n: Note): string {
                 placeholder="Search"
                 aria-label="Search notes"
                 spellcheck="false"
+                @keydown.esc="onSearchEscape"
               />
               <button
                 v-if="query"
@@ -349,14 +472,15 @@ function previewOf(n: Note): string {
           </div>
         </header>
 
-        <div class="gallery-scroll">
-          <div v-if="matches.length" class="card-grid">
+        <div ref="galleryScroll" class="gallery-scroll">
+          <div v-if="matches.length" class="card-grid" :class="{ intro: galleryIntro }">
             <button
               v-for="(n, i) in matches"
               :key="n.id"
               class="card"
+              :data-note-id="n.id"
               :style="{ '--d': `${Math.min(i, 12) * 28}ms` }"
-              @click="galleryId = n.id"
+              @click="openCard($event, n.id)"
             >
               <span class="card-top">
                 <span class="card-title">{{ n.title || 'New Note' }}</span>
@@ -394,14 +518,18 @@ function previewOf(n: Note): string {
           </div>
         </div>
 
-        <Transition name="page">
-          <div v-if="galleryNote" class="gallery-editor">
+        <Transition name="page" :css="!instantClose">
+          <div
+            v-if="galleryNote"
+            class="gallery-editor"
+            :style="{ '--page-origin': pageOrigin }"
+          >
             <NoteEditor
               ref="editorComp"
               :note="galleryNote"
               back
               @remove="removeNote(galleryNote.id)"
-              @back="galleryId = null"
+              @back="closeGallery()"
             />
           </div>
         </Transition>
@@ -620,6 +748,56 @@ function previewOf(n: Note): string {
   flex-shrink: 0;
 }
 
+.note-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.list-item {
+  position: relative;
+}
+
+/* Inset hairlines between rows, Apple Notes style — they step aside
+   around the selected and hovered row so the highlight reads as one shape */
+.list-item.is-note + .list-item.is-note::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 11px;
+  right: 11px;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+  transition: opacity var(--dur-hover) ease;
+}
+
+.list-item.is-selected::before,
+.list-item.is-selected + .list-item::before {
+  opacity: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .list-item.is-note:hover::before,
+  .list-item.is-note:hover + .list-item::before {
+    opacity: 0;
+  }
+}
+
+/* Data-driven reorders glide (strong in-out: on-screen movement);
+   new rows (create, undo) fade in where they land. Leaves are instant. */
+.row-move {
+  transition: transform 280ms var(--ease-move);
+}
+
+.row-enter-active {
+  transition: opacity 200ms var(--ease-out);
+}
+
+.row-enter-from {
+  opacity: 0;
+}
+
 .note-row {
   display: flex;
   flex-direction: column;
@@ -637,7 +815,13 @@ function previewOf(n: Note): string {
   background: var(--bg-hover);
 }
 
+/* Selection is neutral while focus is elsewhere (typing in the note) and
+   takes the accent only while the list itself has focus — like macOS */
 .note-row.selected {
+  background: var(--bg-active);
+}
+
+.note-list:focus-within .note-row.selected {
   background: var(--accent-bg);
 }
 
@@ -659,7 +843,9 @@ function previewOf(n: Note): string {
 }
 
 .row-date {
-  margin-right: 2px;
+  margin-right: 4px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .notes-editor {
@@ -764,22 +950,27 @@ function previewOf(n: Note): string {
   border: 1px solid var(--border);
   background: var(--bg-surface);
   overflow: hidden;
-  animation: card-in 280ms var(--ease-out) both;
-  animation-delay: var(--d, 0ms);
-  transition: transform var(--dur-hover) var(--ease-out), border-color var(--dur-hover) ease,
+  transition: transform var(--dur-press) var(--ease-out), border-color var(--dur-hover) ease,
     box-shadow var(--dur-hover) ease;
 }
 
+/* One-time entrance only (see galleryIntro) — never replays on filter */
+.card-grid.intro .card {
+  animation: card-in 280ms var(--ease-out) both;
+  animation-delay: var(--d, 0ms);
+}
+
+/* Hover is hit constantly while scanning the grid: no lift, just the
+   edge and shadow coming up */
 @media (hover: hover) and (pointer: fine) {
   .card:hover {
-    transform: translateY(-2px);
     border-color: var(--border-strong);
     box-shadow: var(--shadow-2);
   }
 }
 
 .card:active {
-  transform: scale(0.98);
+  transform: scale(0.97);
 }
 
 @keyframes card-in {
@@ -851,7 +1042,8 @@ function previewOf(n: Note): string {
   padding: var(--space-7) var(--space-4);
 }
 
-/* Full-page editor over the grid */
+/* Full-page editor over the grid — grows out of the card that opened it
+   (transform-origin = that card's center) and shrinks back into it */
 .gallery-editor {
   position: absolute;
   inset: 0;
@@ -859,27 +1051,30 @@ function previewOf(n: Note): string {
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  transform-origin: var(--page-origin, 50% 30%);
 }
 
 .page-enter-active {
-  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+  transition: opacity 200ms var(--ease-out), transform 260ms var(--ease-out);
 }
 
+/* exit: same path back, softer and faster */
 .page-leave-active {
-  transition: opacity 130ms ease;
+  transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out);
 }
 
 .page-enter-from {
   opacity: 0;
-  transform: scale(0.985);
+  transform: scale(0.92);
 }
 
 .page-leave-to {
   opacity: 0;
+  transform: scale(0.95);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .card {
+  .card-grid.intro .card {
     animation: none;
   }
 
@@ -890,7 +1085,8 @@ function previewOf(n: Note): string {
     transition: opacity 130ms ease;
   }
 
-  .page-enter-from {
+  .page-enter-from,
+  .page-leave-to {
     transform: none;
   }
 }

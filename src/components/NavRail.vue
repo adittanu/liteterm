@@ -89,6 +89,7 @@ function railTitle(id: ViewId, label: string): string {
   flex-shrink: 0;
   padding: var(--space-3) var(--space-2);
   overflow-y: auto;
+  overflow-x: hidden;
   /* Defined sidebar surface — without a visible boundary the collapsed
      icon column reads as floating in the content's own whitespace */
   background: var(--material-bg);
@@ -180,8 +181,10 @@ function railTitle(id: ViewId, label: string): string {
   display: block;
   flex-shrink: 0;
   /* Span the rail's full width (bleeding into its side padding) so the
-     clouds hug the sidebar's left edge */
-  width: calc(100% + 2 * var(--space-2));
+     clouds hug the sidebar's left edge, then scale up a touch — the
+     source's right side is empty, so the overflow (clipped by the
+     rail) loses nothing */
+  width: calc((100% + 2 * var(--space-2)) * 1.15);
   margin: var(--space-2) calc(var(--space-2) * -1) 0;
   pointer-events: none;
   user-select: none;

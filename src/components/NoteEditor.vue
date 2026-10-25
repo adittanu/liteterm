@@ -326,6 +326,7 @@ defineExpose({
 
     <div class="editor-scroll" @click="onScrollClick">
       <div class="editor-inner">
+        <p class="edited-at">{{ editedLabel(note.updated_at) }}</p>
         <input
           ref="titleEl"
           v-model="title"
@@ -337,7 +338,6 @@ defineExpose({
           @input="syncEdit"
           @keydown.enter.prevent="onTitleEnter"
         />
-        <p class="edited-at">{{ editedLabel(note.updated_at) }}</p>
 
         <EditorContent :editor="editor" class="note-prose" aria-label="Note body" />
       </div>
@@ -430,16 +430,20 @@ defineExpose({
   line-height: var(--leading-tight);
   color: var(--text-1);
   padding: 0;
+  margin-bottom: var(--space-2);
 }
 
 .note-title::placeholder {
   color: var(--text-4);
 }
 
+/* Apple Notes puts the timestamp centered above the note, out of the way */
 .edited-at {
   font-size: var(--text-xs);
   color: var(--text-3);
-  margin: var(--space-1) 0 var(--space-2);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  margin: 0 0 var(--space-4);
 }
 
 /* ---- inline #tags (decorated by the Hashtag extension) ---- */
@@ -585,28 +589,51 @@ defineExpose({
 }
 
 .note-prose :deep(.tiptap ul[data-type='taskList'] li > label) {
-  margin-top: 4px;
+  margin-top: 3.5px;
   flex-shrink: 0;
   user-select: none;
 }
 
+/* Round checkbox, Apple Notes style. Press feedback on pointer-down;
+   the check is always rendered and transitions in (interruptible —
+   rapid toggling retargets instead of restarting). */
 .note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']) {
   appearance: none;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   border: 1.5px solid var(--border-strong);
-  border-radius: 4px;
+  border-radius: 999px;
   background: transparent;
   cursor: pointer;
   display: block;
   position: relative;
   transition:
+    transform var(--dur-press) ease-out,
     background-color var(--dur-hover) ease,
     border-color var(--dur-hover) ease;
 }
 
-.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:hover) {
-  border-color: var(--accent);
+.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']::after) {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-color: var(--accent-text);
+  clip-path: polygon(22% 48%, 15% 55%, 41% 79%, 85% 30%, 78% 23%, 41% 66%);
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 200ms var(--ease-out);
+}
+
+.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:active) {
+  transform: scale(0.9);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:hover) {
+    border-color: var(--accent);
+  }
 }
 
 .note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:checked) {
@@ -615,11 +642,12 @@ defineExpose({
 }
 
 .note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:checked::after) {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-color: var(--accent-text);
-  clip-path: polygon(19% 46%, 12% 53%, 40% 80%, 88% 26%, 81% 20%, 40% 67%);
+  opacity: 1;
+  transform: scale(1);
+}
+
+.note-prose :deep(.tiptap ul[data-type='taskList'] li > div) {
+  transition: color var(--dur-hover) ease;
 }
 
 .note-prose :deep(.tiptap ul[data-type='taskList'] li[data-checked='true'] > div) {

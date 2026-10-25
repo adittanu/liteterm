@@ -53,3 +53,47 @@ pub fn local_list(path: String) -> Result<Vec<FileEntry>, String> {
     }
     Ok(entries)
 }
+
+#[derive(serde::Serialize)]
+pub struct LocalPlace {
+    pub label: String,
+    pub path: String,
+}
+
+/// Familiar starting points for the local pane: the user's home and the
+/// standard folders inside it that actually exist.
+#[tauri::command]
+pub fn local_places() -> Vec<LocalPlace> {
+    let mut out = Vec::new();
+    let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) else {
+        return out;
+    };
+    let home = std::path::PathBuf::from(home);
+    if !home.is_dir() {
+        return out;
+    }
+    out.push(LocalPlace { label: "Home".into(), path: home.to_string_lossy().into_owned() });
+    for name in ["Desktop", "Documents", "Downloads"] {
+        let p = home.join(name);
+        if p.is_dir() {
+            out.push(LocalPlace { label: name.into(), path: p.to_string_lossy().into_owned() });
+        }
+    }
+    out
+}
+
+#[tauri::command]
+pub fn local_mkdir(path: String) -> Result<(), String> {
+    std::fs::create_dir(&path).map_err(|e| format!("Could not create folder: {e}"))
+}
+
+/// Rename within the local filesystem. Refuses to overwrite: std::fs::rename
+/// replaces an existing file on Windows, which a rename must never do.
+#[tauri::command]
+pub fn local_rename(from: String, to: String) -> Result<(), String> {
+    let same_name_case_change = from.eq_ignore_ascii_case(&to);
+    if !same_name_case_change && std::path::Path::new(&to).exists() {
+        return Err("An item with that name already exists".into());
+    }
+    std::fs::rename(&from, &to).map_err(|e| format!("Rename failed: {e}"))
+}

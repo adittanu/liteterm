@@ -217,8 +217,10 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   async function cancelTransfer(transferId: number) {
+    const t = transfers.value.find((x) => x.id === transferId)
+    if (!t) return
     try {
-      await api.sftpCancelTransfer(transferId)
+      await api.sftpCancelTransfer(t.sessionId, transferId)
     } catch {
       // already finished
     }

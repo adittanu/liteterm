@@ -25,6 +25,7 @@
     "@tiptap/vue-3": "^2.27.3",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "0.20.0-beta.309",
     "@xterm/xterm": "6.1.0-beta.315",
     "lucide-vue-next": "^0.474.0",
     "pinia": "^2.3.0",
