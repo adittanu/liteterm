@@ -4,6 +4,7 @@ import {
   KeyRound,
   ArrowLeftRight,
   ScrollText,
+  StickyNote,
   ShieldCheck,
   Clock,
   Settings,
@@ -20,6 +21,7 @@ const items: { id: ViewId; label: string; icon: LucideIcon }[] = [
   { id: 'keychain', label: 'Keychain', icon: KeyRound },
   { id: 'forwards', label: 'Port Forwarding', icon: ArrowLeftRight },
   { id: 'snippets', label: 'Snippets', icon: ScrollText },
+  { id: 'notes', label: 'Notes', icon: StickyNote },
   { id: 'known', label: 'Known Hosts', icon: ShieldCheck },
   { id: 'logs', label: 'Logs', icon: Clock },
 ]
@@ -46,6 +48,15 @@ function isActive(id: ViewId): boolean {
 
     <span class="rail-spacer"></span>
 
+    <img
+      v-if="!ui.railCollapsed"
+      class="rail-art"
+      src="../assets/rail-art-crop.png"
+      alt=""
+      aria-hidden="true"
+      draggable="false"
+    />
+
     <button
       class="rail-item"
       :title="ui.railCollapsed ? 'Settings' : undefined"
@@ -67,11 +78,29 @@ function isActive(id: ViewId): boolean {
   flex-shrink: 0;
   padding: var(--space-3) var(--space-2);
   overflow-y: auto;
-  transition: width 180ms var(--ease-out);
+  /* Defined sidebar surface — without a visible boundary the collapsed
+     icon column reads as floating in the content's own whitespace */
+  background: var(--material-bg);
+  border-right: var(--material-edge);
+  /* A nav rail never shows a scrollbar (wheel still scrolls) — a
+     classic scrollbar would eat asymmetric space and shift icons */
+  scrollbar-width: none;
+  transition: width 180ms var(--ease-out), padding 180ms var(--ease-out);
+}
+
+.rail::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .rail {
+    background: var(--bg-surface);
+  }
 }
 
 .rail.collapsed {
   width: var(--rail-width-collapsed);
+  padding-inline: 6px;
 }
 
 .rail-item {
@@ -105,12 +134,28 @@ function isActive(id: ViewId): boolean {
 .rail.collapsed .rail-item {
   justify-content: center;
   padding: 0;
-  width: 40px;
+  width: 36px;
   align-self: center;
 }
 
 .rail-spacer {
   flex: 1;
+}
+
+.rail-art {
+  display: block;
+  flex-shrink: 0;
+  /* Span the rail's full width (bleeding into its side padding) so the
+     clouds hug the sidebar's left edge */
+  width: calc(100% + 2 * var(--space-2));
+  margin: var(--space-2) calc(var(--space-2) * -1) 0;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.9;
+  /* Dissolve both cut edges into the rail surface — the source art is
+     trimmed by its original frame at top and bottom */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 26%, black 86%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, black 26%, black 86%, transparent);
 }
 
 .rail-label {

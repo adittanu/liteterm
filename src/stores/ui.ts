@@ -8,6 +8,7 @@ export type ViewId =
   | 'keychain'
   | 'forwards'
   | 'snippets'
+  | 'notes'
   | 'known'
   | 'logs'
   | 'sftp'

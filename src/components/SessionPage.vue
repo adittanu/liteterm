@@ -1,12 +1,21 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSessionsStore } from '../stores/sessions'
+import { useUiStore } from '../stores/ui'
+import { terminalThemeFor } from '../services/terminalThemes'
 import type { SessionTab } from '../types'
 import TerminalPane from './TerminalPane.vue'
 
 const props = defineProps<{ sessionId: number }>()
 
 const sessions = useSessionsStore()
+const ui = useUiStore()
+
+// The stage behind the terminal paints the exact color the terminal
+// canvas paints — the xterm palette is the single source of truth, so
+// a CSS theme value can never drift from the terminal background.
+const terminalBg = computed(() => terminalThemeFor(ui.settings.theme, ui.systemDark).bg)
+
 const tab = computed(
   () => sessions.tabs.find((t) => t.id === props.sessionId) as SessionTab | undefined,
 )
@@ -25,7 +34,7 @@ async function resetHostKey(t: SessionTab) {
 
 <template>
   <div v-if="tab" class="session-page">
-    <div class="session-stage">
+    <div class="session-stage" :style="{ '--terminal-bg': terminalBg }">
       <TerminalPane :session="tab" />
 
       <div v-if="tab.status === 'connecting'" class="pane-overlay">
@@ -71,7 +80,7 @@ async function resetHostKey(t: SessionTab) {
   position: relative;
   flex: 1;
   min-height: 0;
-  background: var(--bg-terminal);
+  background: var(--terminal-bg);
 }
 
 .pane-overlay {
@@ -82,7 +91,7 @@ async function resetHostKey(t: SessionTab) {
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
-  background: var(--bg-terminal);
+  background: var(--terminal-bg);
   text-align: center;
   padding: var(--space-5);
 }

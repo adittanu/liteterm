@@ -18,6 +18,7 @@ function goTo(n: number): ShortcutDef {
 export const SHORTCUTS: ShortcutDef[] = [
   { id: 'palette', label: 'Quick connect', group: 'General', defaultKeys: 'Ctrl+K' },
   { id: 'newLocal', label: 'New local terminal', group: 'General', defaultKeys: 'Ctrl+T' },
+  { id: 'quickNote', label: 'Quick note', group: 'General', defaultKeys: 'Alt+Q' },
   { id: 'nextTab', label: 'Next tab', group: 'Tabs', defaultKeys: 'Ctrl+Tab' },
   { id: 'prevTab', label: 'Previous tab', group: 'Tabs', defaultKeys: 'Ctrl+Shift+Tab' },
   ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(goTo),

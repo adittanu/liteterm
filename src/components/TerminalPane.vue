@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
-import { terminalThemeFor } from '../services/terminalThemes'
+import { xtermThemeFor } from '../services/terminalThemes'
 import { actionFor } from '../services/shortcuts'
 import type { SessionTab } from '../types'
 
@@ -21,7 +21,7 @@ let fit: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 
 function terminalTheme() {
-  return terminalThemeFor(ui.settings.theme, ui.systemDark)
+  return xtermThemeFor(ui.settings.theme, ui.systemDark)
 }
 
 // Coalesce keystrokes into ~16ms batches so fast typing costs one invoke per frame
@@ -152,13 +152,64 @@ onMounted(() => {
   if (props.session.status === 'connected') {
     term.focus()
   }
+
+  // Long occlusion/minimize can strand a debounced paint; repaint once the
+  // window becomes visible again
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
-// View switch lands here: focus without animation
+// ---- blank-pane recovery ----
+// xterm pauses rendering while a pane is hidden (IntersectionObserver) and
+// debounces paints on rAF. If the WebView freezes rAF for a long time
+// (occluded or minimized window), a pending frame can be dropped while the
+// debouncer still holds its id — every later refresh() early-returns and the
+// pane stops painting, so rows emptied by an alt-screen switch or a resize
+// stay blank. On (re)show: cancel any stale frame, refit, then repaint the
+// whole viewport synchronously from the buffer.
+type RenderServiceLike = {
+  _renderDebouncer?: { dispose?: () => void }
+  refreshRows?: (start: number, end: number, sync?: boolean) => void
+}
+
+function recoverPaint() {
+  if (!term) return
+  try {
+    fit?.fit()
+  } catch {
+    // container hidden — fit() can throw when dimensions are 0
+  }
+  const renderService = (
+    term as unknown as { _core?: { _renderService?: RenderServiceLike } }
+  )._core?._renderService
+  try {
+    renderService?._renderDebouncer?.dispose?.()
+  } catch {
+    // private API drift — the sync repaint below still helps
+  }
+  try {
+    renderService?.refreshRows?.(0, term.rows - 1, true)
+  } catch {
+    // private API drift — the IntersectionObserver refresh still applies
+  }
+}
+
+// The render service unpauses via IntersectionObserver only after the first
+// post-display layout pass; a second rAF lands safely past that delivery.
+function scheduleRecoverPaint() {
+  requestAnimationFrame(() => requestAnimationFrame(recoverPaint))
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') recoverPaint()
+}
+
+// View switch lands here: repaint + focus
 watch(
   () => ui.activeView,
   (view) => {
-    if (view === `session:${props.session.id}`) term?.focus()
+    if (view !== `session:${props.session.id}`) return
+    scheduleRecoverPaint()
+    term?.focus()
   },
 )
 
@@ -166,11 +217,7 @@ watch(
   () => props.session.status,
   (status) => {
     if (status === 'connected') {
-      try {
-        fit?.fit()
-      } catch {
-        /* ignore */
-      }
+      recoverPaint()
       term?.focus()
     }
   },
@@ -185,6 +232,7 @@ watch(
 )
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   sessions.detachSink(props.session.id)
   resizeObserver?.disconnect()
   if (flushTimer !== null) window.clearTimeout(flushTimer)

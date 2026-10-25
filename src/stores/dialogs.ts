@@ -59,6 +59,7 @@ export const useDialogsStore = defineStore('dialogs', () => {
   const showSettings = ref(false)
   const showImport = ref(false)
   const showPalette = ref(false)
+  const showQuickNote = ref(false)
 
   return {
     hostDialog,
@@ -73,5 +74,6 @@ export const useDialogsStore = defineStore('dialogs', () => {
     showSettings,
     showImport,
     showPalette,
+    showQuickNote,
   }
 })

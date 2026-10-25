@@ -3,6 +3,7 @@ pub mod forwards;
 pub mod hosts;
 pub mod import;
 pub mod local_fs;
+pub mod notes;
 pub mod session;
 pub mod settings;
 pub mod sftp;

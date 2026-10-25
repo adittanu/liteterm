@@ -33,10 +33,12 @@ export interface ThemeMeta {
   swatches: [string, string, string, string, string] // bg, surface, text, accent, status
 }
 
+// bg swatches are the exact rendered values of each theme's --bg token
+// (oklch converted to sRGB), so previews tell the truth
 export const THEMES: ThemeMeta[] = [
-  { id: 'system', name: 'System', dark: true, swatches: ['#1c1d26', '#242533', '#e8e8ee', '#6c8cff', '#5fd49a'] },
-  { id: 'dark', name: 'Dark', dark: true, swatches: ['#15171f', '#1e2029', '#e8e8ee', '#6c8cff', '#5fd49a'] },
-  { id: 'light', name: 'Light', dark: false, swatches: ['#f6f6f9', '#ffffff', '#26262e', '#4a6ee0', '#22854f'] },
+  { id: 'system', name: 'System', dark: true, swatches: ['#090c11', '#242533', '#e8e8ee', '#6c8cff', '#5fd49a'] },
+  { id: 'dark', name: 'Dark', dark: true, swatches: ['#090c11', '#1e2029', '#e8e8ee', '#6c8cff', '#5fd49a'] },
+  { id: 'light', name: 'Light', dark: false, swatches: ['#f2f3f5', '#ffffff', '#26262e', '#4a6ee0', '#22854f'] },
   {
     id: 'catppuccin-mocha',
     name: 'Catppuccin Mocha',
@@ -57,15 +59,17 @@ export const THEMES: ThemeMeta[] = [
 ]
 
 const PALETTES: Record<string, TerminalPalette> = {
+  // Terminal bg = the theme's rendered --bg (exact oklch→sRGB conversion),
+  // so the canvas blends into the app chrome with no visible seam
   dark: {
-    bg: '#101014', fg: '#e8e8ee', cursor: '#6c8cff', cursorAccent: '#101014', selectionBackground: '#6c8cff38',
+    bg: '#090c11', fg: '#e8e8ee', cursor: '#6c8cff', cursorAccent: '#090c11', selectionBackground: '#6c8cff38',
     black: '#3a3a46', red: '#ff6b6b', green: '#5fd49a', yellow: '#e8c468', blue: '#6c9bff',
     magenta: '#c792ea', cyan: '#5cd6d6', white: '#d6d6de',
     brightBlack: '#5a5a6a', brightRed: '#ff8b8b', brightGreen: '#7ee8b4', brightYellow: '#f5d98a',
     brightBlue: '#8fb5ff', brightMagenta: '#dab3f5', brightCyan: '#7ee3e3', brightWhite: '#f0f0f6',
   },
   light: {
-    bg: '#ffffff', fg: '#1c1c24', cursor: '#4a6ee0', cursorAccent: '#ffffff', selectionBackground: '#4a6ee038',
+    bg: '#f2f3f5', fg: '#1c1c24', cursor: '#4a6ee0', cursorAccent: '#f2f3f5', selectionBackground: '#4a6ee038',
     black: '#48485a', red: '#c73838', green: '#1d8a54', yellow: '#a06a10', blue: '#2b5fd9',
     magenta: '#8a3fc7', cyan: '#0f7d8c', white: '#b0b0c0',
     brightBlack: '#7a7a8c', brightRed: '#e04a4a', brightGreen: '#28a862', brightYellow: '#c08020',
@@ -126,4 +130,34 @@ const PALETTES: Record<string, TerminalPalette> = {
 export function terminalThemeFor(themeSetting: string, systemDark: boolean): TerminalPalette {
   const resolved = themeSetting === 'system' ? (systemDark ? 'dark' : 'light') : themeSetting
   return PALETTES[resolved] ?? PALETTES.dark
+}
+
+// xterm's ITheme keys are `background`/`foreground` — the palette's `bg`/`fg`
+// names silently no-op if passed straight through, leaving the canvas on
+// xterm's default black instead of the theme color.
+export function xtermThemeFor(themeSetting: string, systemDark: boolean) {
+  const p = terminalThemeFor(themeSetting, systemDark)
+  return {
+    background: p.bg,
+    foreground: p.fg,
+    cursor: p.cursor,
+    cursorAccent: p.cursorAccent,
+    selectionBackground: p.selectionBackground,
+    black: p.black,
+    red: p.red,
+    green: p.green,
+    yellow: p.yellow,
+    blue: p.blue,
+    magenta: p.magenta,
+    cyan: p.cyan,
+    white: p.white,
+    brightBlack: p.brightBlack,
+    brightRed: p.brightRed,
+    brightGreen: p.brightGreen,
+    brightYellow: p.brightYellow,
+    brightBlue: p.brightBlue,
+    brightMagenta: p.brightMagenta,
+    brightCyan: p.brightCyan,
+    brightWhite: p.brightWhite,
+  }
 }

@@ -74,6 +74,16 @@ pub struct Snippet {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct Note {
+    pub id: i64,
+    pub title: String,
+    pub body: String,
+    pub pinned: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct PortForward {
     pub id: i64,
     pub host_id: i64,

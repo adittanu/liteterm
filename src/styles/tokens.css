@@ -45,7 +45,9 @@
 
   /* ---- Layout ---- */
   --rail-width: 208px;
-  --rail-width-collapsed: 56px;
+  /* Collapsed rail centers icons at x=24 — the same column as the
+     top bar's rail toggle (margin-left 8 + 32px button) */
+  --rail-width-collapsed: 48px;
   --topbar-height: 44px;
 
   color-scheme: dark;
@@ -66,7 +68,6 @@
   --bg-hover: oklch(0.26 0.015 260);
   --bg-active: oklch(0.3 0.017 260);
   --bg-selected: oklch(0.29 0.03 258);
-  --bg-terminal: oklch(0.145 0.012 260);
 
   --text-1: oklch(0.93 0.005 260);
   --text-2: oklch(0.72 0.01 260);
@@ -121,7 +122,6 @@
   --bg-hover: oklch(0.945 0.004 260);
   --bg-active: oklch(0.925 0.005 260);
   --bg-selected: oklch(0.93 0.02 252);
-  --bg-terminal: oklch(1 0 0);
 
   --text-1: oklch(0.21 0.012 260);
   --text-2: oklch(0.42 0.012 260);

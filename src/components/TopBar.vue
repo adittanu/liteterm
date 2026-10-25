@@ -53,6 +53,8 @@ function isActive(id: string): boolean {
 }
 
 function openTab(id: string) {
+  // TEMP DEBUG: confirm the click pipeline reaches the store
+  ui.toast('info', `tab click: ${id}`)
   ui.openView(id as never)
 }
 
@@ -80,7 +82,6 @@ function closeSession(sessionId: number) {
         :class="{ active: isActive(tab.id) }"
         role="tab"
         :aria-selected="isActive(tab.id)"
-        :data-tauri-drag-region="isActive(tab.id) ? undefined : true"
         @click="openTab(tab.id)"
       >
         <template v-if="tab.kind === 'sftp'">
@@ -176,7 +177,8 @@ function closeSession(sessionId: number) {
 }
 
 .rail-toggle {
-  margin-left: 6px;
+  /* Center at x=24, the same column the collapsed rail icons use */
+  margin-left: 8px;
 }
 
 .topbar-tabs {

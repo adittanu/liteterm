@@ -43,6 +43,15 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             sort     INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS notes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            title      TEXT NOT NULL DEFAULT '',
+            body       TEXT NOT NULL DEFAULT '',
+            pinned     INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
         CREATE TABLE IF NOT EXISTS port_forwards (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             host_id      INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
@@ -429,6 +438,60 @@ pub fn upsert_snippet(conn: &Connection, id: Option<i64>, name: &str, command: &
 
 pub fn delete_snippet(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
     conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// ---------- notes ----------
+
+const NOTE_COLS: &str = "id, title, body, pinned, created_at, updated_at";
+
+fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
+    Ok(Note {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        body: row.get(2)?,
+        pinned: row.get::<_, i64>(3)? != 0,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+/// Pinned first, then most recently edited.
+pub fn list_notes(conn: &Connection) -> Result<Vec<Note>, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {NOTE_COLS} FROM notes ORDER BY pinned DESC, updated_at DESC, id DESC"
+    ))?;
+    let rows = stmt.query_map([], row_to_note)?;
+    rows.collect()
+}
+
+pub fn get_note(conn: &Connection, id: i64) -> Result<Option<Note>, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("SELECT {NOTE_COLS} FROM notes WHERE id = ?1"))?;
+    let mut rows = stmt.query_map(params![id], row_to_note)?;
+    rows.next().transpose()
+}
+
+pub fn create_note(conn: &Connection, title: &str, body: &str) -> Result<Note, rusqlite::Error> {
+    conn.execute("INSERT INTO notes (title, body) VALUES (?1, ?2)", params![title, body])?;
+    get_note(conn, conn.last_insert_rowid())?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn update_note(conn: &Connection, id: i64, title: &str, body: &str) -> Result<Note, rusqlite::Error> {
+    conn.execute(
+        "UPDATE notes SET title=?2, body=?3, updated_at=datetime('now','localtime') WHERE id=?1",
+        params![id, title, body],
+    )?;
+    get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// Pinning is an organizational action — it does not touch updated_at.
+pub fn set_note_pinned(conn: &Connection, id: i64, pinned: bool) -> Result<Note, rusqlite::Error> {
+    conn.execute("UPDATE notes SET pinned=?2 WHERE id=?1", params![id, pinned as i64])?;
+    get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+pub fn delete_note(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
     Ok(())
 }
 

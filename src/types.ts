@@ -68,6 +68,15 @@ export interface Snippet {
   sort: number
 }
 
+export interface Note {
+  id: number
+  title: string
+  body: string
+  pinned: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface PortForward {
   id: number
   host_id: number

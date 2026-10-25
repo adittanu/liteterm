@@ -7,6 +7,7 @@ import HostsView from './views/HostsView.vue'
 import KeychainView from './views/KeychainView.vue'
 import ForwardsView from './views/ForwardsView.vue'
 import SnippetsView from './views/SnippetsView.vue'
+import NotesView from './views/NotesView.vue'
 import KnownHostsView from './views/KnownHostsView.vue'
 import LogsView from './views/LogsView.vue'
 import SftpView from './views/SftpView.vue'
@@ -17,6 +18,7 @@ import PasswordPromptDialog from './components/PasswordPromptDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import QuickNoteDialog from './components/QuickNoteDialog.vue'
 import Toasts from './components/Toasts.vue'
 import { useSessionsStore } from './stores/sessions'
 import { useDialogsStore } from './stores/dialogs'
@@ -52,6 +54,9 @@ function runAction(id: string) {
       break
     case 'newLocal':
       void sessions.connectLocal()
+      break
+    case 'quickNote':
+      dialogs.showQuickNote = !dialogs.showQuickNote
       break
     case 'closeTab': {
       const view = ui.activeView
@@ -106,6 +111,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
         <KeychainView v-else-if="ui.activeView === 'keychain'" />
         <ForwardsView v-else-if="ui.activeView === 'forwards'" />
         <SnippetsView v-else-if="ui.activeView === 'snippets'" />
+        <NotesView v-else-if="ui.activeView === 'notes'" />
         <KnownHostsView v-else-if="ui.activeView === 'known'" />
         <LogsView v-else-if="ui.activeView === 'logs'" />
         <SftpView v-else-if="ui.activeView === 'sftp'" />
@@ -119,6 +125,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
     <ImportDialog />
     <SettingsDialog />
     <CommandPalette />
+    <QuickNoteDialog />
     <Toasts />
   </div>
 </template>

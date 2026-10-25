@@ -5,6 +5,7 @@ import type {
   HostGroup,
   HostInput,
   Snippet,
+  Note,
   PortForward,
   AppSettings,
   FileEntry,
@@ -50,6 +51,15 @@ export const api = {
   upsertSnippet: (id: number | null, name: string, command: string): Promise<Snippet> =>
     invoke('upsert_snippet', { id, name, command }),
   deleteSnippet: (id: number): Promise<void> => invoke('delete_snippet', { id }),
+
+  // ---- notes ----
+  listNotes: (): Promise<Note[]> => invoke('list_notes'),
+  createNote: (title = '', body = ''): Promise<Note> => invoke('create_note', { title, body }),
+  updateNote: (id: number, title: string, body: string): Promise<Note> =>
+    invoke('update_note', { id, title, body }),
+  setNotePinned: (id: number, pinned: boolean): Promise<Note> =>
+    invoke('set_note_pinned', { id, pinned }),
+  deleteNote: (id: number): Promise<void> => invoke('delete_note', { id }),
 
   // ---- forwards ----
   listForwards: (): Promise<PortForward[]> => invoke('list_forwards'),
