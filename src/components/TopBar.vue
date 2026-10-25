@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { onMounted, onUnmounted, ref } from 'vue'
-import { Menu, Plus, X, FolderTree, TerminalSquare } from 'lucide-vue-next'
+import { Menu, Plus, X, FolderTree } from 'lucide-vue-next'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
@@ -53,9 +53,14 @@ function isActive(id: string): boolean {
 }
 
 function openTab(id: string) {
-  // TEMP DEBUG: confirm the click pipeline reaches the store
-  ui.toast('info', `tab click: ${id}`)
   ui.openView(id as never)
+}
+
+function dotState(status: string): string {
+  if (status === 'connected') return 'live'
+  if (status === 'connecting' || status === 'hostkey') return 'connecting'
+  if (status === 'error') return 'error'
+  return ''
 }
 
 function closeSession(sessionId: number) {
@@ -89,6 +94,8 @@ function closeSession(sessionId: number) {
           <span class="top-tab-label text-ellipsis">{{ tab.label }}</span>
         </template>
         <template v-else>
+          <span class="top-tab-dot" :class="dotState(tab.status)" aria-hidden="true"></span>
+          <span class="top-tab-label text-ellipsis">{{ tab.label }}</span>
           <span
             class="top-tab-close"
             role="button"
@@ -97,14 +104,6 @@ function closeSession(sessionId: number) {
           >
             <X :size="11" :stroke-width="2" aria-hidden="true" />
           </span>
-          <span class="top-tab-label text-ellipsis">{{ tab.label }}</span>
-          <TerminalSquare
-            :size="13"
-            :stroke-width="1.5"
-            class="tab-ico"
-            :class="{ live: tab.status === 'connected' }"
-            aria-hidden="true"
-          />
         </template>
       </div>
 
@@ -184,7 +183,7 @@ function closeSession(sessionId: number) {
 .topbar-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
@@ -197,23 +196,30 @@ function closeSession(sessionId: number) {
 .top-tab {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 10px 0 8px;
-  max-width: 200px;
-  min-width: 84px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  max-width: 180px;
   font-size: var(--text-base);
-  color: var(--text-2);
-  border-radius: 10px;
+  color: var(--text-3);
+  border-radius: 7px;
   position: relative;
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
-  transition: color var(--dur-hover) ease, background-color var(--dur-hover) ease;
+  transition:
+    color var(--dur-hover) ease,
+    background-color var(--dur-hover) ease,
+    padding var(--dur-hover) ease;
+}
+
+/* Reserve room for the hover-revealed close button only while it is shown */
+.top-tab:has(.top-tab-close):hover,
+.top-tab:has(.top-tab-close).active {
+  padding-right: 28px;
 }
 
 .top-tab:hover {
-  background: var(--bg-hover);
   color: var(--text-1);
 }
 
@@ -222,15 +228,41 @@ function closeSession(sessionId: number) {
   background: var(--bg-surface-2);
 }
 
-
-
-.tab-ico {
-  color: var(--text-4);
+.top-tab-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-4);
   flex-shrink: 0;
 }
 
-.tab-ico.live {
-  color: var(--success);
+.top-tab-dot.live {
+  background: var(--success);
+  box-shadow: 0 0 5px var(--success-bg);
+}
+
+.top-tab-dot.connecting {
+  background: var(--warning);
+  animation: tab-dot-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.top-tab-dot.error {
+  background: var(--danger);
+}
+
+@keyframes tab-dot-pulse {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .top-tab-dot.connecting {
+    animation: none;
+  }
 }
 
 .top-tab-label {
@@ -239,15 +271,22 @@ function closeSession(sessionId: number) {
 }
 
 .top-tab-close {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
   color: var(--text-4);
-  flex-shrink: 0;
-  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+  opacity: 0;
+  transition:
+    opacity var(--dur-hover) ease,
+    background-color var(--dur-hover) ease,
+    color var(--dur-hover) ease;
 }
 
 .top-tab:hover .top-tab-close,

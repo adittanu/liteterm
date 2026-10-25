@@ -48,7 +48,7 @@
   /* Collapsed rail centers icons at x=24 — the same column as the
      top bar's rail toggle (margin-left 8 + 32px button) */
   --rail-width-collapsed: 48px;
-  --topbar-height: 44px;
+  --topbar-height: 40px;
 
   color-scheme: dark;
 }
