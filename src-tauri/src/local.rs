@@ -24,17 +24,17 @@ pub struct LocalSession {
     pub closed: CancellationToken,
 }
 
+/// Start in the user's home directory, like a freshly opened terminal
+fn in_home(mut cmd: CommandBuilder) -> CommandBuilder {
+    if let Some(home) = std::env::var("USERPROFILE").ok() {
+        cmd.cwd(home);
+    }
+    cmd
+}
+
 /// Shell candidates in preference order: pwsh 7 from its default install
 /// location, pwsh from PATH (scoop/winget), then Windows PowerShell.
 fn shell_candidates() -> Vec<CommandBuilder> {
-    let home = std::env::var("USERPROFILE").ok();
-    let with_home = |mut cmd: CommandBuilder| {
-        if let Some(h) = &home {
-            cmd.cwd(h);
-        }
-        cmd
-    };
-
     let mut candidates = Vec::new();
     if let Ok(program_files) = std::env::var("ProgramFiles") {
         let pwsh7 = std::path::Path::new(&program_files)
@@ -42,15 +42,17 @@ fn shell_candidates() -> Vec<CommandBuilder> {
             .join("7")
             .join("pwsh.exe");
         if pwsh7.exists() {
-            candidates.push(with_home(CommandBuilder::new(pwsh7)));
+            candidates.push(in_home(CommandBuilder::new(pwsh7)));
         }
     }
-    candidates.push(with_home(CommandBuilder::new("pwsh.exe")));
-    candidates.push(with_home(CommandBuilder::new("powershell.exe")));
+    candidates.push(in_home(CommandBuilder::new("pwsh.exe")));
+    candidates.push(in_home(CommandBuilder::new("powershell.exe")));
     candidates
 }
 
-pub fn spawn_local(state: &AppState) -> Result<u32, String> {
+/// `command` runs in place of the default shell (e.g. the herdr TUI);
+/// reader, event, and write/resize wiring is identical either way.
+pub fn spawn_local(state: &AppState, command: Option<&str>) -> Result<u32, String> {
     let pty_system = portable_pty::native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -61,16 +63,20 @@ pub fn spawn_local(state: &AppState) -> Result<u32, String> {
         })
         .map_err(|e| format!("Could not open PTY: {e}"))?;
 
-    // Try each shell candidate until one spawns
+    // Try each spawn candidate until one starts
+    let candidates: Vec<CommandBuilder> = match command {
+        Some(cmd) => vec![in_home(CommandBuilder::new(cmd))],
+        None => shell_candidates(),
+    };
     let mut spawn_err = String::from("No shell found");
     let mut child_opt = None;
-    for cmd in shell_candidates() {
+    for cmd in candidates {
         match pair.slave.spawn_command(cmd) {
             Ok(c) => {
                 child_opt = Some(c);
                 break;
             }
-            Err(e) => spawn_err = format!("Could not start shell: {e}"),
+            Err(e) => spawn_err = format!("Could not start program: {e}"),
         }
     }
     let child = child_opt.ok_or(spawn_err)?;

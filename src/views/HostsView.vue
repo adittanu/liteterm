@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   MoreHorizontal,
+  PlugZap,
 } from 'lucide-vue-next'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import { useHostsStore } from '../stores/hosts'
@@ -18,7 +19,9 @@ import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import HostDetailsPanel from '../components/HostDetailsPanel.vue'
-import OsAvatar from '../components/OsAvatar.vue'
+import PlanetAvatar from '../components/PlanetAvatar.vue'
+import { useSmartConnect } from '../utils/smartConnect'
+import { targetDisplay } from '../utils/parseTarget'
 import type { Host, HostGroup } from '../types'
 
 const hosts = useHostsStore()
@@ -28,11 +31,25 @@ const ui = useUiStore()
 
 const query = ref('')
 const selectedId = ref<number | null>(null)
-// null = root (folders + ungrouped hosts) · a group id = inside that folder
+// null = root (folders + all hosts) · a group id = inside that folder
 const currentGroupId = ref<number | null>(null)
 const menu = ref<{ x: number; y: number; items: MenuItem[] } | null>(null)
+// Direction of the last folder navigation, so the transition mirrors it:
+// drilling in slides forward, going back slides backward
+const navDir = ref<'fwd' | 'back'>('fwd')
 
 const searching = computed(() => query.value.trim().length > 0)
+
+// Quick connect: the query parsed as user@host:port / domain / IP, matched
+// against saved hosts (by exact address or resolved IP)
+const {
+  target: smartTarget,
+  ips: smartIps,
+  resolving: smartResolving,
+  resolveFailed: smartResolveFailed,
+  matches: smartMatches,
+} = useSmartConnect(query)
+const smartDisplay = computed(() => (smartTarget.value ? targetDisplay(smartTarget.value) : ''))
 
 const currentGroup = computed(
   () => hosts.groups.find((g) => g.id === currentGroupId.value) ?? null,
@@ -61,17 +78,22 @@ const visibleFolders = computed(() => {
   return groupCards.value.filter((g) => g.name.toLowerCase().includes(q))
 })
 
-// Root search spans the whole library; browsing root shows ungrouped hosts only.
-// Inside a folder, only that folder's hosts (searched within it).
+// Root shows every host (folders are just a way in); inside a folder, only
+// its hosts. Search filters whichever scope is active.
 const visibleHosts = computed(() => {
   const q = query.value.trim().toLowerCase()
+  let list = hosts.hosts
   if (currentGroupId.value !== null) {
-    const list = hosts.hosts.filter((h) => h.group_id === currentGroupId.value)
-    return q ? list.filter((h) => hostMatches(h, q)) : list
+    list = list.filter((h) => h.group_id === currentGroupId.value)
   }
-  if (q) return hosts.hosts.filter((h) => hostMatches(h, q))
-  return hosts.hosts.filter((h) => h.group_id === null)
+  if (q) list = list.filter((h) => hostMatches(h, q))
+  return [...list].sort(byRecent)
 })
+
+// Most recently accessed first; hosts never connected stay alphabetical
+function byRecent(a: Host, b: Host): number {
+  return (b.last_used_at ?? 0) - (a.last_used_at ?? 0) || a.label.localeCompare(b.label)
+}
 
 function groupName(id: number | null): string {
   if (id === null) return ''
@@ -88,19 +110,46 @@ function select(host: Host) {
 
 // Entering or leaving a folder ends the search — intent shifts to browsing.
 function openGroup(g: HostGroup) {
+  navDir.value = 'fwd'
   currentGroupId.value = g.id
   query.value = ''
   selectedId.value = null
 }
 
 function goRoot() {
+  navDir.value = 'back'
   currentGroupId.value = null
   query.value = ''
 }
 
 function connectFirst() {
+  // A parsed quick-connect target wins over the filtered list
+  if (smartMatches.value.length) {
+    void sessions.connect(smartMatches.value[0].host.id)
+    return
+  }
+  if (smartTarget.value) {
+    openQuickAdd()
+    return
+  }
   const first = visibleHosts.value[0]
   if (first) void sessions.connect(first.id)
+}
+
+function openQuickAdd() {
+  const t = smartTarget.value
+  if (!t) return
+  dialogs.openHostDialog(
+    null,
+    currentGroupId.value,
+    {
+      address: t.host,
+      port: t.port ?? 22,
+      username: t.username,
+      ips: t.kind === 'domain' ? smartIps.value : [],
+    },
+    true,
+  )
 }
 
 function statusFor(hostId: number): string {
@@ -171,7 +220,11 @@ async function deleteSelected() {
             @keydown.enter="connectFirst"
           />
         </div>
-        <button class="btn btn-primary" :disabled="!visibleHosts.length" @click="connectFirst">
+        <button
+          class="btn btn-primary"
+          :disabled="!visibleHosts.length && !smartTarget"
+          @click="connectFirst"
+        >
           Connect
         </button>
       </div>
@@ -196,7 +249,7 @@ async function deleteSelected() {
           </button>
           <button class="crumb-link" @click="goRoot">Hosts</button>
           <ChevronRight :size="13" :stroke-width="1.5" class="crumb-sep" aria-hidden="true" />
-          <span class="crumb-current">
+          <span class="crumb-current" aria-current="true">
             <Folder :size="14" :stroke-width="1.5" aria-hidden="true" />
             <span class="text-ellipsis">{{ currentGroup.name }}</span>
           </span>
@@ -213,137 +266,166 @@ async function deleteSelected() {
           </button>
         </div>
 
-        <!-- Root: group folders -->
-        <section
-          v-if="!currentGroup && (!searching || visibleFolders.length)"
-          class="dash-section"
-        >
-          <h3 class="section-title">{{ searching ? 'Matching groups' : 'Groups' }}</h3>
-          <div class="card-grid">
-            <div
-              v-for="g in visibleFolders"
-              :key="g.id"
-              class="folder-card"
-              role="button"
-              tabindex="0"
-              :aria-label="`Open group ${g.name}`"
-              @click="openGroup(g)"
-              @keydown.enter="openGroup(g)"
-              @contextmenu.prevent="openFolderMenu(g, $event)"
-            >
-              <span class="folder-avatar">
-                <Folder :size="19" :stroke-width="1.5" aria-hidden="true" />
-              </span>
-              <span class="folder-text">
-                <span class="folder-name text-ellipsis">{{ g.name }}</span>
-                <span class="folder-sub">{{ g.count }} {{ g.count === 1 ? 'host' : 'hosts' }}</span>
-              </span>
-              <span class="folder-go">
-                <ChevronRight :size="15" :stroke-width="1.5" class="folder-chev" aria-hidden="true" />
-                <button
-                  class="btn-icon folder-more"
-                  aria-label="Group options"
-                  @click.stop="openFolderMenu(g, $event)"
-                >
-                  <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
-                </button>
-              </span>
-            </div>
-            <button
-              v-if="!searching"
-              class="folder-card new-folder"
-              @click="dialogs.openGroupDialog(null)"
-            >
-              <span class="folder-avatar new">
-                <FolderPlus :size="19" :stroke-width="1.5" aria-hidden="true" />
-              </span>
-              <span class="folder-text">
-                <span class="folder-name">New group</span>
-                <span class="folder-sub">Organize hosts into folders</span>
-              </span>
-            </button>
-          </div>
-        </section>
-
-        <!-- Hosts -->
-        <section class="dash-section">
-          <h3 class="section-title">
-            <template v-if="currentGroup">{{ searching ? 'Matches in this group' : 'Hosts' }}</template>
-            <template v-else>{{ searching ? 'Matching hosts' : 'Hosts' }}</template>
-          </h3>
-
-          <div
-            v-if="!hosts.hosts.length && !searching"
-            class="empty-state dash-empty"
-          >
-            <p>No hosts yet — add your first one or import from ~/.ssh/config.</p>
-            <button class="btn btn-secondary" @click="dialogs.showImport = true">
-              Import from ~/.ssh/config
-            </button>
-          </div>
-          <div
-            v-else-if="currentGroup && !visibleHosts.length && !searching"
-            class="empty-state dash-empty"
-          >
-            <p>Nothing in “{{ currentGroup.name }}” yet.</p>
-            <button class="btn btn-secondary" @click="dialogs.openHostDialog(null, currentGroupId)">
-              <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-              Add host to this group
-            </button>
-          </div>
-          <p v-else-if="!visibleHosts.length && searching" class="quiet-hint">
-            No matches for “{{ query }}”
-          </p>
-          <p
-            v-else-if="!visibleHosts.length && !currentGroup && !searching"
-            class="quiet-hint"
-          >
-            Hosts without a group appear here — everything else lives inside a folder.
-          </p>
-          <div v-else class="card-grid">
-            <div
-              v-for="host in visibleHosts"
-              :key="host.id"
-              class="host-card"
-              :class="{ selected: selectedId === host.id }"
-              role="button"
-              tabindex="0"
-              @click="select(host)"
-              @dblclick="sessions.connect(host.id)"
-              @keydown.enter="sessions.connect(host.id)"
-            >
-              <OsAvatar :label="host.label" :os="host.os" :size="40" />
-              <span class="host-card-text">
-                <span class="host-card-name text-ellipsis">{{ host.label }}</span>
-                <span class="host-card-sub text-ellipsis">
-                  ssh, {{ host.username }}<template v-if="searching && host.group_id"> · {{ groupName(host.group_id) }}</template>
+        <Transition :name="navDir === 'fwd' ? 'nav-fwd' : 'nav-back'" mode="out-in">
+          <div :key="currentGroupId ?? 'root'" class="dash-body">
+            <!-- Quick connect: target parsed from the search box -->
+            <div v-if="smartTarget" class="smart-card">
+              <PlugZap :size="15" :stroke-width="1.5" class="smart-icon" aria-hidden="true" />
+              <div class="smart-text">
+                <span class="smart-title">
+                  Connect to <span class="mono">{{ smartDisplay }}</span>
                 </span>
-              </span>
-              <span class="host-card-status" :class="statusFor(host.id)" :title="statusFor(host.id)"></span>
+                <span class="smart-sub">
+                  <template v-if="smartMatches.length">
+                    Matches “{{ smartMatches[0].host.label }}”<template v-if="smartMatches[0].reason === 'ip'"> · resolves to {{ smartMatches[0].ip }}</template><template v-if="smartMatches.length > 1"> · +{{ smartMatches.length - 1 }} more</template>
+                  </template>
+                  <template v-else-if="smartResolving">Resolving address…</template>
+                  <template v-else-if="smartResolveFailed">Address didn’t resolve</template>
+                  <template v-else>Not saved yet</template>
+                </span>
+              </div>
+              <button class="btn btn-primary smart-btn" @click="connectFirst">
+                <template v-if="smartMatches.length">Connect</template>
+                <template v-else>
+                  <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+                  Add &amp; connect
+                </template>
+              </button>
             </div>
+
+            <!-- Root: group folders -->
+            <section
+              v-if="!currentGroup && (!searching || visibleFolders.length)"
+              class="dash-section"
+            >
+              <h3 class="section-title">{{ searching ? 'Matching groups' : 'Groups' }}</h3>
+              <div class="card-grid">
+                <div
+                  v-for="g in visibleFolders"
+                  :key="g.id"
+                  class="folder-card"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="`Open group ${g.name}`"
+                  @click="openGroup(g)"
+                  @keydown.enter="openGroup(g)"
+                  @keydown.space.prevent="openGroup(g)"
+                  @contextmenu.prevent="openFolderMenu(g, $event)"
+                >
+                  <span class="folder-avatar">
+                    <Folder :size="19" :stroke-width="1.5" aria-hidden="true" />
+                  </span>
+                  <span class="folder-text">
+                    <span class="folder-name text-ellipsis">{{ g.name }}</span>
+                    <span class="folder-sub">{{ g.count }} {{ g.count === 1 ? 'host' : 'hosts' }}</span>
+                  </span>
+                  <span class="folder-go">
+                    <ChevronRight :size="15" :stroke-width="1.5" class="folder-chev" aria-hidden="true" />
+                    <button
+                      class="btn-icon folder-more"
+                      aria-label="Group options"
+                      @click.stop="openFolderMenu(g, $event)"
+                    >
+                      <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
+                    </button>
+                  </span>
+                </div>
+                <button
+                  v-if="!searching"
+                  class="folder-card new-folder"
+                  @click="dialogs.openGroupDialog(null)"
+                >
+                  <span class="folder-avatar new">
+                    <FolderPlus :size="19" :stroke-width="1.5" aria-hidden="true" />
+                  </span>
+                  <span class="folder-text">
+                    <span class="folder-name">New group</span>
+                    <span class="folder-sub">Organize hosts into folders</span>
+                  </span>
+                </button>
+              </div>
+            </section>
+
+            <!-- Hosts -->
+            <section class="dash-section">
+              <h3 class="section-title">
+                <template v-if="currentGroup">{{ searching ? 'Matches in this group' : 'Hosts' }}</template>
+                <template v-else>{{ searching ? 'Matching hosts' : 'Hosts' }}</template>
+              </h3>
+
+              <div
+                v-if="!hosts.hosts.length && !searching"
+                class="empty-state dash-empty"
+              >
+                <p>No hosts yet — add your first one or import from ~/.ssh/config.</p>
+                <button class="btn btn-secondary" @click="dialogs.showImport = true">
+                  Import from ~/.ssh/config
+                </button>
+              </div>
+              <div
+                v-else-if="currentGroup && !visibleHosts.length && !searching"
+                class="empty-state dash-empty"
+              >
+                <p>Nothing in “{{ currentGroup.name }}” yet.</p>
+                <button class="btn btn-secondary" @click="dialogs.openHostDialog(null, currentGroupId)">
+                  <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+                  Add host to this group
+                </button>
+              </div>
+              <p
+                v-else-if="searching && !visibleHosts.length && !visibleFolders.length"
+                class="quiet-hint"
+              >
+                No matches for “{{ query }}”
+              </p>
+              <div v-else-if="visibleHosts.length" class="card-grid">
+                <div
+                  v-for="host in visibleHosts"
+                  :key="host.id"
+                  class="host-card"
+                  :class="{ selected: selectedId === host.id }"
+                  role="button"
+                  tabindex="0"
+                  @click="select(host)"
+                  @dblclick="sessions.connect(host.id)"
+                  @keydown.enter="sessions.connect(host.id)"
+                >
+                  <PlanetAvatar :host="host" :size="40" />
+                  <span class="host-card-text">
+                    <span class="host-card-name text-ellipsis">{{ host.label }}</span>
+                    <span class="host-card-sub text-ellipsis">
+                      ssh, {{ host.username }}<template v-if="host.group_id && host.group_id !== currentGroupId"> · {{ groupName(host.group_id) }}</template>
+                    </span>
+                  </span>
+                  <span class="host-card-status" :class="statusFor(host.id)" :title="statusFor(host.id)"></span>
+                </div>
+              </div>
+            </section>
           </div>
-        </section>
+        </Transition>
       </div>
     </div>
 
     <!-- Details panel -->
-    <HostDetailsPanel
-      v-if="selectedHost"
-      :host="selectedHost"
-      @close="selectedId = null"
-    >
-      <template #actions>
-        <button class="btn-icon" aria-label="Edit host" title="Edit host" @click="dialogs.openHostDialog(selectedHost!)">
-          <Pencil :size="14" :stroke-width="1.5" aria-hidden="true" />
-        </button>
-      </template>
-      <template #danger>
-        <button class="btn btn-danger panel-delete" @click="deleteSelected">
-          <Trash2 :size="14" :stroke-width="1.5" aria-hidden="true" />
-          Delete host
-        </button>
-      </template>
-    </HostDetailsPanel>
+    <Transition name="panel">
+      <HostDetailsPanel
+        v-if="selectedHost"
+        :host="selectedHost"
+        @close="selectedId = null"
+      >
+        <template #actions>
+          <button class="btn-icon" aria-label="Edit host" title="Edit host" @click="dialogs.openHostDialog(selectedHost!)">
+            <Pencil :size="14" :stroke-width="1.5" aria-hidden="true" />
+          </button>
+        </template>
+        <template #danger>
+          <button class="btn btn-danger panel-delete" @click="deleteSelected">
+            <Trash2 :size="14" :stroke-width="1.5" aria-hidden="true" />
+            Delete host
+          </button>
+        </template>
+      </HostDetailsPanel>
+    </Transition>
 
     <ContextMenu
       v-if="menu"
@@ -360,6 +442,8 @@ async function deleteSelected() {
   display: flex;
   height: 100%;
   min-height: 0;
+  /* the details panel slides in from the right edge — keep it clipped */
+  overflow: hidden;
 }
 
 .hosts-main {
@@ -426,12 +510,46 @@ async function deleteSelected() {
   min-height: 0;
 }
 
-.dash-section + .dash-section {
-  margin-top: var(--space-5);
+.smart-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: var(--space-5);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
-.crumbs + .dash-section {
-  margin-top: var(--space-4);
+.smart-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.smart-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  line-height: 1.35;
+}
+
+.smart-title {
+  font-size: var(--text-sm);
+  color: var(--text-1);
+}
+
+.smart-sub {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.smart-btn {
+  flex-shrink: 0;
+}
+
+.dash-section + .dash-section {
+  margin-top: var(--space-5);
 }
 
 .crumbs {
@@ -442,10 +560,42 @@ async function deleteSelected() {
   align-items: center;
   gap: 6px;
   padding: var(--space-2) 0;
-  margin: 0 calc(-1 * var(--space-4));
+  margin: 0 calc(-1 * var(--space-4)) var(--space-2);
   padding-left: var(--space-4);
   padding-right: var(--space-4);
   background: var(--bg);
+}
+
+/* Folder drill-in / go-back: content slides along the navigation
+   direction. Enter ease-out; exits softer and faster, per motion contract. */
+.nav-fwd-enter-active,
+.nav-back-enter-active {
+  transition: transform 180ms var(--ease-out), opacity 180ms var(--ease-out);
+}
+
+.nav-fwd-leave-active,
+.nav-back-leave-active {
+  transition: transform 120ms var(--ease-out), opacity 120ms var(--ease-out);
+}
+
+.nav-fwd-enter-from {
+  transform: translateX(14px);
+  opacity: 0;
+}
+
+.nav-fwd-leave-to {
+  transform: translateX(-10px);
+  opacity: 0;
+}
+
+.nav-back-enter-from {
+  transform: translateX(-14px);
+  opacity: 0;
+}
+
+.nav-back-leave-to {
+  transform: translateX(10px);
+  opacity: 0;
 }
 
 .crumb-link {

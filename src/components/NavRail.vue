@@ -12,6 +12,7 @@ import {
 } from 'lucide-vue-next'
 import { useUiStore, type ViewId } from '../stores/ui'
 import { useDialogsStore } from '../stores/dialogs'
+import UpdateButton from './UpdateButton.vue'
 
 const ui = useUiStore()
 const dialogs = useDialogsStore()
@@ -57,15 +58,19 @@ function isActive(id: ViewId): boolean {
       draggable="false"
     />
 
-    <button
-      class="rail-item"
-      :title="ui.railCollapsed ? 'Settings' : undefined"
-      aria-label="Settings"
-      @click="dialogs.showSettings = true"
-    >
-      <Settings :size="17" :stroke-width="1.5" aria-hidden="true" />
-      <span v-if="!ui.railCollapsed" class="rail-label">Settings</span>
-    </button>
+    <div class="rail-bottom">
+      <UpdateButton />
+
+      <button
+        class="rail-item"
+        :title="ui.railCollapsed ? 'Settings' : undefined"
+        aria-label="Settings"
+        @click="dialogs.showSettings = true"
+      >
+        <Settings :size="17" :stroke-width="1.5" aria-hidden="true" />
+        <span v-if="!ui.railCollapsed" class="rail-label">Settings</span>
+      </button>
+    </div>
   </nav>
 </template>
 
@@ -140,6 +145,29 @@ function isActive(id: ViewId): boolean {
 
 .rail-spacer {
   flex: 1;
+}
+
+/* Bottom pair: Settings leads on the left, update control beside it on
+   the right. row-reverse keeps DOM order update-then-settings, which is
+   the stacking order the collapsed column needs — Settings stays the
+   bottom-most item either way. */
+.rail-bottom {
+  display: flex;
+  flex-direction: row-reverse;
+  gap: 2px;
+}
+
+.rail-bottom > .rail-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.rail.collapsed .rail-bottom {
+  flex-direction: column;
+}
+
+.rail.collapsed .rail-bottom > .rail-item {
+  flex: none;
 }
 
 .rail-art {

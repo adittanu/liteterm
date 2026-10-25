@@ -58,6 +58,13 @@ export const useHostsStore = defineStore('hosts', () => {
     return hosts.value.find((h) => h.id === id)
   }
 
+  // Local mirror of the backend connect-time bump so the list re-sorts
+  // immediately without a refetch
+  function touchHost(id: number) {
+    const host = hosts.value.find((h) => h.id === id)
+    if (host) host.last_used_at = Date.now()
+  }
+
   return {
     hosts,
     groups,
@@ -69,5 +76,6 @@ export const useHostsStore = defineStore('hosts', () => {
     saveGroup,
     removeGroup,
     hostById,
+    touchHost,
   }
 })

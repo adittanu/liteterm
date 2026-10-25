@@ -17,6 +17,7 @@ pub struct Host {
     pub credential_name: Option<String>,
     pub os: Option<String>, // detected distro id ("ubuntu", "debian", "macos", …)
     pub sort: i64,
+    pub last_used_at: Option<i64>, // ms since epoch, bumped on connect
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +80,7 @@ pub struct Note {
     pub title: String,
     pub body: String,
     pub pinned: bool,
+    pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }

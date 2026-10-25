@@ -6,6 +6,7 @@ import { useHostsStore } from '../stores/hosts'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
+import SearchSelect, { type ComboOption } from '../components/SearchSelect.vue'
 
 const forwards = useForwardsStore()
 const hosts = useHostsStore()
@@ -55,6 +56,10 @@ const valid = computed(() => {
     Number.isInteger(rp) && rp >= 1 && rp <= 65535
   )
 })
+
+const hostOptions = computed<ComboOption[]>(() =>
+  hosts.hosts.map((h) => ({ value: h.id, label: h.label, hint: h.address })),
+)
 
 async function save() {
   if (!valid.value) return
@@ -123,9 +128,7 @@ onMounted(() => {
             </div>
             <div class="field">
               <label class="field-label" for="fw-host">Via host</label>
-              <select id="fw-host" v-model.number="form.host_id" class="field-input">
-                <option v-for="h in hosts.hosts" :key="h.id" :value="h.id">{{ h.label }}</option>
-              </select>
+              <SearchSelect id="fw-host" v-model="form.host_id" :options="hostOptions" aria-label="Via host" />
             </div>
           </div>
           <div class="fwd-grid3">

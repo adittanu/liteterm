@@ -5,7 +5,7 @@ import { api } from '../services/api'
 import { useHostsStore } from './hosts'
 import { useUiStore } from './ui'
 import { useDialogsStore } from './dialogs'
-import type { SessionTab, SessionStatus, HostKeyEvent, Transfer } from '../types'
+import type { SessionKind, SessionTab, SessionStatus, HostKeyEvent, Transfer } from '../types'
 
 function sessionView(id: number) {
   return `session:${id}` as const
@@ -69,6 +69,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     const hosts = useHostsStore()
     const host = hosts.hostById(hostId)
     if (!host) return
+    hosts.touchHost(hostId)
 
     // Reconnect: reuse tab for same host if its session ended
     const existing = tabs.value.find(
@@ -114,17 +115,21 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
-  // Local terminal: no auth, no host key — connected as soon as the shell spawns
-  async function connectLocal() {
+  // Local terminal: no auth, no host key — connected as soon as the process
+  // spawns. `command` runs in place of the default shell (e.g. the herdr TUI).
+  // Multiple local terminals are allowed.
+  async function spawnLocalTab(
+    meta: { kind: SessionKind; label: string; address: string },
+    command?: string,
+  ) {
     try {
-      const sessionId = await api.spawnLocal()
-      // Multiple local terminals are allowed
+      const sessionId = await api.spawnLocal(command)
       const tab: SessionTab = {
         id: sessionId,
-        kind: 'local',
+        kind: meta.kind,
         hostId: null,
-        label: 'Local',
-        address: 'this PC',
+        label: meta.label,
+        address: meta.address,
         status: 'connecting',
         sftpOpen: false,
       }
@@ -133,8 +138,23 @@ export const useSessionsStore = defineStore('sessions', () => {
       activeId.value = sessionId
       useUiStore().openView(sessionView(sessionId))
     } catch (e) {
-      useUiStore().toast('error', `Could not open local terminal: ${errorText(e)}`)
+      useUiStore().toast(
+        'error',
+        `Could not open ${meta.label === 'Local' ? 'local terminal' : meta.label}: ${errorText(e)}`,
+      )
     }
+  }
+
+  function connectLocal() {
+    return spawnLocalTab({ kind: 'local', label: 'Local', address: 'this PC' })
+  }
+
+  // herdr multiplexer: a local PTY whose child is the herdr TUI itself
+  function connectHerdr() {
+    return spawnLocalTab(
+      { kind: 'herdr', label: 'herdr', address: 'agent multiplexer' },
+      'herdr.exe',
+    )
   }
 
   function setStatus(sessionId: number, status: SessionStatus, error?: string) {
@@ -281,6 +301,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     transfers,
     connect,
     connectLocal,
+    connectHerdr,
     confirmHostKey,
     disconnect,
     write,

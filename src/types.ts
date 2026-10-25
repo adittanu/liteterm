@@ -23,6 +23,7 @@ export interface Host {
   credential_name: string | null
   os: string | null // detected distro id ("ubuntu", "debian", "macos", …)
   sort: number
+  last_used_at: number | null // ms since epoch, bumped on connect
 }
 
 export interface HostInput {
@@ -73,6 +74,7 @@ export interface Note {
   title: string
   body: string
   pinned: boolean
+  tags: string[]
   created_at: string
   updated_at: string
 }
@@ -88,7 +90,7 @@ export interface PortForward {
 }
 
 export type SessionStatus = 'connecting' | 'hostkey' | 'connected' | 'error' | 'closed'
-export type SessionKind = 'ssh' | 'local'
+export type SessionKind = 'ssh' | 'local' | 'herdr'
 
 export interface SessionTab {
   id: number // session id (backend)
@@ -173,4 +175,20 @@ export interface ImportPreview {
 export interface ImportResult {
   host_ids: number[]
   known_imported: number
+}
+
+// ---- self-update (GitHub Releases) ----
+export interface UpdateAsset {
+  name: string
+  size: number
+  url: string
+}
+
+export interface UpdateInfo {
+  available: boolean
+  currentVersion: string
+  latestVersion: string
+  releaseUrl: string | null
+  notes: string | null
+  asset: UpdateAsset | null
 }

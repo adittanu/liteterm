@@ -111,6 +111,9 @@ pub async fn connect_host(
 ) -> Result<u32, String> {
     let (params, label) = {
         let conn = db.0.lock().map_err(|_| "database busy")?;
+        // Recency: the access attempt itself bumps last_used_at, even if the
+        // connection later fails
+        db::touch_host(&conn, host_id).ok();
         resolve_conn_params(&conn, host_id, password)?
     };
 
@@ -181,8 +184,11 @@ pub async fn confirm_host_key(
 }
 
 #[tauri::command]
-pub async fn spawn_local(state: State<'_, Arc<AppState>>) -> Result<u32, String> {
-    crate::local::spawn_local(state.inner())
+pub async fn spawn_local(
+    state: State<'_, Arc<AppState>>,
+    command: Option<String>,
+) -> Result<u32, String> {
+    crate::local::spawn_local(state.inner(), command.as_deref())
 }
 
 #[tauri::command]

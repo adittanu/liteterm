@@ -49,6 +49,7 @@ pub fn run() {
             commands::hosts::clear_session_logs,
             commands::local_fs::local_drives,
             commands::local_fs::local_list,
+            commands::net::resolve_host,
             commands::credentials::list_credentials,
             commands::credentials::upsert_credential,
             commands::credentials::delete_credential,
@@ -77,6 +78,7 @@ pub fn run() {
             commands::notes::create_note,
             commands::notes::update_note,
             commands::notes::set_note_pinned,
+            commands::notes::set_note_tags,
             commands::notes::delete_note,
             commands::forwards::list_forwards,
             commands::forwards::list_active_forwards,
@@ -86,6 +88,9 @@ pub fn run() {
             commands::forwards::forward_stop,
             commands::settings::get_settings,
             commands::settings::set_settings,
+            commands::update::check_update,
+            commands::update::download_update,
+            commands::update::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LiteTerm");

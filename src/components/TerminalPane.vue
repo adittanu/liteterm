@@ -6,7 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
 import { xtermThemeFor } from '../services/terminalThemes'
-import { actionFor } from '../services/shortcuts'
+import { actionFor, captureActive } from '../services/shortcuts'
 import type { SessionTab } from '../types'
 
 const props = defineProps<{ session: SessionTab }>()
@@ -106,17 +106,19 @@ onMounted(() => {
   // control bytes (^K, ESC-prefixed Alt sequences, …)
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true
+    // While rebinding a shortcut in Settings, no key may reach the shell
+    if (captureActive.value) return false
     // Legacy input sends plain \r for Shift+Enter, so apps see it as Enter.
     // - Kitty-negotiated sessions get the native CSI 13;2u encoding.
-    // - Other local (ConPTY) sessions: send CSI 13;2u ourselves — agent CLIs
-    //   (Claude Code, opencode, pi) parse this sequence even without kitty
-    //   negotiation. Same bytes as Windows Terminal's community
-    //   sendInput("\u001b[13;2u") keybinding.
+    // - Other local (ConPTY) sessions — local shell and herdr: send
+    //   CSI 13;2u ourselves — agent CLIs (Claude Code, opencode, pi) parse
+    //   this sequence even without kitty negotiation. Same bytes as Windows
+    //   Terminal's community sendInput("\u001b[13;2u") keybinding.
     // - SSH hosts without kitty get "\n" (the Ctrl+J newline convention),
     //   which remote shells treat harmlessly.
     if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       if (!kittyActive) {
-        queueInput(props.session.kind === 'local' ? '\x1b[13;2u' : '\n')
+        queueInput(props.session.kind === 'ssh' ? '\n' : '\x1b[13;2u')
         return false
       }
     }

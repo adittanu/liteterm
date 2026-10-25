@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, watch } from 'vue'
 import { X, KeyRound, IdCard } from 'lucide-vue-next'
 import { useHostsStore } from '../stores/hosts'
 import { useCredentialsStore } from '../stores/credentials'
 import { useSessionsStore } from '../stores/sessions'
+import { useDialogsStore } from '../stores/dialogs'
 import { api } from '../services/api'
-import OsAvatar from './OsAvatar.vue'
+import PlanetAvatar from './PlanetAvatar.vue'
+import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import type { Host } from '../types'
 
 const props = defineProps<{ host: Host }>()
@@ -14,9 +16,11 @@ const emit = defineEmits<{ close: [] }>()
 const hosts = useHostsStore()
 const credentials = useCredentialsStore()
 const sessions = useSessionsStore()
+const dialogs = useDialogsStore()
 
 const form = reactive({
   label: props.host.label,
+  address: props.host.address,
   port: String(props.host.port),
   group_id: props.host.group_id,
   credential_id: props.host.credential_id,
@@ -31,10 +35,65 @@ const form = reactive({
 
 const inlineMode = computed(() => form.credential_id === null)
 
+const groupOptions = computed<ComboOption[]>(() => [
+  { value: null, label: 'No group', muted: true },
+  ...hosts.groups.map((g) => ({ value: g.id, label: g.name })),
+])
+
+const credOptions = computed<ComboOption[]>(() => [
+  { value: null, label: 'No credential', hint: 'set below', muted: true },
+  ...credentials.credentials.map((c) => ({
+    value: c.id,
+    label: c.name,
+    hint: c.username,
+  })),
+])
+
+// The username is otherwise invisible when a credential is linked (the
+// Login card is hidden) — surface it here, next to port and OS
+const metaLine = computed(() => {
+  const parts = [props.host.username, `port ${props.host.port}`]
+  if (props.host.os && props.host.os !== 'unknown') parts.push(props.host.os)
+  return parts.join(' · ')
+})
+
+function lastUsedText(ts: number | null): string {
+  if (!ts) return 'never used'
+  const mins = Math.round((Date.now() - ts) / 60000)
+  if (mins < 1) return 'used just now'
+  if (mins < 60) return `used ${mins}m ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `used ${hours}h ago`
+  return `used ${Math.round(hours / 24)}d ago`
+}
+
+// Escape closes the panel — unless a modal is layered on top of it
+// (those handle their own Escape)
+function anyModalOpen(): boolean {
+  return (
+    dialogs.hostDialog.open ||
+    dialogs.groupDialog.open ||
+    dialogs.confirmState.open ||
+    dialogs.passwordPrompt !== null ||
+    dialogs.showSettings ||
+    dialogs.showImport ||
+    dialogs.showPalette ||
+    dialogs.showQuickNote
+  )
+}
+
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape' && !anyModalOpen()) emit('close')
+}
+
+onMounted(() => window.addEventListener('keydown', onKey))
+onUnmounted(() => window.removeEventListener('keydown', onKey))
+
 watch(
   () => props.host.id,
   () => {
     form.label = props.host.label
+    form.address = props.host.address
     form.port = String(props.host.port)
     form.group_id = props.host.group_id
     form.credential_id = props.host.credential_id
@@ -50,13 +109,16 @@ watch(
 async function saveField() {
   if (
     form.label === props.host.label &&
+    form.address.trim() === props.host.address &&
     form.port === String(props.host.port) &&
     form.group_id === props.host.group_id &&
     form.credential_id === props.host.credential_id &&
     (form.credential_id !== null ||
       (form.username === props.host.username &&
         form.auth_method === props.host.auth_method &&
-        (form.auth_method === 'password' || form.key_path === (props.host.key_path ?? ''))))
+        (form.auth_method === 'password'
+          ? !form.password && form.save_password === props.host.password_saved
+          : form.key_path === (props.host.key_path ?? '') && !form.key_passphrase)))
   ) {
     return
   }
@@ -70,7 +132,7 @@ function buildInput() {
     id: props.host.id,
     group_id: form.group_id,
     label: form.label.trim() || props.host.label,
-    address: props.host.address,
+    address: form.address.trim() || props.host.address,
     port: Number(form.port) || props.host.port,
     username: usingCred ? usingCred.username : form.username.trim() || props.host.username,
     auth_method: usingCred ? usingCred.auth_method : form.auth_method,
@@ -94,14 +156,22 @@ async function browseKey() {
 }
 
 function connect() {
-  void sessions.connect(props.host.id)
+  // A password/passphrase just typed in the panel is used for this
+  // connection even when "Remember" is off or the keyring write lags
+  const pending =
+    inlineMode.value && form.auth_method === 'password'
+      ? form.password || undefined
+      : inlineMode.value && form.auth_method === 'key'
+        ? form.key_passphrase || undefined
+        : undefined
+  void saveField().then(() => sessions.connect(props.host.id, pending))
 }
 </script>
 
 <template>
   <aside class="details-panel">
     <header class="panel-header">
-      <h3 class="panel-title">Host Details</h3>
+      <h3 class="panel-title text-ellipsis" :title="host.label">{{ host.label }}</h3>
       <div class="panel-header-actions">
         <slot name="actions" />
         <button class="btn-icon" aria-label="Close details" @click="emit('close')">
@@ -111,12 +181,14 @@ function connect() {
     </header>
 
     <div class="panel-scroll">
-      <!-- Address -->
-      <div class="panel-card">
-        <div class="panel-card-title">Address</div>
-        <div class="address-row">
-          <OsAvatar :label="host.label" :os="host.os" :size="40" />
+      <!-- Identity -->
+      <div class="identity">
+        <PlanetAvatar :host="host" :size="48" />
+        <div class="identity-text">
           <code class="address mono">{{ host.address }}</code>
+          <span class="identity-meta">
+            {{ metaLine }} · {{ lastUsedText(host.last_used_at) }}
+          </span>
         </div>
       </div>
 
@@ -127,21 +199,23 @@ function connect() {
           <label class="field-label" for="hp-label">Name</label>
           <input id="hp-label" v-model="form.label" class="field-input" type="text" spellcheck="false" @blur="saveField" @keydown.enter="saveField" />
         </div>
+        <div class="gen-row">
+          <div class="field grow">
+            <label class="field-label" for="hp-address">Host</label>
+            <input id="hp-address" v-model="form.address" class="field-input mono" type="text" placeholder="example.com or 192.168.1.10" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
+          </div>
+          <div class="field port-field">
+            <label class="field-label" for="hp-port">Port</label>
+            <input id="hp-port" v-model="form.port" class="field-input mono" type="text" inputmode="numeric" @blur="saveField" @keydown.enter="saveField" />
+          </div>
+        </div>
         <div class="field">
           <label class="field-label" for="hp-group">Group</label>
-          <select id="hp-group" v-model.number="form.group_id" class="field-input" @change="saveField">
-            <option :value="null">No group</option>
-            <option v-for="g in hosts.groups" :key="g.id" :value="g.id">{{ g.name }}</option>
-          </select>
+          <SearchSelect id="hp-group" v-model="form.group_id" :options="groupOptions" aria-label="Group" @change="saveField" />
         </div>
         <div class="field">
           <label class="field-label" for="hp-cred">Credentials</label>
-          <select id="hp-cred" v-model.number="form.credential_id" class="field-input" @change="saveField">
-            <option :value="null">No credential (set below)</option>
-            <option v-for="c in credentials.credentials" :key="c.id" :value="c.id">
-              {{ c.name }} ({{ c.username }})
-            </option>
-          </select>
+          <SearchSelect id="hp-cred" v-model="form.credential_id" :options="credOptions" aria-label="Credentials" @change="saveField" />
           <span v-if="!credentials.credentials.length" class="field-hint">
             Create reusable credentials in Keychain.
           </span>
@@ -198,23 +272,6 @@ function connect() {
         </template>
       </div>
 
-      <!-- Port -->
-      <div class="panel-card">
-        <div class="port-row">
-          <span class="panel-card-title">SSH on</span>
-          <input
-            v-model="form.port"
-            class="field-input mono port-input"
-            type="text"
-            inputmode="numeric"
-            aria-label="SSH port"
-            @blur="saveField"
-            @keydown.enter="saveField"
-          />
-          <span class="panel-card-title">port</span>
-        </div>
-      </div>
-
       <slot name="danger" />
     </div>
 
@@ -246,11 +303,16 @@ function connect() {
   font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-1);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .panel-header-actions {
   display: flex;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .panel-scroll {
@@ -279,23 +341,55 @@ function connect() {
   color: var(--text-2);
 }
 
-.address-row {
+.identity {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+}
+
+.identity-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.identity-meta {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .address {
-  flex: 1;
-  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
+  padding: 5px 9px;
   font-size: var(--text-sm);
   color: var(--text-1);
   user-select: text;
   word-break: break-all;
+}
+
+.gen-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.port-field {
+  width: 84px;
+  flex-shrink: 0;
 }
 
 .auth-toggle {
@@ -354,18 +448,6 @@ function connect() {
   accent-color: var(--accent);
   width: 14px;
   height: 14px;
-}
-
-.port-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.port-input {
-  width: 76px;
-  padding: 6px 8px;
-  text-align: center;
 }
 
 .panel-footer {

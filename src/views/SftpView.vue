@@ -27,7 +27,9 @@ import { useHostsStore } from '../stores/hosts'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
-import OsAvatar from '../components/OsAvatar.vue'
+import PlanetAvatar from '../components/PlanetAvatar.vue'
+import SearchSelect, { type ComboOption } from '../components/SearchSelect.vue'
+import PathBar from '../components/PathBar.vue'
 import type { FileEntry } from '../types'
 
 const sessions = useSessionsStore()
@@ -75,6 +77,42 @@ function newPane(kind: 'local' | 'ssh'): PaneState {
 
 const panes = reactive<PaneState[]>([newPane('local'), newPane('ssh')])
 const localDrives = ref<string[]>([])
+
+const driveOptions = computed<ComboOption[]>(() =>
+  localDrives.value.map((d) => ({ value: d, label: d })),
+)
+
+// ---- path bars: Ctrl+L focuses the active pane's bar ----
+
+const pathBars = ref<(InstanceType<typeof PathBar> | null)[]>([])
+const lastActivePane = ref(0)
+
+function setPathBar(idx: number, el: unknown) {
+  pathBars.value[idx] = (el as InstanceType<typeof PathBar> | null) ?? null
+}
+
+function canUp(pane: PaneState): boolean {
+  return pane.kind === 'ssh' ? pane.path !== '/' && pane.path !== '' : localParent(pane.path) !== null
+}
+
+/** Directory lister injected into the pane's PathBar autocomplete */
+function paneLister(idx: number): ((dir: string) => Promise<FileEntry[]>) | null {
+  const pane = panes[idx]
+  if (pane.kind === 'local') return (dir) => api.localList(dir)
+  if (pane.sessionId === null) return null
+  return async (dir) => {
+    await api.sftpOpen(pane.sessionId!)
+    return api.sftpList(pane.sessionId!, dir)
+  }
+}
+
+function onViewKeydown(e: KeyboardEvent) {
+  if (ui.activeView !== 'sftp') return
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyL') {
+    e.preventDefault()
+    pathBars.value[lastActivePane.value]?.beginEdit()
+  }
+}
 
 // ---- context menu ----
 const menu = ref<{ x: number; y: number; items: MenuItem[] } | null>(null)
@@ -317,7 +355,12 @@ const sideInputEl = ref<HTMLInputElement | null>(null)
 function openSidePicker(idx: number) {
   sidePicker.value = { idx }
   sideQuery.value = ''
-  void nextTick(() => sideInputEl.value?.focus())
+  // Focus after the click's default action settles — a nextTick-only focus
+  // can be stolen back by the switcher button's native focus on WebView2
+  void nextTick(() => {
+    sideInputEl.value?.focus({ preventScroll: true })
+    window.setTimeout(() => sideInputEl.value?.focus({ preventScroll: true }), 0)
+  })
 }
 
 function closeSidePicker() {
@@ -356,8 +399,7 @@ function currentDrive(pane: PaneState): string {
   return m ? m[0] : localDrives.value[0] ?? ''
 }
 
-function onDriveChange(idx: number, e: Event) {
-  const drive = (e.target as HTMLSelectElement).value
+function onDriveChange(idx: number, drive: string) {
   void loadPane(idx, drive)
 }
 
@@ -638,6 +680,7 @@ onMounted(async () => {
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', onPointerUp)
   window.addEventListener('click', onWindowClick, true)
+  window.addEventListener('keydown', onViewKeydown, true)
 
   try {
     localDrives.value = await api.localDrives()
@@ -682,6 +725,7 @@ onUnmounted(() => {
   window.removeEventListener('pointermove', onPointerMove)
   window.removeEventListener('pointerup', onPointerUp)
   window.removeEventListener('click', onWindowClick, true)
+  window.removeEventListener('keydown', onViewKeydown, true)
   unlistenDrop?.()
 })
 </script>
@@ -695,6 +739,7 @@ onUnmounted(() => {
       :key="idx"
       class="pane"
       :class="{ 'drop-here': hoverDrop?.paneIdx === idx && hoverDrop?.name === null }"
+      @pointerdown.capture="lastActivePane = idx"
     >
       <header class="pane-header">
         <div class="switcher-wrap">
@@ -740,7 +785,7 @@ onUnmounted(() => {
                 class="picker-row"
                 @click="pickSideHost(idx, h.id)"
               >
-                <OsAvatar :label="h.label" :os="h.os" :size="30" />
+                <PlanetAvatar :host="h" :size="30" />
                 <span class="picker-text">
                   <span class="picker-name text-ellipsis">{{ h.label }}</span>
                   <span class="picker-sub mono text-ellipsis">{{ h.username }}@{{ h.address }}</span>
@@ -755,18 +800,16 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <select
-          v-if="pane.kind === 'local'"
-          class="drive-select"
-          :value="currentDrive(pane)"
-          aria-label="Drive"
-          title="Switch drive"
-          @change="onDriveChange(idx, $event)"
-        >
-          <option v-for="d in localDrives" :key="d" :value="d">{{ d }}</option>
-        </select>
-
-        <input v-model="pane.filter" class="pane-filter" type="text" placeholder="Filter" spellcheck="false" :aria-label="`Filter pane ${idx + 1}`" />
+        <div class="pane-filter" :class="{ filled: pane.filter }">
+          <Search :size="13" :stroke-width="1.5" aria-hidden="true" />
+          <input
+            v-model="pane.filter"
+            type="text"
+            placeholder="Filter"
+            spellcheck="false"
+            :aria-label="`Filter pane ${idx + 1}`"
+          />
+        </div>
       </header>
 
       <!-- SSH side without a session: inline host selector -->
@@ -789,7 +832,7 @@ onUnmounted(() => {
             class="picker-row"
             @click="useHost(idx, h.id)"
           >
-            <OsAvatar :label="h.label" :os="h.os" :size="32" />
+            <PlanetAvatar :host="h" :size="32" />
             <span class="picker-text">
               <span class="picker-name text-ellipsis">{{ h.label }}</span>
               <span class="picker-sub mono text-ellipsis">{{ h.username }}@{{ h.address }}</span>
@@ -803,30 +846,56 @@ onUnmounted(() => {
       </div>
 
       <template v-else>
-        <nav class="crumbs" :aria-label="`Pane ${idx + 1} path`">
-          <button class="crumb-btn" aria-label="Up" title="Up" @click="paneUp(idx)">
+        <div class="path-row">
+          <button class="path-tool" aria-label="Up" title="Up" :disabled="!canUp(pane)" @click="paneUp(idx)">
             <ArrowUp :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
-          <button class="crumb-btn" aria-label="Refresh" title="Refresh" @click="loadPane(idx)">
-            <RefreshCw :size="14" :stroke-width="1.5" aria-hidden="true" />
+
+          <SearchSelect
+            v-if="pane.kind === 'local'"
+            class="drive-combo"
+            :model-value="currentDrive(pane)"
+            :options="driveOptions"
+            :searchable="false"
+            compact
+            aria-label="Drive"
+            title="Switch drive"
+            @update:model-value="onDriveChange(idx, $event as string)"
+          />
+
+          <PathBar
+            :ref="(el) => setPathBar(idx, el)"
+            :path="pane.path"
+            :crumbs="paneCrumbs(pane)"
+            :list-fn="paneLister(idx)"
+            :drives="pane.kind === 'local' ? localDrives : []"
+            :sep="pane.kind === 'local' ? '\\' : '/'"
+            :placeholder="pane.kind === 'local' ? 'Type a path…' : 'Type a remote path…'"
+            @navigate="(p) => loadPane(idx, p)"
+          />
+
+          <button class="path-tool" aria-label="Refresh" title="Refresh" @click="loadPane(idx)">
+            <RefreshCw :size="14" :stroke-width="1.5" :class="{ spinning: pane.loading }" aria-hidden="true" />
           </button>
           <button
             v-if="pane.kind === 'ssh'"
-            class="crumb-btn"
+            class="path-tool"
             aria-label="New folder"
             title="New folder"
             @click="pane.newFolder = true; pane.newFolderName = ''"
           >
             <FilePlus2 :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
-          <template v-for="(c, i) in paneCrumbs(pane)" :key="c.path">
-            <button v-if="i < paneCrumbs(pane).length - 1" class="crumb text-ellipsis" @click="loadPane(idx, c.path)">
-              {{ c.name }}
-            </button>
-            <span v-else class="crumb current text-ellipsis" aria-current="location">{{ c.name }}</span>
-            <span v-if="i < paneCrumbs(pane).length - 1" class="crumb-sep">›</span>
-          </template>
-        </nav>
+          <button
+            v-if="pane.kind === 'ssh' && pane.sessionId !== null"
+            class="path-tool"
+            aria-label="Upload files"
+            title="Upload files…"
+            @click="uploadPicked(idx)"
+          >
+            <Upload :size="14" :stroke-width="1.5" aria-hidden="true" />
+          </button>
+        </div>
 
         <div v-if="pane.newFolder" class="inline-form">
           <input
@@ -861,10 +930,18 @@ onUnmounted(() => {
             <button class="btn btn-secondary" @click="loadPane(idx)">Retry</button>
           </div>
           <div v-else-if="!sortedFiltered(pane).length" class="pane-state">
-            <p>Empty — right-click for actions, or drop files here</p>
+            <FolderOpen :size="22" :stroke-width="1.25" class="state-icon" aria-hidden="true" />
+            <p>{{ pane.filter.trim() ? 'No matches' : 'Empty folder' }}</p>
           </div>
 
           <template v-else>
+            <div class="cols" :aria-hidden="true">
+              <span></span>
+              <span>Name</span>
+              <span class="col-size">Size</span>
+              <span class="col-kind">Kind</span>
+              <span class="col-count">{{ sortedFiltered(pane).length }} {{ sortedFiltered(pane).length === 1 ? 'item' : 'items' }}</span>
+            </div>
             <div
               v-for="entry in sortedFiltered(pane)"
               :key="entry.name"
@@ -902,12 +979,23 @@ onUnmounted(() => {
                 </span>
                 <span class="file-size">{{ formatSize(entry) }}</span>
                 <span class="file-kind">{{ kindLabel(entry) }}</span>
-                <span v-if="pane.kind === 'ssh'" class="file-actions" @click.stop>
-                  <button class="btn-icon" :aria-label="`Rename ${entry.name}`" title="Rename" @click="startRename(idx, entry)">
-                    <Pencil :size="13" :stroke-width="1.5" aria-hidden="true" />
-                  </button>
-                  <button class="btn-icon file-delete" :aria-label="`Delete ${entry.name}`" title="Delete" @click="removeEntry(idx, entry)">
-                    <Trash2 :size="13" :stroke-width="1.5" aria-hidden="true" />
+                <span class="file-actions" @click.stop>
+                  <template v-if="pane.kind === 'ssh'">
+                    <button class="btn-icon" :aria-label="`Rename ${entry.name}`" title="Rename" @click="startRename(idx, entry)">
+                      <Pencil :size="13" :stroke-width="1.5" aria-hidden="true" />
+                    </button>
+                    <button class="btn-icon file-delete" :aria-label="`Delete ${entry.name}`" title="Delete" @click="removeEntry(idx, entry)">
+                      <Trash2 :size="13" :stroke-width="1.5" aria-hidden="true" />
+                    </button>
+                  </template>
+                  <button
+                    v-else-if="entry.kind === 'file' && panes[1 - idx].kind === 'ssh'"
+                    class="btn-icon"
+                    :aria-label="`Upload ${entry.name}`"
+                    title="Upload to other pane"
+                    @click="transferFile(idx, entry, 1 - idx, null)"
+                  >
+                    <Upload :size="13" :stroke-width="1.5" aria-hidden="true" />
                   </button>
                 </span>
               </template>
@@ -918,8 +1006,9 @@ onUnmounted(() => {
     </section>
 
     <!-- Transfers strip (all directions) -->
-    <div v-if="sessions.transfers.length" class="transfers-strip">
-      <div v-for="t in sessions.transfers" :key="t.id" class="transfer">
+    <Transition name="toast">
+      <div v-if="sessions.transfers.length" class="transfers-strip">
+        <div v-for="t in sessions.transfers" :key="t.id" class="transfer">
         <div class="transfer-row">
           <span class="transfer-kind" :class="t.kind">{{ t.kind === 'upload' ? '↑' : '↓' }}</span>
           <span class="transfer-name text-ellipsis">{{ t.fileName }}</span>
@@ -941,9 +1030,10 @@ onUnmounted(() => {
             · {{ Math.round((t.transferred / t.size) * 100) }}%
           </span>
           <span v-else>Starting…</span>
+          </div>
         </div>
       </div>
-    </div>
+    </Transition>
 
     <!-- Drag ghost -->
     <div v-if="drag?.active" class="drag-ghost" :style="{ left: `${drag.x + 12}px`, top: `${drag.y + 12}px` }">
@@ -1056,29 +1146,8 @@ onUnmounted(() => {
   font-size: var(--text-sm);
 }
 
-.drive-select {
-  appearance: none;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 5px 20px 5px 9px;
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--text-1);
-  cursor: pointer;
+.drive-combo {
   flex-shrink: 0;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M1 3l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 6px center;
-}
-
-.drive-select:hover {
-  border-color: var(--border-strong);
-}
-
-.drive-select:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 
 .side-switcher {
@@ -1109,23 +1178,38 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.drive-btn {
-  flex-shrink: 0;
-}
-
 .pane-filter {
   margin-left: auto;
-  width: 120px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 150px;
+  height: 26px;
+  padding: 0 8px;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 4px 9px;
-  font-size: var(--text-sm);
+  color: var(--text-4);
+  transition: border-color var(--dur-hover) ease, color var(--dur-hover) ease;
 }
 
-.pane-filter:focus {
-  outline: none;
+.pane-filter:focus-within {
   border-color: var(--accent);
+  color: var(--text-3);
+}
+
+.pane-filter input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  font-size: var(--text-sm);
+  color: var(--text-1);
+}
+
+.pane-filter input::placeholder {
+  color: var(--text-4);
 }
 
 /* Inline host selector */
@@ -1208,18 +1292,19 @@ onUnmounted(() => {
   color: var(--text-3);
 }
 
-.crumbs {
+/* ---- path row: [up] [drive] [breadcrumb ⇄ path input] [actions] ---- */
+
+.path-row {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: var(--space-2) var(--space-4);
+  gap: 4px;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
-  overflow: hidden;
   flex-shrink: 0;
-  min-height: 38px;
+  min-height: 42px;
 }
 
-.crumb-btn {
+.path-tool {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1228,51 +1313,84 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   color: var(--text-3);
   flex-shrink: 0;
-  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+  transition:
+    background-color var(--dur-hover) ease,
+    color var(--dur-hover) ease,
+    transform var(--dur-press) ease-out;
 }
 
-.crumb-btn:hover {
+.path-tool:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-1);
 }
 
-.crumb {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--text-3);
-  padding: 3px 6px;
-  border-radius: 4px;
-  max-width: 170px;
-  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+.path-tool:active:not(:disabled) {
+  transform: scale(0.94);
 }
 
-button.crumb:hover {
-  background: var(--bg-hover);
-  color: var(--text-1);
+.path-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
-.crumb.current {
-  color: var(--text-1);
-  font-weight: 500;
+.path-tool :deep(.spinning),
+.spinning {
+  animation: refresh-rotate 0.7s linear infinite;
 }
 
-.crumb-sep {
-  color: var(--text-4);
+@keyframes refresh-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .file-list {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-  padding: var(--space-1);
+  padding: 0 0 var(--space-2);
+}
+
+/* Sticky column labels — same grid as the rows so they stay aligned */
+.cols {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 84px 64px 56px;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 10px 4px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-4);
+}
+
+.col-size {
+  text-align: right;
+}
+
+.col-count {
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.state-icon {
+  color: var(--text-4);
 }
 
 .file-row {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 80px 64px auto;
+  grid-template-columns: 20px minmax(0, 1fr) 84px 64px 56px;
   align-items: center;
   gap: 10px;
-  padding: 6px 10px;
+  min-height: 30px;
+  padding: 0 10px;
   border-radius: var(--radius-sm);
   font-size: var(--text-base);
   cursor: default;

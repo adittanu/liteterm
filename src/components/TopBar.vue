@@ -36,6 +36,37 @@ function toggleMaximize() {
   void appWindow.toggleMaximize()
 }
 
+// The whole bar is the window drag region, minus anything interactive.
+// data-tauri-drag-region only fires when the mousedown lands on the exact
+// element carrying the attribute, so we drive the window API ourselves.
+// Double-click is detected manually: e.detail is unreliable once
+// startDragging has swallowed a mouseup, and it also counts clicks that
+// landed on interactive elements outside the drag region.
+const DRAG_EXCLUDE =
+  'button, a, input, select, textarea, [contenteditable], [role="tab"], [role="button"], [data-no-drag]'
+
+let lastDragDown = { x: -9999, y: -9999, t: -Infinity }
+
+function onTopbarMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return
+  const target = e.target as HTMLElement | null
+  if (target?.closest?.(DRAG_EXCLUDE)) return
+  e.preventDefault()
+
+  // Windows defaults: 500ms double-click time, ~4px double-click distance
+  const now = performance.now()
+  const isDoubleClick =
+    now - lastDragDown.t < 500 &&
+    Math.abs(e.clientX - lastDragDown.x) < 5 &&
+    Math.abs(e.clientY - lastDragDown.y) < 5
+  lastDragDown = isDoubleClick
+    ? { x: -9999, y: -9999, t: -Infinity }
+    : { x: e.clientX, y: e.clientY, t: now }
+
+  if (isDoubleClick) toggleMaximize()
+  else void appWindow.startDragging()
+}
+
 const tabItems = computed(() => {
   const sftp = { kind: 'sftp' as const, id: 'sftp', label: 'SFTP', status: 'idle' }
   const sessionTabs = sessions.tabs.map((t) => ({
@@ -69,7 +100,7 @@ function closeSession(sessionId: number) {
 </script>
 
 <template>
-  <header class="topbar">
+  <header class="topbar" @mousedown="onTopbarMouseDown">
     <button
       class="topbar-btn rail-toggle"
       :aria-label="ui.railCollapsed ? 'Expand navigation' : 'Collapse navigation'"
@@ -79,7 +110,7 @@ function closeSession(sessionId: number) {
       <Menu :size="17" :stroke-width="1.5" aria-hidden="true" />
     </button>
 
-    <div class="topbar-tabs" data-tauri-drag-region>
+    <div class="topbar-tabs">
       <div
         v-for="tab in tabItems"
         :key="tab.id"
@@ -117,7 +148,7 @@ function closeSession(sessionId: number) {
       </button>
     </div>
 
-    <div class="topbar-spacer" data-tauri-drag-region></div>
+    <div class="topbar-spacer"></div>
 
     <div class="window-controls">
       <button class="win-btn" aria-label="Minimize" @click="appWindow.minimize()">
@@ -156,6 +187,8 @@ function closeSession(sessionId: number) {
   flex-shrink: 0;
   /* seamless with the content below — no border, no raised material */
   background: var(--bg);
+  /* acts as the title bar — nothing in it is selectable text */
+  user-select: none;
 }
 
 .topbar-btn {

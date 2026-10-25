@@ -16,6 +16,8 @@ import type {
   CredentialInput,
   SessionLog,
   KnownHostRow,
+  UpdateAsset,
+  UpdateInfo,
 } from '../types'
 
 export const api = {
@@ -28,6 +30,7 @@ export const api = {
     invoke('upsert_group', { id, name }),
   deleteGroup: (id: number): Promise<void> => invoke('delete_group', { id }),
   forgetHostKey: (hostId: number): Promise<void> => invoke('forget_host_key', { hostId }),
+  resolveHost: (address: string): Promise<string[]> => invoke('resolve_host', { address }),
 
   // ---- known hosts / session logs ----
   listKnownHosts: (): Promise<KnownHostRow[]> => invoke('list_known_hosts'),
@@ -59,6 +62,8 @@ export const api = {
     invoke('update_note', { id, title, body }),
   setNotePinned: (id: number, pinned: boolean): Promise<Note> =>
     invoke('set_note_pinned', { id, pinned }),
+  setNoteTags: (id: number, tags: string[]): Promise<Note> =>
+    invoke('set_note_tags', { id, tags }),
   deleteNote: (id: number): Promise<void> => invoke('delete_note', { id }),
 
   // ---- forwards ----
@@ -89,7 +94,8 @@ export const api = {
   // ---- sessions ----
   connect: (hostId: number, password?: string): Promise<number> =>
     invoke('connect_host', { hostId, password: password ?? null }),
-  spawnLocal: (): Promise<number> => invoke('spawn_local'),
+  spawnLocal: (command?: string): Promise<number> =>
+    invoke('spawn_local', { command: command ?? null }),
   connectAdhoc: (address: string, port: number, username: string, password: string | null): Promise<number> =>
     invoke('connect_adhoc', { address, port, username, password }),
   confirmHostKey: (sessionId: number, accept: boolean, remember: boolean): Promise<void> =>
@@ -125,6 +131,12 @@ export const api = {
   // ---- settings ----
   getSettings: (): Promise<AppSettings> => invoke('get_settings'),
   setSettings: (settings: AppSettings): Promise<void> => invoke('set_settings', { settings }),
+
+  // ---- self-update ----
+  checkUpdate: (): Promise<UpdateInfo> => invoke('check_update'),
+  downloadUpdate: (asset: UpdateAsset): Promise<string> =>
+    invoke('download_update', { asset }),
+  installUpdate: (path: string): Promise<void> => invoke('install_update', { path }),
 
   // ---- import ----
   importSshPreview: (): Promise<ImportPreview> => invoke('import_ssh_preview'),

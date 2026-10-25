@@ -9,19 +9,41 @@ interface ConfirmOptions {
   danger?: boolean
 }
 
+// Quick-connect prefill: host fields parsed from a `user@host:port` string,
+// plus the IPs the domain resolved to (shown as a hint only)
+export interface HostPrefill {
+  address: string
+  port: number
+  username: string | null
+  ips?: string[]
+}
+
 export const useDialogsStore = defineStore('dialogs', () => {
   // Host create/edit
-  const hostDialog = ref<{ open: boolean; host: Host | null; groupId: number | null }>({
+  const hostDialog = ref<{
+    open: boolean
+    host: Host | null
+    groupId: number | null
+    prefill: HostPrefill | null
+    connectAfter: boolean
+  }>({
     open: false,
     host: null,
     groupId: null,
+    prefill: null,
+    connectAfter: false,
   })
 
-  function openHostDialog(host: Host | null = null, groupId: number | null = null) {
-    hostDialog.value = { open: true, host, groupId }
+  function openHostDialog(
+    host: Host | null = null,
+    groupId: number | null = null,
+    prefill: HostPrefill | null = null,
+    connectAfter = false,
+  ) {
+    hostDialog.value = { open: true, host, groupId, prefill, connectAfter }
   }
   function closeHostDialog() {
-    hostDialog.value = { open: false, host: null, groupId: null }
+    hostDialog.value = { open: false, host: null, groupId: null, prefill: null, connectAfter: false }
   }
 
   // Group create/rename

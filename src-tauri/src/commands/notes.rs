@@ -34,6 +34,12 @@ pub fn set_note_pinned(db: State<Db>, id: i64, pinned: bool) -> Result<Note, Str
 }
 
 #[tauri::command]
+pub fn set_note_tags(db: State<Db>, id: i64, tags: Vec<String>) -> Result<Note, String> {
+    let conn = db.0.lock().map_err(|_| "database busy")?;
+    db::set_note_tags(&conn, id, &tags).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn delete_note(db: State<Db>, id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|_| "database busy")?;
     db::delete_note(&conn, id).map_err(|e| e.to_string())

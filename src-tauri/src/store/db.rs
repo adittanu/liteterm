@@ -107,6 +107,11 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     );
     // hosts.os — detected distro id, added in v1.3
     let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN os TEXT");
+    // hosts.last_used_at — ms since epoch, bumped on connect; drives the
+    // "recently accessed first" sort in the host list
+    let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN last_used_at INTEGER");
+    // notes.tags — JSON array of tag names, added in v1.4
+    let _ = conn.execute_batch("ALTER TABLE notes ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
 
     // Schema v2: known_hosts keys off (host, key_type) — servers offer
     // several host key types and OpenSSH known_hosts stores one line per
@@ -162,11 +167,12 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
         credential_name: row.get(11)?,
         os: row.get(12)?,
         sort: row.get(9)?,
+        last_used_at: row.get(13)?,
     })
 }
 
 const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, h.username, h.auth_method, \
-    h.password_saved, h.key_path, h.sort, h.credential_id, c.name, h.os";
+    h.password_saved, h.key_path, h.sort, h.credential_id, c.name, h.os, h.last_used_at";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -179,6 +185,20 @@ pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
         h.has_password = h.password_saved && keyring_get(&password_entry(h.id)).is_some();
     }
     Ok(hosts)
+}
+
+/// Bump last_used_at to now — called on every connect attempt so the host
+/// list can sort by recent access.
+pub fn touch_host(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    conn.execute(
+        "UPDATE hosts SET last_used_at = ?1 WHERE id = ?2",
+        params![now_ms, id],
+    )?;
+    Ok(())
 }
 
 pub fn get_host(conn: &Connection, id: i64) -> Result<Option<Host>, rusqlite::Error> {
@@ -443,16 +463,18 @@ pub fn delete_snippet(conn: &Connection, id: i64) -> Result<(), rusqlite::Error>
 
 // ---------- notes ----------
 
-const NOTE_COLS: &str = "id, title, body, pinned, created_at, updated_at";
+const NOTE_COLS: &str = "id, title, body, pinned, tags, created_at, updated_at";
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
+    let tags_json: String = row.get(4)?;
     Ok(Note {
         id: row.get(0)?,
         title: row.get(1)?,
         body: row.get(2)?,
         pinned: row.get::<_, i64>(3)? != 0,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
+        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 
@@ -487,6 +509,13 @@ pub fn update_note(conn: &Connection, id: i64, title: &str, body: &str) -> Resul
 /// Pinning is an organizational action — it does not touch updated_at.
 pub fn set_note_pinned(conn: &Connection, id: i64, pinned: bool) -> Result<Note, rusqlite::Error> {
     conn.execute("UPDATE notes SET pinned=?2 WHERE id=?1", params![id, pinned as i64])?;
+    get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// Tagging is organizational too — updated_at stays untouched.
+pub fn set_note_tags(conn: &Connection, id: i64, tags: &[String]) -> Result<Note, rusqlite::Error> {
+    let json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
+    conn.execute("UPDATE notes SET tags=?2 WHERE id=?1", params![id, json])?;
     get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 

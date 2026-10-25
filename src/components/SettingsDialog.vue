@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Sun,
   MoonStar,
@@ -88,6 +88,14 @@ function resetBinding(id: string) {
   void ui.updateSettings({ keybindings: rest })
 }
 
+const hasCustom = computed(() =>
+  SHORTCUTS.some((s) => !isDefault(s.id, ui.settings)),
+)
+
+function resetAll() {
+  void ui.updateSettings({ keybindings: {} })
+}
+
 function onCaptureKey(e: KeyboardEvent) {
   if (!capturingId.value) return
   if (e.key === 'Escape') {
@@ -96,7 +104,12 @@ function onCaptureKey(e: KeyboardEvent) {
     cancelCapture()
     return
   }
-  if (isModifierOnly(e)) return // mid-combo — wait for the full press
+  if (isModifierOnly(e)) {
+    // consume mid-combo modifier presses so nothing downstream reacts
+    e.preventDefault()
+    e.stopPropagation()
+    return
+  }
   e.preventDefault()
   e.stopPropagation()
   const combo = comboOf(e)
@@ -247,11 +260,22 @@ onUnmounted(() => {
 
           <!-- ============ Shortcuts ============ -->
           <div v-else key="shortcuts" class="pane-page">
+            <div class="kb-head">
+              <span class="field-label">Keyboard shortcuts</span>
+              <button v-if="hasCustom" class="kb-reset-all" @click="resetAll">
+                Reset all
+              </button>
+            </div>
             <div class="kb-groups">
               <div v-for="g in groups" :key="g" class="kb-group">
                 <span class="kb-group-label">{{ g }}</span>
                 <div v-for="s in shortcutsFor(g)" :key="s.id" class="kb-row">
-                  <span class="kb-label">{{ s.label }}</span>
+                  <div class="row-text">
+                    <span class="row-label">{{ s.label }}</span>
+                    <span v-if="!isDefault(s.id, ui.settings)" class="row-desc">
+                      Default: {{ s.defaultKeys }}
+                    </span>
+                  </div>
                   <button
                     class="kb-key"
                     :class="{
@@ -261,7 +285,9 @@ onUnmounted(() => {
                     :aria-label="`Change shortcut for ${s.label}`"
                     @click="startCapture(s.id)"
                   >
-                    <span v-if="capturingId === s.id" class="kb-hint">{{ captureError || 'Press keys…' }}</span>
+                    <span v-if="capturingId === s.id" class="kb-hint">
+                      {{ captureError || 'Press keys — Esc to cancel' }}
+                    </span>
                     <template v-else>
                       <kbd v-for="(part, i) in comboFor(s.id, ui.settings).split('+')" :key="i">{{ part }}</kbd>
                     </template>
@@ -545,16 +571,36 @@ onUnmounted(() => {
 }
 
 /* ---- shortcuts ---- */
+.kb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.kb-reset-all {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-3);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+}
+
+.kb-reset-all:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
 .kb-groups {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .kb-group {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .kb-group-label {
@@ -563,20 +609,18 @@ onUnmounted(() => {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-4);
-  padding: 2px 2px 4px;
+  padding: 0 2px 6px;
 }
 
 .kb-row {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 3px 2px;
-  border-radius: var(--radius-sm);
+  gap: var(--space-3);
+  padding: 7px 2px;
 }
 
-.kb-label {
-  font-size: var(--text-sm);
-  color: var(--text-2);
+.kb-row + .kb-row {
+  border-top: 1px solid var(--border);
 }
 
 .kb-key {
@@ -584,36 +628,44 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 4px;
-  min-width: 118px;
-  min-height: 26px;
-  padding: 3px 8px;
+  gap: 5px;
+  min-width: 128px;
+  min-height: 28px;
+  padding: 4px 9px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   color: var(--text-2);
-  transition: background-color var(--dur-hover) ease, border-color var(--dur-hover) ease;
+  transition:
+    background-color var(--dur-hover) ease,
+    border-color var(--dur-hover) ease,
+    color var(--dur-hover) ease;
 }
 
 .kb-key:hover {
   background: var(--bg-hover);
+  border-color: var(--border-strong);
   color: var(--text-1);
 }
 
 .kb-key.capturing {
-  border-color: var(--accent);
-  border-style: dashed;
-  color: var(--text-2);
   justify-content: center;
+  min-width: 180px;
+  border: 1px dashed var(--accent);
+  background: var(--accent-bg);
 }
 
 .kb-key.error {
   border-color: var(--danger);
-  color: var(--danger);
 }
 
 .kb-hint {
   font-size: var(--text-xs);
+  color: var(--text-2);
   white-space: nowrap;
+}
+
+.kb-key.error .kb-hint {
+  color: var(--danger);
 }
 
 .kb-key kbd {

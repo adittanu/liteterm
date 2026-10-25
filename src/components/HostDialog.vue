@@ -2,9 +2,11 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { KeyRound, IdCard, ChevronDown } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
+import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useHostsStore } from '../stores/hosts'
 import { useCredentialsStore } from '../stores/credentials'
+import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
 import { api } from '../services/api'
 import type { AuthMethod } from '../types'
@@ -12,10 +14,13 @@ import type { AuthMethod } from '../types'
 const dialogs = useDialogsStore()
 const hosts = useHostsStore()
 const credentials = useCredentialsStore()
+const sessions = useSessionsStore()
 const ui = useUiStore()
 
 const open = computed(() => dialogs.hostDialog.open)
 const editing = computed(() => dialogs.hostDialog.host)
+const connectAfter = computed(() => dialogs.hostDialog.connectAfter && !editing.value)
+const resolveHint = computed(() => dialogs.hostDialog.prefill?.ips ?? [])
 
 // '' = inline (no credential) · 'new' = create one · '<id>' = use existing
 const credentialChoice = ref<string>('')
@@ -44,6 +49,21 @@ const selectedCred = computed(() => {
   const id = Number(credentialChoice.value)
   return Number.isInteger(id) && id > 0 ? credentials.byId(id) : undefined
 })
+
+const groupOptions = computed<ComboOption[]>(() => [
+  { value: null, label: 'No group', muted: true },
+  ...hosts.groups.map((g) => ({ value: g.id, label: g.name })),
+])
+
+const credOptions = computed<ComboOption[]>(() => [
+  { value: '', label: 'No credential', hint: 'fill in below', muted: true },
+  { value: 'new', label: '+ New credential', hint: 'save & reuse' },
+  ...credentials.credentials.map((c) => ({
+    value: String(c.id),
+    label: c.name,
+    hint: c.username,
+  })),
+])
 
 // Inline validation — validate as the user types, not on submit
 watch(
@@ -93,11 +113,14 @@ watch(open, (o) => {
     form.cred_name = ''
     credentialChoice.value = host.credential_id ? String(host.credential_id) : ''
   } else {
-    form.label = ''
-    form.address = ''
-    form.port = '22'
+    const prefill = dialogs.hostDialog.prefill
+    // Name defaults to the hostname; username/address stay in their own
+    // fields so they don't get merged into the label
+    form.label = prefill?.address ?? ''
+    form.address = prefill?.address ?? ''
+    form.port = prefill ? String(prefill.port) : '22'
     form.group_id = dialogs.hostDialog.groupId
-    form.username = ''
+    form.username = prefill?.username ?? ''
     form.auth_method = 'password'
     form.password = ''
     form.save_password = true
@@ -175,8 +198,16 @@ async function save() {
       }
     }
 
-    await hosts.saveHost(input)
+    const saved = await hosts.saveHost(input)
+    const shouldConnect = connectAfter.value
+    // Use the just-typed secret for the first connection even if "Remember"
+    // is off — the backend prefers a passed secret over the keyring
+    const pending =
+      credentialChoice.value === '' || credentialChoice.value === 'new'
+        ? (form.auth_method === 'password' ? form.password : form.key_passphrase) || undefined
+        : undefined
     dialogs.closeHostDialog()
+    if (shouldConnect) void sessions.connect(saved.id, pending)
   } catch (e) {
     ui.toast('error', `Could not save host: ${String(e)}`)
   } finally {
@@ -222,6 +253,9 @@ async function save() {
             autocapitalize="off"
           />
           <span v-if="errors.address" class="field-error">{{ errors.address }}</span>
+          <span v-if="!errors.address && resolveHint.length" class="field-hint mono">
+            Resolves to {{ resolveHint.join(', ') }}
+          </span>
         </div>
         <div class="field port">
           <label class="field-label" for="hf-port">Port</label>
@@ -240,10 +274,7 @@ async function save() {
 
       <div class="field">
         <label class="field-label" for="hf-group">Group</label>
-        <select id="hf-group" v-model="form.group_id" class="field-input">
-          <option :value="null">No group</option>
-          <option v-for="g in hosts.groups" :key="g.id" :value="g.id">{{ g.name }}</option>
-        </select>
+        <SearchSelect id="hf-group" v-model="form.group_id" :options="groupOptions" aria-label="Group" />
       </div>
 
       <div class="divider"></div>
@@ -251,13 +282,7 @@ async function save() {
       <!-- Credentials -->
       <div class="field">
         <label class="field-label" for="hf-cred">Credentials</label>
-        <select id="hf-cred" v-model="credentialChoice" class="field-input">
-          <option value="">No credential (fill in below)</option>
-          <option value="new">+ New credential</option>
-          <option v-for="c in credentials.credentials" :key="c.id" :value="String(c.id)">
-            {{ c.name }}
-          </option>
-        </select>
+        <SearchSelect id="hf-cred" v-model="credentialChoice" :options="credOptions" aria-label="Credentials" />
       </div>
 
       <!-- Existing credential chip -->
@@ -408,7 +433,7 @@ async function save() {
       <footer class="form-actions">
         <button type="button" class="btn btn-ghost" @click="dialogs.closeHostDialog()">Cancel</button>
         <button type="submit" class="btn btn-primary" :disabled="saving">
-          {{ saving ? 'Saving…' : editing ? 'Save changes' : 'Add host' }}
+          {{ saving ? 'Saving…' : editing ? 'Save changes' : connectAfter ? 'Add & connect' : 'Add host' }}
         </button>
       </footer>
     </form>
@@ -443,11 +468,6 @@ async function save() {
 
 .field-input.invalid:focus {
   box-shadow: 0 0 0 3px var(--danger-bg);
-}
-
-select.field-input {
-  appearance: none;
-  cursor: pointer;
 }
 
 .cred-chip {

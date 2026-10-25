@@ -24,11 +24,13 @@ import Toasts from './components/Toasts.vue'
 import { useSessionsStore } from './stores/sessions'
 import { useDialogsStore } from './stores/dialogs'
 import { useUiStore, type ViewId } from './stores/ui'
+import { useUpdaterStore } from './stores/updater'
 import { actionFor, captureActive } from './services/shortcuts'
 
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const updater = useUpdaterStore()
 
 // Tab order mirrors the top bar: SFTP first, then sessions in creation order
 function tabViews(): string[] {
@@ -80,7 +82,9 @@ function runAction(id: string) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.repeat || captureActive.value) return
+  // The Settings dialog owns the keyboard while it's open — rebinding
+  // capture and stray presses must never fire app actions behind the modal.
+  if (e.repeat || captureActive.value || dialogs.showSettings) return
   const id = actionFor(e, ui.settings)
   if (!id) return
   e.preventDefault()
@@ -89,7 +93,12 @@ function onKeydown(e: KeyboardEvent) {
 
 // Capture phase so the shortcut fires before xterm's textarea handlers,
 // which swallow keydowns while a terminal has focus
-onMounted(() => window.addEventListener('keydown', onKeydown, true))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown, true)
+  // Quiet update check on launch — only surfaces a dot when a newer
+  // release exists; nothing downloads without the user clicking.
+  void updater.init()
+})
 onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
 </script>
 
