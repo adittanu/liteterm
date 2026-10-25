@@ -22,6 +22,7 @@ export const useUpdaterStore = defineStore('updater', () => {
   const total = ref(0)
 
   let installerPath: string | null = null
+  let restarting = false
   let revertTimer: ReturnType<typeof setTimeout> | null = null
   let progressUnlisten: UnlistenFn | null = null
 
@@ -103,12 +104,14 @@ export const useUpdaterStore = defineStore('updater', () => {
   }
 
   async function restart() {
-    if (!installerPath) return
+    if (!installerPath || restarting) return
+    restarting = true
     try {
       // The backend exits the app as part of installing — this call not
       // resolving is the normal path.
       await api.installUpdate(installerPath)
     } catch (e) {
+      restarting = false
       ui.toast('error', String(e))
     }
   }
@@ -118,7 +121,10 @@ export const useUpdaterStore = defineStore('updater', () => {
     switch (status.value) {
       case 'checking':
       case 'downloading':
+        break
       case 'ready':
+        // The installer is on disk — this click runs it and relaunches
+        await restart()
         break
       case 'available':
         await download()
