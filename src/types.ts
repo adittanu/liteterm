@@ -164,6 +164,9 @@ export interface ParsedHost {
   identity_file: string | null
   group: string | null
   exists: boolean
+  password: string | null
+  key_pem: string | null
+  key_passphrase: string | null
 }
 
 export interface ImportPreview {
@@ -172,9 +175,20 @@ export interface ImportPreview {
   known_host_count: number
 }
 
+export interface FileImportPreview {
+  format: 'liteterm' | 'termius' | 'ssh-config'
+  hosts: ParsedHost[]
+}
+
 export interface ImportResult {
   host_ids: number[]
   known_imported: number
+}
+
+export interface ExportResult {
+  hostCount: number
+  groupCount: number
+  path: string
 }
 
 // ---- self-update (GitHub Releases) ----

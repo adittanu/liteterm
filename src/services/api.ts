@@ -12,6 +12,8 @@ import type {
   ParsedHost,
   ImportPreview,
   ImportResult,
+  FileImportPreview,
+  ExportResult,
   Credential,
   CredentialInput,
   SessionLog,
@@ -138,10 +140,16 @@ export const api = {
     invoke('download_update', { asset }),
   installUpdate: (path: string): Promise<void> => invoke('install_update', { path }),
 
-  // ---- import ----
+  // ---- import / export ----
   importSshPreview: (): Promise<ImportPreview> => invoke('import_ssh_preview'),
   importSshApply: (hosts: ParsedHost[], importKnownHosts: boolean): Promise<ImportResult> =>
     invoke('import_ssh_apply', { hosts, importKnownHosts }),
+  importFilePreview: (path: string): Promise<FileImportPreview> =>
+    invoke('import_file_preview', { path }),
+  importFileApply: (hosts: ParsedHost[], savePasswords: boolean): Promise<ImportResult> =>
+    invoke('import_file_apply', { hosts, savePasswords }),
+  exportHosts: (path: string, includeSecrets: boolean): Promise<ExportResult> =>
+    invoke('export_hosts', { path, includeSecrets }),
 
   // ---- dialogs (via tauri-plugin-dialog) ----
   pickFile: async (title: string, filters?: { name: string; extensions: string[] }[]): Promise<string | null> => {

@@ -12,6 +12,8 @@ import {
   ChevronRight,
   MoreHorizontal,
   PlugZap,
+  Download,
+  Upload,
 } from 'lucide-vue-next'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import { useHostsStore } from '../stores/hosts'
@@ -239,6 +241,15 @@ async function deleteSelected() {
           <SquareTerminal :size="14" :stroke-width="1.5" aria-hidden="true" />
           Local terminal
         </button>
+        <span class="toolbar-spacer"></span>
+        <button class="btn btn-secondary" @click="dialogs.showImport = true">
+          <Download :size="14" :stroke-width="1.5" aria-hidden="true" />
+          Import
+        </button>
+        <button class="btn btn-secondary" @click="dialogs.showExport = true">
+          <Upload :size="14" :stroke-width="1.5" aria-hidden="true" />
+          Export
+        </button>
       </div>
 
       <div class="dash-scroll">
@@ -357,9 +368,9 @@ async function deleteSelected() {
                 v-if="!hosts.hosts.length && !searching"
                 class="empty-state dash-empty"
               >
-                <p>No hosts yet — add your first one or import from ~/.ssh/config.</p>
+                <p>No hosts yet — add your first one or import from ~/.ssh/config or a Termius export.</p>
                 <button class="btn btn-secondary" @click="dialogs.showImport = true">
-                  Import from ~/.ssh/config
+                  Import hosts
                 </button>
               </div>
               <div
@@ -501,6 +512,10 @@ async function deleteSelected() {
   display: flex;
   gap: var(--space-2);
   padding: 0 var(--space-4) var(--space-3);
+}
+
+.toolbar-spacer {
+  flex: 1;
 }
 
 .dash-scroll {

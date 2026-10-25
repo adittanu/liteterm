@@ -17,6 +17,7 @@ import HostKeyDialog from './components/HostKeyDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import PasswordPromptDialog from './components/PasswordPromptDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
+import ExportDialog from './components/ExportDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import QuickNoteDialog from './components/QuickNoteDialog.vue'
@@ -134,6 +135,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
     <ConfirmDialog />
     <PasswordPromptDialog />
     <ImportDialog />
+    <ExportDialog />
     <SettingsDialog />
     <CommandPalette />
     <QuickNoteDialog />

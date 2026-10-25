@@ -77,6 +77,7 @@ function anyModalOpen(): boolean {
     dialogs.passwordPrompt !== null ||
     dialogs.showSettings ||
     dialogs.showImport ||
+    dialogs.showExport ||
     dialogs.showPalette ||
     dialogs.showQuickNote
   )

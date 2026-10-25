@@ -93,6 +93,7 @@ export const useDialogsStore = defineStore('dialogs', () => {
 
   const showSettings = ref(false)
   const showImport = ref(false)
+  const showExport = ref(false)
   const showPalette = ref(false)
   const showQuickNote = ref(false)
 
@@ -111,6 +112,7 @@ export const useDialogsStore = defineStore('dialogs', () => {
     closePasswordPrompt,
     showSettings,
     showImport,
+    showExport,
     showPalette,
     showQuickNote,
   }
