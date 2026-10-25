@@ -12,6 +12,7 @@ import {
 } from 'lucide-vue-next'
 import { useUiStore, type ViewId } from '../stores/ui'
 import { useDialogsStore } from '../stores/dialogs'
+import { comboFor, viewShortcutId } from '../services/shortcuts'
 import UpdateButton from './UpdateButton.vue'
 
 const ui = useUiStore()
@@ -30,6 +31,11 @@ const items: { id: ViewId; label: string; icon: LucideIcon }[] = [
 function isActive(id: ViewId): boolean {
   return ui.activeView === id
 }
+
+// Collapsed rail hides labels — the tooltip doubles as shortcut discovery
+function railTitle(id: ViewId, label: string): string {
+  return ui.railCollapsed ? `${label} (${comboFor(viewShortcutId(id), ui.settings)})` : label
+}
 </script>
 
 <template>
@@ -39,7 +45,7 @@ function isActive(id: ViewId): boolean {
       :key="item.id"
       class="rail-item"
       :class="{ active: isActive(item.id) }"
-      :title="ui.railCollapsed ? item.label : undefined"
+      :title="railTitle(item.id, item.label)"
       :aria-current="isActive(item.id) ? 'page' : undefined"
       @click="ui.openView(item.id)"
     >

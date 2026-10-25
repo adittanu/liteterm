@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   Sun,
   MoonStar,
@@ -17,11 +17,14 @@ import { useUiStore } from '../stores/ui'
 import { THEMES } from '../services/terminalThemes'
 import {
   SHORTCUTS,
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
   captureActive,
   comboFor,
   comboOf,
   isDefault,
   isModifierOnly,
+  keyLabel,
   type ShortcutDef,
 } from '../services/shortcuts'
 
@@ -46,10 +49,11 @@ onMounted(() => {
 })
 
 // ---- terminal ----
-const fontSize = ref(ui.settings.terminalFontSize)
-
-watch(fontSize, (v) => {
-  void ui.updateSettings({ terminalFontSize: v })
+// Computed (not a local ref) so the slider tracks font changes made
+// through shortcuts while the dialog is closed or open elsewhere
+const fontSize = computed({
+  get: () => ui.settings.terminalFontSize,
+  set: (v) => void ui.updateSettings({ terminalFontSize: v }),
 })
 
 function iconFor(id: string) {
@@ -58,7 +62,7 @@ function iconFor(id: string) {
 }
 
 // ---- keyboard shortcut rebinding ----
-const groups = ['General', 'Tabs'] as const
+const groups = ['General', 'Navigation', 'Tabs'] as const
 const capturingId = ref<string | null>(null)
 const captureError = ref('')
 
@@ -246,8 +250,8 @@ onUnmounted(() => {
               <input
                 v-model.number="fontSize"
                 type="range"
-                min="10"
-                max="20"
+                :min="FONT_SIZE_MIN"
+                :max="FONT_SIZE_MAX"
                 step="1"
                 class="range"
                 aria-label="Terminal font size"
@@ -289,7 +293,7 @@ onUnmounted(() => {
                       {{ captureError || 'Press keys — Esc to cancel' }}
                     </span>
                     <template v-else>
-                      <kbd v-for="(part, i) in comboFor(s.id, ui.settings).split('+')" :key="i">{{ part }}</kbd>
+                      <kbd v-for="(part, i) in comboFor(s.id, ui.settings).split('+')" :key="i">{{ keyLabel(part) }}</kbd>
                     </template>
                   </button>
                   <button

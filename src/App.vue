@@ -26,12 +26,24 @@ import { useSessionsStore } from './stores/sessions'
 import { useDialogsStore } from './stores/dialogs'
 import { useUiStore, type ViewId } from './stores/ui'
 import { useUpdaterStore } from './stores/updater'
-import { actionFor, captureActive } from './services/shortcuts'
+import { actionFor, captureActive, FONT_SIZE_MAX, FONT_SIZE_MIN } from './services/shortcuts'
 
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
 const updater = useUpdaterStore()
+
+// Shortcut id -> view it opens ('viewNotes' -> 'notes', …)
+const VIEW_TARGETS: Record<string, ViewId> = {
+  viewHosts: 'hosts',
+  viewKeychain: 'keychain',
+  viewForwards: 'forwards',
+  viewSnippets: 'snippets',
+  viewNotes: 'notes',
+  viewKnown: 'known',
+  viewLogs: 'logs',
+  viewSftp: 'sftp',
+}
 
 // Tab order mirrors the top bar: SFTP first, then sessions in creation order
 function tabViews(): string[] {
@@ -51,7 +63,16 @@ function cycleTab(delta: number) {
   ui.openView(views[next] as ViewId)
 }
 
+function bumpFontSize(delta: number) {
+  const next = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, ui.settings.terminalFontSize + delta))
+  if (next !== ui.settings.terminalFontSize) void ui.updateSettings({ terminalFontSize: next })
+}
+
 function runAction(id: string) {
+  if (VIEW_TARGETS[id]) {
+    ui.openView(VIEW_TARGETS[id])
+    return
+  }
   switch (id) {
     case 'palette':
       dialogs.showPalette = !dialogs.showPalette
@@ -61,6 +82,15 @@ function runAction(id: string) {
       break
     case 'quickNote':
       dialogs.showQuickNote = !dialogs.showQuickNote
+      break
+    case 'openSettings':
+      dialogs.showSettings = true
+      break
+    case 'fontSizeUp':
+      bumpFontSize(1)
+      break
+    case 'fontSizeDown':
+      bumpFontSize(-1)
       break
     case 'closeTab': {
       const view = ui.activeView
