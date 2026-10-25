@@ -41,6 +41,23 @@ export const useUiStore = defineStore('ui', () => {
     openView('sftp')
   }
 
+  // A note NotesView should select next time it looks (set from a host's
+  // details panel, consumed by NotesView)
+  const noteRequest = ref<number | null>(null)
+
+  function openNote(noteId: number) {
+    noteRequest.value = noteId
+    openView('notes')
+  }
+
+  // Find-in-terminal requests: the visible TerminalPane whose session id
+  // matches opens its find bar; `n` bumps so repeats re-trigger the watch
+  const terminalFindRequest = ref<{ sessionId: number; n: number } | null>(null)
+
+  function requestTerminalFind(sessionId: number) {
+    terminalFindRequest.value = { sessionId, n: (terminalFindRequest.value?.n ?? 0) + 1 }
+  }
+
   function openView(view: ViewId) {
     const immersive = view === 'sftp' || view.startsWith('session:')
     if (immersive) {
@@ -61,6 +78,7 @@ export const useUiStore = defineStore('ui', () => {
     terminalFontSize: 13,
     confirmDeleteFile: true,
     autoSudoPassword: true,
+    autoReconnect: true,
     keybindings: {},
     hostsLayout: 'modern',
   })
@@ -154,6 +172,10 @@ export const useUiStore = defineStore('ui', () => {
     openView,
     sftpHostRequest,
     openSftpFor,
+    noteRequest,
+    openNote,
+    terminalFindRequest,
+    requestTerminalFind,
     settings,
     resolvedThemeId,
     systemDark,

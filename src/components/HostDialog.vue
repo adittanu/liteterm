@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { KeyRound, IdCard, ChevronDown } from 'lucide-vue-next'
+import { KeyRound, IdCard, ChevronDown, Fingerprint } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import { useDialogsStore } from '../stores/dialogs'
@@ -10,6 +10,7 @@ import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
 import { api } from '../services/api'
 import { isIpv4 } from '../utils/parseTarget'
+import { jumpCandidates } from '../utils/jumpHosts'
 import type { AuthMethod } from '../types'
 
 const dialogs = useDialogsStore()
@@ -37,6 +38,7 @@ const form = reactive({
   address: '',
   port: '22',
   group_id: null as number | null,
+  jump_host_id: null as number | null,
   // inline (legacy / no credential)
   username: '',
   auth_method: 'password' as AuthMethod,
@@ -59,6 +61,15 @@ const selectedCred = computed(() => {
 const groupOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No group', muted: true },
   ...hosts.groups.map((g) => ({ value: g.id, label: g.name })),
+])
+
+const jumpOptions = computed<ComboOption[]>(() => [
+  { value: null, label: 'None — connect directly', muted: true },
+  ...jumpCandidates(hosts.hosts, editing.value?.id ?? null).map((h) => ({
+    value: h.id,
+    label: h.label,
+    hint: `${h.username}@${h.address}`,
+  })),
 ])
 
 const credOptions = computed<ComboOption[]>(() => [
@@ -110,6 +121,7 @@ watch(open, (o) => {
     form.address = host.address
     form.port = String(host.port)
     form.group_id = host.group_id
+    form.jump_host_id = host.jump_host_id ?? null
     form.username = host.username
     form.auth_method = host.auth_method
     form.password = ''
@@ -129,6 +141,7 @@ watch(open, (o) => {
     form.address = prefill?.ips?.[0] ?? typed
     form.port = prefill ? String(prefill.port) : '22'
     form.group_id = dialogs.hostDialog.groupId
+    form.jump_host_id = null
     form.username = prefill?.username ?? ''
     form.auth_method = 'password'
     form.password = ''
@@ -174,6 +187,7 @@ async function save() {
       input = {
         id: editing.value?.id,
         group_id: form.group_id,
+        jump_host_id: form.jump_host_id,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -185,6 +199,7 @@ async function save() {
       input = {
         id: editing.value?.id,
         group_id: form.group_id,
+        jump_host_id: form.jump_host_id,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -195,7 +210,7 @@ async function save() {
           username: form.username.trim(),
           auth_method: form.auth_method,
           password: form.password ? form.password : null,
-          save_password: form.save_password,
+          save_password: form.auth_method === 'agent' ? false : form.save_password,
           key_path: form.auth_method === 'key' ? form.key_path.trim() : null,
           key_passphrase: form.key_passphrase ? form.key_passphrase : null,
         },
@@ -204,13 +219,15 @@ async function save() {
       input = {
         id: editing.value?.id,
         group_id: form.group_id,
+        jump_host_id: form.jump_host_id,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
         username: form.username.trim(),
         auth_method: form.auth_method,
         password: form.password ? form.password : null,
-        save_password: form.save_password,
+        // Agent auth stores no secret — dropping the flag clears an old password
+        save_password: form.auth_method === 'agent' ? false : form.save_password,
         key_path: form.auth_method === 'key' ? form.key_path.trim() : null,
         key_passphrase: form.key_passphrase ? form.key_passphrase : null,
         credential_id: null,
@@ -221,9 +238,15 @@ async function save() {
     const shouldConnect = connectAfter.value
     // Use the just-typed secret for the first connection even if "Remember"
     // is off — the backend prefers a passed secret over the keyring
+    const typedSecret =
+      form.auth_method === 'password'
+        ? form.password
+        : form.auth_method === 'key'
+          ? form.key_passphrase
+          : ''
     const pending =
       credentialChoice.value === '' || credentialChoice.value === 'new'
-        ? (form.auth_method === 'password' ? form.password : form.key_passphrase) || undefined
+        ? typedSecret || undefined
         : undefined
     dialogs.closeHostDialog()
     if (shouldConnect) void sessions.connect(saved.id, pending)
@@ -296,6 +319,15 @@ async function save() {
         <SearchSelect id="hf-group" v-model="form.group_id" :options="groupOptions" aria-label="Group" />
       </div>
 
+      <div class="field">
+        <label class="field-label" for="hf-jump">Jump host</label>
+        <SearchSelect id="hf-jump" v-model="form.jump_host_id" :options="jumpOptions" aria-label="Jump host" />
+        <span class="field-hint">
+          Reach this server through a bastion (ProxyJump). The jump host's login must be
+          saved — a password with “Remember”, a key, or the SSH agent.
+        </span>
+      </div>
+
       <div class="divider"></div>
 
       <!-- Credentials -->
@@ -328,7 +360,7 @@ async function save() {
         </div>
         <div class="cred-detail-row">
           <dt>Auth</dt>
-          <dd>{{ selectedCred.auth_method === 'key' ? 'Private key' : 'Password' }}<template v-if="selectedCred.auth_method === 'key'"> · <span class="mono">{{ selectedCred.key_path }}</span></template></dd>
+          <dd>{{ selectedCred.auth_method === 'key' ? 'Private key' : selectedCred.auth_method === 'agent' ? 'SSH agent' : 'Password' }}<template v-if="selectedCred.auth_method === 'key'"> · <span class="mono">{{ selectedCred.key_path }}</span></template></dd>
         </div>
         <div class="cred-detail-row">
           <dt>Password</dt>
@@ -395,8 +427,24 @@ async function save() {
               <KeyRound :size="13" :stroke-width="1.5" aria-hidden="true" />
               Private key
             </button>
+            <button
+              type="button"
+              class="auth-option"
+              :class="{ on: form.auth_method === 'agent' }"
+              role="radio"
+              :aria-checked="form.auth_method === 'agent'"
+              @click="form.auth_method = 'agent'"
+            >
+              <Fingerprint :size="13" :stroke-width="1.5" aria-hidden="true" />
+              SSH agent
+            </button>
           </div>
         </div>
+
+        <p v-if="form.auth_method === 'agent'" class="field-hint agent-hint">
+          Signs in with keys from the running SSH agent — the Windows “OpenSSH Authentication
+          Agent” service, 1Password, Bitwarden or KeePassXC. Nothing secret is stored here.
+        </p>
 
         <template v-if="form.auth_method === 'password'">
           <div class="field">
@@ -418,7 +466,7 @@ async function save() {
           </div>
         </template>
 
-        <template v-else>
+        <template v-else-if="form.auth_method === 'key'">
           <div class="field">
             <label class="field-label" for="hf-key">Private key file</label>
             <div class="key-row">
@@ -579,6 +627,12 @@ async function save() {
 .key-row {
   display: flex;
   gap: var(--space-2);
+}
+
+.agent-hint {
+  margin-top: calc(-1 * var(--space-2));
+  max-width: 52ch;
+  line-height: 1.5;
 }
 
 .key-row .field-input {

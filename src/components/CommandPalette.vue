@@ -93,7 +93,7 @@ function tabStatus(hostId: number): Item['status'] {
   const t = sessions.tabs.find((x) => x.hostId === hostId)
   if (!t) return 'idle'
   if (t.status === 'connected') return 'connected'
-  if (t.status === 'connecting' || t.status === 'hostkey') return 'connecting'
+  if (t.status === 'connecting' || t.status === 'hostkey' || t.status === 'reconnecting') return 'connecting'
   return t.status === 'error' ? 'error' : 'idle'
 }
 

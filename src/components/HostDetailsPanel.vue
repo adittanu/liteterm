@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, watch } from 'vue'
-import { X, KeyRound, IdCard, FolderTree } from 'lucide-vue-next'
+import { X, KeyRound, IdCard, FolderTree, Fingerprint, Plus, StickyNote } from 'lucide-vue-next'
 import { useHostsStore } from '../stores/hosts'
 import { useCredentialsStore } from '../stores/credentials'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
+import { useNotesStore } from '../stores/notes'
 import { useUiStore } from '../stores/ui'
+import { errorText } from '../stores/sessions'
 import { api } from '../services/api'
+import { jumpCandidates } from '../utils/jumpHosts'
+import { previewOf } from '../utils/notePreview'
 import PlanetAvatar from './PlanetAvatar.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import type { Host } from '../types'
@@ -18,6 +22,7 @@ const hosts = useHostsStore()
 const credentials = useCredentialsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
+const notes = useNotesStore()
 const ui = useUiStore()
 
 const form = reactive({
@@ -25,6 +30,7 @@ const form = reactive({
   address: props.host.address,
   port: String(props.host.port),
   group_id: props.host.group_id,
+  jump_host_id: props.host.jump_host_id ?? null,
   credential_id: props.host.credential_id,
   // inline auth (used when credential_id is null)
   username: props.host.username,
@@ -41,6 +47,38 @@ const groupOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No group', muted: true },
   ...hosts.groups.map((g) => ({ value: g.id, label: g.name })),
 ])
+
+const jumpOptions = computed<ComboOption[]>(() => [
+  { value: null, label: 'None — direct', muted: true },
+  ...jumpCandidates(hosts.hosts, props.host.id).map((h) => ({
+    value: h.id,
+    label: h.label,
+    hint: `${h.username}@${h.address}`,
+  })),
+])
+
+// ---- notes linked to this host ----
+const hostNotes = computed(() =>
+  notes.notes
+    .filter((n) => n.host_id === props.host.id)
+    .sort((a, b) =>
+      a.pinned !== b.pinned ? (a.pinned ? -1 : 1) : a.updated_at < b.updated_at ? 1 : -1,
+    ),
+)
+
+onMounted(() => {
+  if (!notes.loaded) void notes.load().catch(() => {})
+})
+
+async function newHostNote() {
+  try {
+    const note = await notes.create(props.host.label, '')
+    await notes.setHost(note.id, props.host.id)
+    ui.openNote(note.id)
+  } catch (e) {
+    ui.toast('error', `Could not create note: ${errorText(e)}`)
+  }
+}
 
 const credOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No credential', hint: 'set below', muted: true },
@@ -99,6 +137,7 @@ watch(
     form.address = props.host.address
     form.port = String(props.host.port)
     form.group_id = props.host.group_id
+    form.jump_host_id = props.host.jump_host_id ?? null
     form.credential_id = props.host.credential_id
     form.username = props.host.username
     form.auth_method = props.host.auth_method
@@ -109,19 +148,40 @@ watch(
   },
 )
 
+// The store mirrors ON DELETE SET NULL when a bastion is deleted, or the
+// HostDialog may change it — follow it so the next blur never saves a
+// stale (possibly deleted) jump host
+watch(
+  () => props.host.jump_host_id,
+  (v) => {
+    form.jump_host_id = v ?? null
+  },
+)
+
 async function saveField() {
+  try {
+    await saveFieldUnsafe()
+  } catch (e) {
+    ui.toast('error', `Could not save host: ${errorText(e)}`)
+  }
+}
+
+async function saveFieldUnsafe() {
   if (
     form.label === props.host.label &&
     form.address.trim() === props.host.address &&
     form.port === String(props.host.port) &&
     form.group_id === props.host.group_id &&
+    form.jump_host_id === (props.host.jump_host_id ?? null) &&
     form.credential_id === props.host.credential_id &&
     (form.credential_id !== null ||
       (form.username === props.host.username &&
         form.auth_method === props.host.auth_method &&
         (form.auth_method === 'password'
           ? !form.password && form.save_password === props.host.password_saved
-          : form.key_path === (props.host.key_path ?? '') && !form.key_passphrase)))
+          : form.auth_method === 'key'
+            ? form.key_path === (props.host.key_path ?? '') && !form.key_passphrase
+            : true)))
   ) {
     return
   }
@@ -134,13 +194,15 @@ function buildInput() {
   return {
     id: props.host.id,
     group_id: form.group_id,
+    jump_host_id: form.jump_host_id,
     label: form.label.trim() || props.host.label,
     address: form.address.trim() || props.host.address,
     port: Number(form.port) || props.host.port,
     username: usingCred ? usingCred.username : form.username.trim() || props.host.username,
     auth_method: usingCred ? usingCred.auth_method : form.auth_method,
     password: inlineMode.value && form.auth_method === 'password' && form.password ? form.password : null,
-    save_password: inlineMode.value ? form.save_password : false,
+    // Agent auth stores no secret — dropping the flag clears an old password
+    save_password: inlineMode.value && form.auth_method !== 'agent' ? form.save_password : false,
     key_path: inlineMode.value && form.auth_method === 'key' ? form.key_path.trim() || null : null,
     key_passphrase: inlineMode.value && form.auth_method === 'key' && form.key_passphrase ? form.key_passphrase : null,
     credential_id: form.credential_id,
@@ -217,6 +279,10 @@ function connect() {
           <SearchSelect id="hp-group" v-model="form.group_id" :options="groupOptions" aria-label="Group" @change="saveField" />
         </div>
         <div class="field">
+          <label class="field-label" for="hp-jump">Jump host</label>
+          <SearchSelect id="hp-jump" v-model="form.jump_host_id" :options="jumpOptions" aria-label="Jump host" @change="saveField" />
+        </div>
+        <div class="field">
           <label class="field-label" for="hp-cred">Credentials</label>
           <SearchSelect id="hp-cred" v-model="form.credential_id" :options="credOptions" aria-label="Credentials" @change="saveField" />
           <span v-if="!credentials.credentials.length" class="field-hint">
@@ -242,9 +308,16 @@ function connect() {
             </button>
             <button type="button" class="auth-option" :class="{ on: form.auth_method === 'key' }" role="radio" :aria-checked="form.auth_method === 'key'" @click="form.auth_method = 'key'; saveField()">
               <KeyRound :size="13" :stroke-width="1.5" aria-hidden="true" />
-              Private key
+              Key
+            </button>
+            <button type="button" class="auth-option" :class="{ on: form.auth_method === 'agent' }" role="radio" :aria-checked="form.auth_method === 'agent'" title="Keys from the running SSH agent" @click="form.auth_method = 'agent'; saveField()">
+              <Fingerprint :size="13" :stroke-width="1.5" aria-hidden="true" />
+              Agent
             </button>
           </div>
+          <span v-if="form.auth_method === 'agent'" class="field-hint">
+            Uses the OpenSSH Authentication Agent, 1Password, Bitwarden or KeePassXC.
+          </span>
         </div>
 
         <template v-if="form.auth_method === 'password'">
@@ -260,7 +333,7 @@ function connect() {
           </div>
         </template>
 
-        <template v-else>
+        <template v-else-if="form.auth_method === 'key'">
           <div class="field">
             <label class="field-label" for="hp-key">Private key file</label>
             <div class="key-row">
@@ -273,6 +346,36 @@ function connect() {
             <input id="hp-keypass" v-model="form.key_passphrase" class="field-input" type="password" placeholder="Leave empty if the key has none" autocomplete="new-password" @blur="saveField" @keydown.enter="saveField" />
           </div>
         </template>
+      </div>
+
+      <!-- Notes linked to this host: runbooks, quirks, commands -->
+      <div class="panel-card">
+        <div class="panel-card-head">
+          <span class="panel-card-title">Notes</span>
+          <button
+            class="btn-icon card-add"
+            :aria-label="`New note for ${host.label}`"
+            title="New note for this host"
+            @click="newHostNote"
+          >
+            <Plus :size="14" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </div>
+        <button
+          v-for="n in hostNotes"
+          :key="n.id"
+          class="host-note"
+          @click="ui.openNote(n.id)"
+        >
+          <StickyNote :size="13" :stroke-width="1.5" class="host-note-icon" aria-hidden="true" />
+          <span class="host-note-text">
+            <span class="host-note-title text-ellipsis">{{ n.title || 'New Note' }}</span>
+            <span class="host-note-sub text-ellipsis">{{ previewOf(n) || 'No additional text' }}</span>
+          </span>
+        </button>
+        <p v-if="!hostNotes.length" class="field-hint">
+          Keep runbooks and commands for this server here — code blocks get a Run button.
+        </p>
       </div>
 
       <slot name="danger" />
@@ -351,6 +454,62 @@ function connect() {
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-2);
+}
+
+.panel-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -4px -4px 0 0;
+}
+
+.card-add {
+  width: 24px;
+  height: 24px;
+}
+
+.host-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: calc(100% + 16px);
+  margin: 0 -8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  transition: background-color var(--dur-hover) ease;
+}
+
+.host-note:hover {
+  background: var(--bg-hover);
+}
+
+.host-note:active {
+  background: var(--bg-active);
+}
+
+.host-note-icon {
+  color: var(--text-3);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.host-note-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.host-note-title {
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.host-note-sub {
+  font-size: var(--text-xs);
+  color: var(--text-3);
 }
 
 .identity {

@@ -98,6 +98,11 @@ function runAction(id: string) {
       if (view.startsWith('session:')) void sessions.disconnect(Number(view.slice(8)))
       break
     }
+    case 'terminalFind': {
+      const view = ui.activeView
+      if (view.startsWith('session:')) ui.requestTerminalFind(Number(view.slice(8)))
+      break
+    }
     case 'nextTab':
       cycleTab(1)
       break

@@ -15,13 +15,15 @@ const remember = ref(true)
 async function answer(accept: boolean) {
   const tab = pending.value
   if (!tab) return
-  remember.value = true
-  await sessions.confirmHostKey(tab.id, accept, remember.value)
-  if (tab.hostKeyFingerprint) tab.hostKeyFingerprint = undefined
-  if (!accept) {
-    tab.status = 'closed'
-    tab.error = 'Host key rejected'
-  }
+  const keep = remember.value
+  remember.value = true // the next prompt starts from the safe default
+  tab.hostKeyFingerprint = undefined
+  tab.hostKeyAddress = undefined
+  // Leave 'hostkey' before the backend resumes: its 'connected' event — or
+  // a jump chain's prompt for the next hop — can land before this returns
+  tab.status = accept ? 'connecting' : 'closed'
+  if (!accept) tab.error = 'Host key rejected'
+  await sessions.confirmHostKey(tab.id, accept, keep)
 }
 </script>
 
@@ -37,7 +39,7 @@ async function answer(accept: boolean) {
         <ShieldAlert :size="26" :stroke-width="1.5" />
       </div>
       <p class="hostkey-lead">
-        First connection to <strong class="mono">{{ pending.address }}</strong>.
+        First connection to <strong class="mono">{{ pending.hostKeyAddress || pending.address }}</strong>.
         Verify the server's key fingerprint before trusting it.
       </p>
       <code class="fingerprint">{{ pending.hostKeyFingerprint }}</code>

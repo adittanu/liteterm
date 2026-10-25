@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ChevronDown, ChevronUp, X } from 'lucide-vue-next'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
-import { xtermThemeFor } from '../services/terminalThemes'
-import { actionFor, captureActive } from '../services/shortcuts'
+import { terminalThemeFor, xtermThemeFor } from '../services/terminalThemes'
+import { actionFor, captureActive, comboFor } from '../services/shortcuts'
 import type { SessionTab } from '../types'
 
 const props = defineProps<{ session: SessionTab }>()
@@ -96,6 +98,120 @@ function applyFont() {
   fit?.fit()
 }
 
+// ---- find in terminal (Ctrl+Shift+F) ----
+// Opening is keyboard-initiated and frequent, so the bar appears instantly.
+
+let search: SearchAddon | null = null
+const findOpen = ref(false)
+const findQuery = ref('')
+const findCase = ref(false)
+const findRegex = ref(false)
+const findInput = ref<HTMLInputElement | null>(null)
+const findResult = ref<{ index: number; count: number } | null>(null)
+const findInvalid = ref(false)
+const HIGHLIGHT_LIMIT = 1000
+
+const findShortcut = computed(() => comboFor('terminalFind', ui.settings))
+
+const findCountLabel = computed(() => {
+  if (findInvalid.value) return 'Invalid pattern'
+  if (!findQuery.value || !findResult.value) return ''
+  const { index, count } = findResult.value
+  if (count === 0) return 'No results'
+  const total = count >= HIGHLIGHT_LIMIT ? `${HIGHLIGHT_LIMIT}+` : String(count)
+  return index >= 0 ? `${index + 1} of ${total}` : `${total} found`
+})
+
+// Decorations want #RRGGBB, so blend the palette's yellow into its
+// background: quiet tint for every match, stronger for the current one
+function mixHex(a: string, b: string, t: number): string {
+  const pa = a.replace('#', '').slice(0, 6)
+  const pb = b.replace('#', '').slice(0, 6)
+  let out = '#'
+  for (let i = 0; i < 6; i += 2) {
+    const ca = parseInt(pa.slice(i, i + 2), 16)
+    const cb = parseInt(pb.slice(i, i + 2), 16)
+    out += Math.round(ca + (cb - ca) * t)
+      .toString(16)
+      .padStart(2, '0')
+  }
+  return out
+}
+
+function searchOptions(incremental: boolean): ISearchOptions {
+  const p = terminalThemeFor(ui.settings.theme, ui.systemDark)
+  return {
+    caseSensitive: findCase.value,
+    regex: findRegex.value,
+    incremental,
+    decorations: {
+      matchBackground: mixHex(p.bg, p.yellow, 0.3),
+      matchOverviewRuler: mixHex(p.bg, p.yellow, 0.6),
+      activeMatchBackground: mixHex(p.bg, p.yellow, 0.65),
+      activeMatchColorOverviewRuler: p.yellow,
+    },
+  }
+}
+
+function runFind(direction: 'next' | 'prev', incremental = false) {
+  if (!search) return
+  if (!findQuery.value) {
+    search.clearDecorations()
+    findResult.value = null
+    findInvalid.value = false
+    return
+  }
+  try {
+    findInvalid.value = false
+    if (direction === 'next') search.findNext(findQuery.value, searchOptions(incremental))
+    else search.findPrevious(findQuery.value, searchOptions(false))
+  } catch {
+    // an unfinished regex like "foo(" — say so instead of throwing
+    findInvalid.value = true
+    search.clearDecorations()
+  }
+}
+
+function openFind() {
+  // A single-line selection is the most likely thing to look for
+  const sel = term?.getSelection() ?? ''
+  if (sel && !sel.includes('\n') && sel.length <= 200) findQuery.value = sel
+  findOpen.value = true
+  nextTick(() => {
+    findInput.value?.focus()
+    findInput.value?.select()
+    if (findQuery.value) runFind('next', true)
+  })
+}
+
+function closeFind() {
+  findOpen.value = false
+  search?.clearDecorations()
+  findResult.value = null
+  term?.focus()
+}
+
+function onFindKey(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    runFind(e.shiftKey ? 'prev' : 'next')
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    closeFind()
+  }
+}
+
+watch(findQuery, () => runFind('next', true))
+watch([findCase, findRegex], () => runFind('next', true))
+
+watch(
+  () => ui.terminalFindRequest,
+  (req) => {
+    if (req && req.sessionId === props.session.id) openFind()
+  },
+)
+
 // WebGL repaints a full-screen TUI on the GPU; the DOM renderer draws text
 // through Chromium's own DirectWrite path (closer to Windows Terminal's
 // glyph weight) but costs more CPU. Disposing the addon falls back to DOM.
@@ -163,6 +279,11 @@ onMounted(() => {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon())
+  search = new SearchAddon({ highlightLimit: HIGHLIGHT_LIMIT })
+  search.onDidChangeResults(({ resultIndex, resultCount }) => {
+    findResult.value = { index: resultIndex, count: resultCount }
+  })
+  term.loadAddon(search)
   term.open(container.value)
   applyRenderer()
 
@@ -274,12 +395,32 @@ watch(
   },
 )
 
+// Reconnect: the backend redials on the same session, so this terminal and
+// its scrollback survive. The old shell is gone — undo whatever modes it
+// left on (alt screen, mouse reporting, hidden cursor, kitty keys) and mark
+// the seam so old output isn't mistaken for the new shell's.
+const RESET_MODES =
+  '\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[=0u\x1b[?25h\x1b[0m'
+let lostConnection = false
+
 watch(
   () => props.session.status,
-  (status) => {
+  (status, prev) => {
+    if (status === 'reconnecting' && prev === 'connected' && term) {
+      lostConnection = true
+      kittyActive = false
+      term.write(`${RESET_MODES}\r\n\x1b[2m── connection lost ──\x1b[0m\r\n`)
+    }
     if (status === 'connected') {
+      if (lostConnection && term) {
+        lostConnection = false
+        term.write('\x1b[2m── reconnected ──\x1b[0m\r\n')
+      }
       recoverPaint()
-      term?.focus()
+      // A fresh PTY starts at 80×24; tell it the real size even when the
+      // fit didn't change (reconnects keep this pane's dimensions)
+      if (term) sessions.resize(props.session.id, term.cols, term.rows)
+      if (!findOpen.value) term?.focus()
     }
   },
 )
@@ -306,20 +447,177 @@ onUnmounted(() => {
   sessions.detachSink(props.session.id)
   resizeObserver?.disconnect()
   webgl = null
+  search = null
   term?.dispose()
   term = null
 })
 </script>
 
 <template>
-  <div
-    ref="container"
-    class="terminal-container"
-    :aria-label="`Terminal for ${session.label}`"
-  ></div>
+  <div class="terminal-pane">
+    <div
+      ref="container"
+      class="terminal-container"
+      :aria-label="`Terminal for ${session.label}`"
+    ></div>
+
+    <!-- Find bar: floats over the top-right of the output, like Windows Terminal -->
+    <div v-if="findOpen" class="find-bar" role="search" aria-label="Find in terminal">
+      <input
+        ref="findInput"
+        v-model="findQuery"
+        class="find-input mono"
+        :class="{ invalid: findInvalid }"
+        type="text"
+        placeholder="Find"
+        aria-label="Find in terminal"
+        spellcheck="false"
+        autocomplete="off"
+        @keydown="onFindKey"
+      />
+      <span class="find-count" aria-live="polite">{{ findCountLabel }}</span>
+      <button
+        class="find-opt"
+        :class="{ on: findCase }"
+        :aria-pressed="findCase"
+        title="Match case"
+        aria-label="Match case"
+        @click="findCase = !findCase"
+      >
+        Aa
+      </button>
+      <button
+        class="find-opt mono"
+        :class="{ on: findRegex }"
+        :aria-pressed="findRegex"
+        title="Use regular expression"
+        aria-label="Use regular expression"
+        @click="findRegex = !findRegex"
+      >
+        .*
+      </button>
+      <span class="find-sep" aria-hidden="true"></span>
+      <button
+        class="btn-icon find-btn"
+        title="Previous match (Shift+Enter)"
+        aria-label="Previous match"
+        :disabled="!findQuery"
+        @click="runFind('prev')"
+      >
+        <ChevronUp :size="14" :stroke-width="1.75" aria-hidden="true" />
+      </button>
+      <button
+        class="btn-icon find-btn"
+        title="Next match (Enter)"
+        aria-label="Next match"
+        :disabled="!findQuery"
+        @click="runFind('next')"
+      >
+        <ChevronDown :size="14" :stroke-width="1.75" aria-hidden="true" />
+      </button>
+      <button
+        class="btn-icon find-btn"
+        :title="`Close (Esc) — reopen with ${findShortcut}`"
+        aria-label="Close find"
+        @click="closeFind"
+      >
+        <X :size="13" :stroke-width="1.75" aria-hidden="true" />
+      </button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
+.terminal-pane {
+  position: absolute;
+  inset: 0;
+}
+
+.find-bar {
+  position: absolute;
+  top: 8px;
+  right: 18px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 4px 4px 6px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-pop);
+}
+
+.find-input {
+  width: 200px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  padding: 4px 8px;
+  font-size: var(--text-sm);
+  color: var(--text-1);
+  outline: none;
+}
+
+.find-input:focus {
+  border-color: var(--accent);
+}
+
+.find-input.invalid {
+  border-color: var(--danger);
+}
+
+.find-count {
+  min-width: 72px;
+  padding: 0 6px;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.find-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-width: 26px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-3);
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+}
+
+.find-opt:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.find-opt.on {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.find-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border);
+}
+
+.find-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.find-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 .terminal-container {
   position: absolute;
   inset: 0;

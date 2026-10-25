@@ -5,6 +5,7 @@ import { useNotesStore } from '../stores/notes'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
 import { tagColor } from '../utils/tags'
+import { previewOf } from '../utils/notePreview'
 import type { Note } from '../types'
 import NoteEditor from '../components/NoteEditor.vue'
 
@@ -162,8 +163,25 @@ function closeGallery(instant = false) {
 
 onMounted(async () => {
   if (!notes.loaded) await notes.load()
+  // A requested note (watch below) wins over the default first note
+  if (ui.noteRequest !== null || selectedId.value !== null) return
   if (layout.value === 'split' && sorted.value[0]) selectedId.value = sorted.value[0].id
 })
+
+// Opened from a host's details panel: show that note, whatever the filters
+watch(
+  () => [ui.noteRequest, notes.loaded] as const,
+  ([id, loaded]) => {
+    if (id === null || !loaded) return
+    ui.noteRequest = null
+    if (!notes.notes.some((n) => n.id === id)) return
+    query.value = ''
+    activeTag.value = null
+    if (layout.value === 'split') selectedId.value = id
+    else galleryId.value = id
+  },
+  { immediate: true },
+)
 
 function toggleTag(name: string) {
   activeTag.value = activeTag.value === name ? null : name
@@ -256,19 +274,6 @@ function listDate(s: string): string {
       ? { month: 'short', day: 'numeric' }
       : { year: 'numeric', month: 'short', day: 'numeric' }
   return d.toLocaleDateString([], opts)
-}
-
-const MARKER = /^(#{1,6} |[-*] \[[xX ]\] |[-*] |\d+\. |>\s?)/
-const SEPARATOR_LINE = /^\s*\|?[-:\s|]+\|?\s*$/
-
-function previewOf(n: Note): string {
-  return n.body
-    .split('\n')
-    .filter((l) => l.trim() !== '' && !SEPARATOR_LINE.test(l))
-    .map((l) => l.replace(MARKER, '').replace(/(\*\*|~~|\*|`|\|)/g, ''))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 </script>
 

@@ -89,7 +89,7 @@ function openTab(id: string) {
 
 function dotState(status: string): string {
   if (status === 'connected') return 'live'
-  if (status === 'connecting' || status === 'hostkey') return 'connecting'
+  if (status === 'connecting' || status === 'hostkey' || status === 'reconnecting') return 'connecting'
   if (status === 'error') return 'error'
   return ''
 }

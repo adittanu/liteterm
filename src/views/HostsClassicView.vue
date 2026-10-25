@@ -158,7 +158,7 @@ function statusFor(hostId: number): string {
   const tab = sessions.tabs.find((t) => t.hostId === hostId)
   if (!tab) return 'idle'
   if (tab.status === 'connected') return 'connected'
-  if (tab.status === 'connecting' || tab.status === 'hostkey') return 'connecting'
+  if (tab.status === 'connecting' || tab.status === 'hostkey' || tab.status === 'reconnecting') return 'connecting'
   if (tab.status === 'error') return 'error'
   return 'idle'
 }

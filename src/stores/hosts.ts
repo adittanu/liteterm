@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
+import { useNotesStore } from './notes'
 import type { Host, HostGroup, HostInput } from '../types'
 
 export const useHostsStore = defineStore('hosts', () => {
@@ -34,7 +35,11 @@ export const useHostsStore = defineStore('hosts', () => {
 
   async function removeHost(id: number) {
     await api.deleteHost(id)
-    hosts.value = hosts.value.filter((h) => h.id !== id)
+    // The database nulls links to this host (ON DELETE SET NULL) — mirror it
+    hosts.value = hosts.value
+      .filter((h) => h.id !== id)
+      .map((h) => (h.jump_host_id === id ? { ...h, jump_host_id: null } : h))
+    useNotesStore().forgetHost(id)
   }
 
   async function saveGroup(id: number | null, name: string): Promise<HostGroup> {

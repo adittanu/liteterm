@@ -112,6 +112,14 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN last_used_at INTEGER");
     // notes.tags — JSON array of tag names, added in v1.4
     let _ = conn.execute_batch("ALTER TABLE notes ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
+    // hosts.jump_host_id — ProxyJump through another saved host, added in v1.6
+    let _ = conn.execute_batch(
+        "ALTER TABLE hosts ADD COLUMN jump_host_id INTEGER REFERENCES hosts(id) ON DELETE SET NULL",
+    );
+    // notes.host_id — note linked to a host, added in v1.6
+    let _ = conn.execute_batch(
+        "ALTER TABLE notes ADD COLUMN host_id INTEGER REFERENCES hosts(id) ON DELETE SET NULL",
+    );
 
     // Schema v2: known_hosts keys off (host, key_type) — servers offer
     // several host key types and OpenSSH known_hosts stores one line per
@@ -168,11 +176,12 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
         os: row.get(12)?,
         sort: row.get(9)?,
         last_used_at: row.get(13)?,
+        jump_host_id: row.get(14)?,
     })
 }
 
 const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, h.username, h.auth_method, \
-    h.password_saved, h.key_path, h.sort, h.credential_id, c.name, h.os, h.last_used_at";
+    h.password_saved, h.key_path, h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -223,13 +232,15 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
         None => None,
     };
     let credential_id = created_credential_id.or(input.credential_id);
+    // A host can't hop through itself
+    let jump_host_id = input.jump_host_id.filter(|j| Some(*j) != input.id);
 
     let id = match input.id {
         Some(id) => {
             conn.execute(
                 "UPDATE hosts SET group_id=?2, label=?3, address=?4, port=?5, username=?6, \
                  auth_method=?7, password_saved=?8, key_path=?9, credential_id=?10, \
-                 updated_at=datetime('now') WHERE id=?1",
+                 jump_host_id=?11, updated_at=datetime('now') WHERE id=?1",
                 params![
                     id,
                     input.group_id,
@@ -241,14 +252,15 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     save_pw as i64,
                     input.key_path,
                     credential_id,
+                    jump_host_id,
                 ],
             )?;
             id
         }
         None => {
             conn.execute(
-                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     input.group_id,
                     input.label,
@@ -259,6 +271,7 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     save_pw as i64,
                     input.key_path,
                     credential_id,
+                    jump_host_id,
                 ],
             )?;
             conn.last_insert_rowid()
@@ -292,6 +305,16 @@ pub fn delete_host(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
 
 pub fn set_host_os(conn: &Connection, id: i64, os: &str) -> Result<(), rusqlite::Error> {
     conn.execute("UPDATE hosts SET os = ?2 WHERE id = ?1", params![id, os])?;
+    Ok(())
+}
+
+/// Set (or clear) the jump host — used by the ssh-config importer's
+/// ProxyJump second pass.
+pub fn set_host_jump(conn: &Connection, id: i64, jump_host_id: Option<i64>) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE hosts SET jump_host_id = ?2 WHERE id = ?1",
+        params![id, jump_host_id.filter(|j| *j != id)],
+    )?;
     Ok(())
 }
 
@@ -463,7 +486,7 @@ pub fn delete_snippet(conn: &Connection, id: i64) -> Result<(), rusqlite::Error>
 
 // ---------- notes ----------
 
-const NOTE_COLS: &str = "id, title, body, pinned, tags, created_at, updated_at";
+const NOTE_COLS: &str = "id, title, body, pinned, tags, created_at, updated_at, host_id";
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
     let tags_json: String = row.get(4)?;
@@ -475,6 +498,7 @@ fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
         tags: serde_json::from_str(&tags_json).unwrap_or_default(),
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
+        host_id: row.get(7)?,
     })
 }
 
@@ -516,6 +540,12 @@ pub fn set_note_pinned(conn: &Connection, id: i64, pinned: bool) -> Result<Note,
 pub fn set_note_tags(conn: &Connection, id: i64, tags: &[String]) -> Result<Note, rusqlite::Error> {
     let json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
     conn.execute("UPDATE notes SET tags=?2 WHERE id=?1", params![id, json])?;
+    get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+/// Linking to a host is organizational — updated_at stays untouched.
+pub fn set_note_host(conn: &Connection, id: i64, host_id: Option<i64>) -> Result<Note, rusqlite::Error> {
+    conn.execute("UPDATE notes SET host_id=?2 WHERE id=?1", params![id, host_id])?;
     get_note(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 
@@ -718,6 +748,7 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, rusqlite::Error> {
             "terminalFontSize" => settings.terminal_font_size = v.parse().unwrap_or(13),
             "confirmDeleteFile" => settings.confirm_delete_file = v == "true",
             "autoSudoPassword" => settings.auto_sudo_password = v != "false",
+            "autoReconnect" => settings.auto_reconnect = v != "false",
             "keybindings" => settings.keybindings = serde_json::from_str(&v).unwrap_or_default(),
             "hostsLayout" => {
                 if v == "classic" || v == "modern" {
@@ -736,6 +767,7 @@ pub fn set_settings(conn: &Connection, settings: &AppSettings) -> Result<(), rus
         ("terminalFontSize", settings.terminal_font_size.to_string()),
         ("confirmDeleteFile", settings.confirm_delete_file.to_string()),
         ("autoSudoPassword", settings.auto_sudo_password.to_string()),
+        ("autoReconnect", settings.auto_reconnect.to_string()),
         (
             "keybindings",
             serde_json::to_string(&settings.keybindings).unwrap_or_else(|_| "{}".into()),

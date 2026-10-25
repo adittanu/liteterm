@@ -17,6 +17,8 @@ pub struct ParsedHost {
     pub password: Option<String>,
     pub key_pem: Option<String>, // inline private key material (Termius exports embed PEM)
     pub key_passphrase: Option<String>,
+    /// ProxyJump alias (last hop of the chain), resolved to a saved host on import
+    pub proxy_jump: Option<String>,
 }
 
 impl Default for ParsedHost {
@@ -32,6 +34,7 @@ impl Default for ParsedHost {
             password: None,
             key_pem: None,
             key_passphrase: None,
+            proxy_jump: None,
         }
     }
 }
@@ -80,6 +83,21 @@ fn expand_home(path: &str) -> String {
 
 fn is_wildcard(pattern: &str) -> bool {
     pattern.contains('*') || pattern.contains('?')
+}
+
+/// `ProxyJump a,user@b:2222` → "b": the hop nearest the target. Earlier
+/// hops chain through that host's own Jump host. `none` disables it.
+fn proxy_jump_alias(value: &str) -> Option<String> {
+    let last = value.split(',').next_back()?.trim();
+    if last.is_empty() || last.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let host = last.rsplit_once('@').map_or(last, |(_, h)| h);
+    let host = match host.strip_prefix('[') {
+        Some(inner) => inner.split(']').next().unwrap_or(inner),
+        None => host.split(':').next().unwrap_or(host),
+    };
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// Line-oriented parser for the common OpenSSH config subset:
@@ -149,6 +167,11 @@ pub fn parse_ssh_config(text: &str) -> Vec<ParsedHost> {
                     if !value.is_empty() {
                         h.identity_file = Some(expand_home(value));
                     }
+                }
+            }
+            "proxyjump" => {
+                if let Some(h) = current.as_mut() {
+                    h.proxy_jump = proxy_jump_alias(value);
                 }
             }
             _ => {}
@@ -445,6 +468,7 @@ fn host_from_json(host: &serde_json::Value, idx: &JsonIndex) -> Option<ParsedHos
         password: password.filter(|p| !p.is_empty()),
         key_pem: key_pem.filter(|k| k.contains("PRIVATE KEY") || k.contains("OPENSSH")),
         key_passphrase,
+        proxy_jump: None,
     })
 }
 
@@ -522,6 +546,18 @@ Host nas
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].hostname, "10.0.0.1");
         assert_eq!(hosts[0].port, 2200);
+    }
+
+    #[test]
+    fn proxy_jump_keeps_the_hop_nearest_the_target() {
+        let hosts = parse_ssh_config(concat!(
+            "Host app\n  HostName 10.0.0.5\n  ProxyJump edge,ops@bastion:2222\n",
+            "Host db\n  ProxyJump [gw]:22\n",
+            "Host direct\n  ProxyJump none\n",
+        ));
+        assert_eq!(hosts[0].proxy_jump.as_deref(), Some("bastion"));
+        assert_eq!(hosts[1].proxy_jump.as_deref(), Some("gw"));
+        assert_eq!(hosts[2].proxy_jump, None);
     }
 
     #[test]

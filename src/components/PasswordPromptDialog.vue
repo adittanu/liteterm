@@ -59,6 +59,7 @@ async function rememberSecret(hostId: number, kind: 'password' | 'passphrase', s
       key_path: host.key_path ?? null,
       key_passphrase: kind === 'passphrase' ? secret : null,
       credential_id: null,
+      jump_host_id: host.jump_host_id,
     })
   }
 }

@@ -67,7 +67,7 @@ function iconFor(id: string) {
 }
 
 // ---- keyboard shortcut rebinding ----
-const groups = ['General', 'Navigation', 'Tabs'] as const
+const groups = ['General', 'Terminal', 'Navigation', 'Tabs'] as const
 const capturingId = ref<string | null>(null)
 const captureError = ref('')
 
@@ -189,6 +189,24 @@ onUnmounted(() => {
                   type="checkbox"
                   :checked="ui.settings.autoSudoPassword"
                   @change="ui.updateSettings({ autoSudoPassword: ($event.target as HTMLInputElement).checked })"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Reconnect dropped sessions</span>
+                <span class="row-desc">
+                  When the network drops or the PC wakes from sleep, redial SSH sessions in the
+                  same tab — scrollback stays put. Retries for about 3½ minutes.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :checked="ui.settings.autoReconnect"
+                  @change="ui.updateSettings({ autoReconnect: ($event.target as HTMLInputElement).checked })"
                 />
                 <span class="track"><span class="thumb"></span></span>
               </label>

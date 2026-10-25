@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
-import { KeyRound } from 'lucide-vue-next'
+import { KeyRound, Fingerprint } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import { useCredentialsStore } from '../stores/credentials'
 import { useUiStore } from '../stores/ui'
 import { api } from '../services/api'
 import { errorText } from '../stores/sessions'
-import type { Credential } from '../types'
+import type { AuthMethod, Credential } from '../types'
 
 const props = defineProps<{ credential: Credential | null }>()
 const emit = defineEmits<{ close: [] }>()
@@ -17,7 +17,7 @@ const ui = useUiStore()
 const form = reactive({
   name: '',
   username: '',
-  auth_method: 'password' as 'password' | 'key',
+  auth_method: 'password' as AuthMethod,
   password: '',
   save_password: true,
   key_path: '',
@@ -67,7 +67,8 @@ async function save() {
       username: form.username.trim(),
       auth_method: form.auth_method,
       password: form.password ? form.password : null,
-      save_password: form.save_password,
+      // Agent auth stores no secret — dropping the flag clears an old password
+      save_password: form.auth_method === 'agent' ? false : form.save_password,
       key_path: form.auth_method === 'key' ? form.key_path.trim() : null,
       key_passphrase: form.key_passphrase ? form.key_passphrase : null,
     })
@@ -140,7 +141,22 @@ async function save() {
             <KeyRound :size="13" :stroke-width="1.5" aria-hidden="true" />
             Private key
           </button>
+          <button
+            type="button"
+            class="auth-option"
+            :class="{ on: form.auth_method === 'agent' }"
+            role="radio"
+            :aria-checked="form.auth_method === 'agent'"
+            @click="form.auth_method = 'agent'"
+          >
+            <Fingerprint :size="13" :stroke-width="1.5" aria-hidden="true" />
+            SSH agent
+          </button>
         </div>
+        <span v-if="form.auth_method === 'agent'" class="field-hint">
+          Keys come from the running SSH agent (OpenSSH Authentication Agent, 1Password,
+          Bitwarden, KeePassXC). Nothing secret is stored.
+        </span>
       </div>
 
       <template v-if="form.auth_method === 'password'">
@@ -163,7 +179,7 @@ async function save() {
         </div>
       </template>
 
-      <template v-else>
+      <template v-else-if="form.auth_method === 'key'">
         <div class="field">
           <label class="field-label" for="cf-key">Private key file</label>
           <div class="key-row">

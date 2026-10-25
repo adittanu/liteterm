@@ -101,6 +101,8 @@ pub struct SshSession {
     pub closed: CancellationToken,
     pub transfers: Mutex<HashMap<u32, CancellationToken>>,
     pub next_transfer_id: AtomicU32,
+    /// Skips the backoff wait while auto-reconnecting ("Reconnect now")
+    pub reconnect_now: tokio::sync::Notify,
 }
 
 // ---------- events ----------
@@ -111,6 +113,17 @@ pub struct StatusEvent {
     pub session_id: u32,
     pub status: String,
     pub error: Option<String>,
+    /// "reconnecting" only: 1-based attempt number and its cap
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+    /// "reconnecting" only: wait before this attempt starts (0 = dialing now)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_in_ms: Option<u64>,
+    /// "closed" only: "exit" (shell ended) | "lost" (connection dropped)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -223,6 +236,40 @@ pub fn emit_status(app: &AppHandle, session_id: u32, status: &str, error: Option
             session_id,
             status: status.into(),
             error,
+            attempt: None,
+            max_attempts: None,
+            retry_in_ms: None,
+            reason: None,
+        },
+    );
+}
+
+fn emit_closed(app: &AppHandle, session_id: u32, reason: &str, error: Option<String>) {
+    let _ = app.emit(
+        "session:status",
+        StatusEvent {
+            session_id,
+            status: "closed".into(),
+            error,
+            attempt: None,
+            max_attempts: None,
+            retry_in_ms: None,
+            reason: Some(reason.into()),
+        },
+    );
+}
+
+fn emit_reconnecting(app: &AppHandle, session_id: u32, attempt: u32, retry_in: Duration) {
+    let _ = app.emit(
+        "session:status",
+        StatusEvent {
+            session_id,
+            status: "reconnecting".into(),
+            error: None,
+            attempt: Some(attempt),
+            max_attempts: Some(MAX_RECONNECT_ATTEMPTS),
+            retry_in_ms: Some(retry_in.as_millis() as u64),
+            reason: None,
         },
     );
 }
@@ -292,7 +339,11 @@ impl russh::client::Handler for ClientHandler {
             return Ok(true);
         }
 
-        // Trust on first use — ask the user
+        // Trust on first use — ask the user, unless the session was closed
+        // while this dial was in flight (nobody is there to answer)
+        if !self.state.sessions.lock().unwrap().contains_key(&self.session_id) {
+            return Ok(false);
+        }
         let (tx, mut rx) = mpsc::channel::<HostKeyDecision>(1);
         self.state
             .pending_hostkey
@@ -336,12 +387,16 @@ impl russh::client::Handler for ClientHandler {
 
 // ---------- connection lifecycle ----------
 
+#[derive(Clone)]
 pub enum AuthSpec {
     Password(String),
     Key {
         path: String,
         passphrase: Option<String>,
     },
+    /// Keys held by the running SSH agent (Windows OpenSSH agent pipe,
+    /// or whatever SSH_AUTH_SOCK names — 1Password, Bitwarden, KeePassXC)
+    Agent,
 }
 
 pub struct ConnParams {
@@ -349,6 +404,51 @@ pub struct ConnParams {
     pub port: u16,
     pub username: String,
     pub auth: AuthSpec,
+    /// Saved-host label, used to name the hop in errors
+    pub label: String,
+    /// Bastion to tunnel through first (ProxyJump); may itself hop further
+    pub jump: Option<Box<ConnParams>>,
+}
+
+/// Bastions in a jump chain beyond this are almost certainly a mistake
+pub const MAX_JUMP_DEPTH: usize = 4;
+
+const MAX_RECONNECT_ATTEMPTS: u32 = 12;
+
+/// 1s, 2s, 4s, 8s, 15s, then every 30s — about 3½ minutes in total, enough
+/// to ride out a Wi-Fi switch or a laptop waking up.
+fn reconnect_delay(attempt: u32) -> Duration {
+    const STEPS: [u64; 6] = [1, 2, 4, 8, 15, 30];
+    let i = (attempt.saturating_sub(1) as usize).min(STEPS.len() - 1);
+    Duration::from_secs(STEPS[i])
+}
+
+/// How a connected session ended
+enum StreamEnd {
+    /// disconnect_session() cancelled it
+    UserClosed,
+    /// The remote shell exited (`exit`, logout) — the server closed the channel
+    RemoteExit,
+    /// The transport died without a channel close: network drop, sleep,
+    /// keepalive timeout, server gone
+    Lost,
+}
+
+/// A failure before the session became interactive. `retryable` marks
+/// transport problems that may heal (network down, timeouts) as opposed to
+/// auth or host-key failures that never will.
+struct ConnectError {
+    msg: String,
+    retryable: bool,
+}
+
+impl ConnectError {
+    fn fatal(msg: impl Into<String>) -> Self {
+        Self { msg: msg.into(), retryable: false }
+    }
+    fn transient(msg: impl Into<String>) -> Self {
+        Self { msg: msg.into(), retryable: true }
+    }
 }
 
 pub fn create_session(
@@ -374,6 +474,7 @@ pub fn create_session(
         closed: CancellationToken::new(),
         transfers: Mutex::new(HashMap::new()),
         next_transfer_id: AtomicU32::new(1),
+        reconnect_now: tokio::sync::Notify::new(),
     };
     state.sessions.lock().unwrap().insert(id, Arc::new(session));
     id
@@ -385,18 +486,313 @@ pub fn remove_session(state: &AppState, session_id: u32) {
     }
 }
 
+/// Wake a session waiting out its reconnect backoff so it dials right away.
+pub fn reconnect_now(state: &AppState, session_id: u32) -> Result<(), String> {
+    let session = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .cloned()
+        .ok_or("Session vanished")?;
+    // Wake only a pending backoff wait — no stored permit, so a click that
+    // lands while a dial is running can't skip the next wait
+    session.reconnect_now.notify_waiters();
+    Ok(())
+}
+
+fn auto_reconnect_enabled(state: &AppState) -> bool {
+    Connection::open(&state.db_path)
+        .ok()
+        .and_then(|conn| db::get_settings(&conn).ok())
+        .map(|s| s.auto_reconnect)
+        .unwrap_or(true)
+}
+
+/// Forget everything tied to the dead transport so writes, SFTP and
+/// tunnels fail fast instead of talking to a closed connection.
+async fn reset_transport(session: &SshSession) {
+    *session.writer.lock().await = None;
+    *session.resize_tx.lock().await = None;
+    *session.sftp.lock().await = None;
+    if let Some(handle) = session.handle.lock().await.take() {
+        let _ = handle
+            .disconnect(russh::Disconnect::ByApplication, "", "en")
+            .await;
+    }
+    *session.sudo_password.lock().unwrap() = None;
+}
+
+/// Owns a session from first dial to final close. The same session id —
+/// and so the same tab and terminal scrollback — survives reconnects.
 pub async fn run_session(state: Arc<AppState>, session: Arc<SshSession>, params: ConnParams) {
     let host_tag = format!("{}:{}", params.address, params.port);
+    let mut attempt: u32 = 0;
+    let mut ever_connected = false;
 
-    let result = connect_and_stream(&state, &session, &params, &host_tag).await;
+    loop {
+        let result = connect_and_stream(&state, &session, &params, &host_tag).await;
+        reset_transport(&session).await;
 
-    if let Err(msg) = result {
-        // A key mismatch already emitted its own detailed error event
-        if !session.key_mismatch.load(Ordering::SeqCst) {
-            emit_status(&state.app, session.id, "error", Some(msg));
+        if session.closed.is_cancelled() {
+            // disconnect_session already told the UI
+            break;
+        }
+
+        match result {
+            Ok(StreamEnd::UserClosed) => break,
+            Ok(StreamEnd::RemoteExit) => {
+                emit_closed(&state.app, session.id, "exit", None);
+                break;
+            }
+            Ok(StreamEnd::Lost) => {
+                ever_connected = true;
+                attempt = 0;
+                if !auto_reconnect_enabled(&state) {
+                    emit_closed(&state.app, session.id, "lost", Some("Connection lost".into()));
+                    break;
+                }
+            }
+            Err(e) => {
+                // Only a session that was live before keeps retrying; a first
+                // connect that fails reports straight away, and auth/host-key
+                // failures never heal by waiting
+                if !(ever_connected && e.retryable) {
+                    if !session.key_mismatch.load(Ordering::SeqCst) {
+                        emit_status(&state.app, session.id, "error", Some(e.msg));
+                    }
+                    break;
+                }
+            }
+        }
+
+        attempt += 1;
+        if attempt > MAX_RECONNECT_ATTEMPTS {
+            emit_status(
+                &state.app,
+                session.id,
+                "error",
+                Some(format!(
+                    "Connection lost — gave up after {MAX_RECONNECT_ATTEMPTS} reconnect attempts"
+                )),
+            );
+            break;
+        }
+
+        let delay = reconnect_delay(attempt);
+        emit_reconnecting(&state.app, session.id, attempt, delay);
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = session.reconnect_now.notified() => {}
+            _ = session.closed.cancelled() => break,
+        }
+        if session.closed.is_cancelled() {
+            break;
+        }
+        emit_reconnecting(&state.app, session.id, attempt, Duration::ZERO);
+    }
+
+    remove_session(&state, session.id);
+}
+
+/// Answer the server's auth challenge for one hop.
+async fn authenticate(
+    handle: &mut russh::client::Handle<ClientHandler>,
+    hop: &ConnParams,
+) -> Result<bool, ConnectError> {
+    match &hop.auth {
+        AuthSpec::Password(pw) => {
+            let by_password = handle
+                .authenticate_password(&hop.username, pw)
+                .await
+                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?;
+            // Many servers (shared hosts like Hostinger, some cloud images)
+            // disable the "password" method but accept the same secret via
+            // keyboard-interactive. Answer its prompts with the password.
+            if by_password {
+                Ok(true)
+            } else {
+                Ok(authenticate_keyboard_interactive(handle, &hop.username, pw).await)
+            }
+        }
+        AuthSpec::Key { path, passphrase } => {
+            let key = russh::keys::load_secret_key(path, passphrase.as_deref())
+                .map_err(|e| ConnectError::fatal(format!("Could not load key: {e}")))?;
+            handle
+                .authenticate_publickey(&hop.username, Arc::new(key))
+                .await
+                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))
+        }
+        AuthSpec::Agent => authenticate_agent(handle, &hop.username).await,
+    }
+}
+
+/// Offer each identity the agent holds until the server accepts one. The
+/// private keys never leave the agent; it only signs the challenge.
+/// A missing or empty agent is transient: after sleep, KeePassXC/Bitwarden
+/// hold no keys until their vault is unlocked again — worth retrying for a
+/// session that was live (a first connect still reports it straight away).
+async fn authenticate_agent(
+    handle: &mut russh::client::Handle<ClientHandler>,
+    username: &str,
+) -> Result<bool, ConnectError> {
+    let mut agent = connect_agent().await.map_err(ConnectError::transient)?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|e| ConnectError::transient(format!("SSH agent error: {e}")))?;
+    if identities.is_empty() {
+        return Err(ConnectError::transient(
+            "The SSH agent has no keys loaded — add one with ssh-add, or unlock your vault",
+        ));
+    }
+    for key in identities {
+        let (returned, result) = handle.authenticate_future(username, key, agent).await;
+        agent = returned;
+        match result {
+            Ok(true) => return Ok(true),
+            Ok(false) => continue,
+            Err(e) => return Err(ConnectError::transient(format!("SSH agent signing failed: {e}"))),
         }
     }
-    remove_session(&state, session.id);
+    Ok(false)
+}
+
+#[cfg(windows)]
+async fn connect_agent() -> Result<
+    russh::keys::agent::client::AgentClient<tokio::net::windows::named_pipe::NamedPipeClient>,
+    String,
+> {
+    // SSH_AUTH_SOCK wins when it names a pipe (some agent apps set it);
+    // otherwise the Windows OpenSSH agent's well-known pipe, which
+    // 1Password / Bitwarden / KeePassXC can also serve
+    let path = std::env::var("SSH_AUTH_SOCK")
+        .ok()
+        .filter(|p| p.starts_with(r"\\.\pipe\") || p.starts_with("//./pipe/"))
+        .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".to_string());
+    let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
+        .open(&path)
+        .map_err(|e| {
+            format!(
+                "No SSH agent at {path} ({e}). Start the “OpenSSH Authentication Agent” \
+                 Windows service, or enable the SSH agent in 1Password / Bitwarden / KeePassXC."
+            )
+        })?;
+    Ok(russh::keys::agent::client::AgentClient::connect(pipe))
+}
+
+#[cfg(unix)]
+async fn connect_agent() -> Result<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>, String> {
+    russh::keys::agent::client::AgentClient::connect_env()
+        .await
+        .map_err(|e| format!("No SSH agent (SSH_AUTH_SOCK): {e}"))
+}
+
+/// Connect and authenticate one hop — over TCP, or through `via` (the
+/// previous bastion) as a direct-tcpip tunnel. Each hop verifies its own
+/// host key under its own `addr:port` tag.
+async fn open_hop(
+    state: &Arc<AppState>,
+    session: &Arc<SshSession>,
+    hop: &ConnParams,
+    via: Option<&russh::client::Handle<ClientHandler>>,
+    config: Arc<russh::client::Config>,
+) -> Result<russh::client::Handle<ClientHandler>, ConnectError> {
+    let host_tag = format!("{}:{}", hop.address, hop.port);
+    let known_keys = Connection::open(&state.db_path)
+        .ok()
+        .and_then(|conn| db::get_known_hosts(&conn, &host_tag).ok())
+        .unwrap_or_default();
+
+    let handler = ClientHandler {
+        host_tag,
+        session_id: session.id,
+        known_keys,
+        key_mismatch: session.key_mismatch.clone(),
+        state: state.clone(),
+    };
+
+    let dial = async {
+        match via {
+            None => russh::client::connect(config, (hop.address.as_str(), hop.port), handler).await,
+            Some(bastion) => {
+                let channel = bastion
+                    .channel_open_direct_tcpip(hop.address.clone(), hop.port as u32, "127.0.0.1", 0)
+                    .await?;
+                russh::client::connect_stream(config, channel.into_stream(), handler).await
+            }
+        }
+    };
+
+    let mut handle = tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), dial)
+        .await
+        .map_err(|_| {
+            ConnectError::transient(format!(
+                "Connection timed out after {CONNECT_TIMEOUT_SECS}s — check the address and port"
+            ))
+        })?
+        .map_err(|e| {
+            let s = e.to_string();
+            if s.contains("UnknownKey") || s.contains("unknown key") || s.contains("Unknown server key") {
+                ConnectError::fatal("Host key rejected")
+            } else if via.is_some() && matches!(e, russh::Error::ChannelOpenFailure(_)) {
+                // The bastion refused to open the tunnel to this hop
+                ConnectError::transient(format!(
+                    "The jump host could not reach {}:{} ({s})",
+                    hop.address, hop.port
+                ))
+            } else {
+                ConnectError::transient(format!("Connection failed: {s}"))
+            }
+        })?;
+
+    if !authenticate(&mut handle, hop).await? {
+        return Err(ConnectError::fatal("Authentication failed: check username and credentials"));
+    }
+    Ok(handle)
+}
+
+/// Dial the whole jump chain, outermost bastion first. Returns the target
+/// handle plus the bastion handles that carry it — they must outlive it.
+async fn open_chain(
+    state: &Arc<AppState>,
+    session: &Arc<SshSession>,
+    params: &ConnParams,
+    config: Arc<russh::client::Config>,
+) -> Result<(russh::client::Handle<ClientHandler>, Vec<russh::client::Handle<ClientHandler>>), ConnectError> {
+    let mut hops: Vec<&ConnParams> = Vec::new();
+    let mut cur = Some(params);
+    while let Some(p) = cur {
+        hops.push(p);
+        cur = p.jump.as_deref();
+    }
+    hops.reverse();
+
+    let mut bastions: Vec<russh::client::Handle<ClientHandler>> = Vec::new();
+    let last = hops.len() - 1;
+    for (i, hop) in hops.iter().enumerate() {
+        match open_hop(state, session, hop, bastions.last(), config.clone()).await {
+            Ok(handle) if i == last => return Ok((handle, bastions)),
+            Ok(handle) => bastions.push(handle),
+            Err(mut e) => {
+                if i != last {
+                    e.msg = format!("Jump host “{}”: {}", hop.label, e.msg);
+                }
+                close_handles(bastions).await;
+                return Err(e);
+            }
+        }
+    }
+    unreachable!("a chain always ends at the target hop")
+}
+
+/// Innermost first, so each tunnel closes before the hop carrying it
+async fn close_handles(handles: Vec<russh::client::Handle<ClientHandler>>) {
+    for handle in handles.into_iter().rev() {
+        let _ = handle
+            .disconnect(russh::Disconnect::ByApplication, "", "en")
+            .await;
+    }
 }
 
 async fn connect_and_stream(
@@ -404,71 +800,25 @@ async fn connect_and_stream(
     session: &Arc<SshSession>,
     params: &ConnParams,
     host_tag: &str,
-) -> Result<(), String> {
-    // Look up all previously trusted keys for this host (per key type)
-    let known_keys = Connection::open(&state.db_path)
-        .ok()
-        .and_then(|conn| db::get_known_hosts(&conn, host_tag).ok())
-        .unwrap_or_default();
-
+) -> Result<StreamEnd, ConnectError> {
     let config = Arc::new(russh::client::Config {
         keepalive_interval: Some(Duration::from_secs(KEEPALIVE_SECS)),
         ..Default::default()
     });
 
-    let handler = ClientHandler {
-        host_tag: host_tag.to_string(),
-        session_id: session.id,
-        known_keys,
-        key_mismatch: session.key_mismatch.clone(),
-        state: state.clone(),
-    };
+    let (handle, bastions) = open_chain(state, session, params, config).await?;
+    let result = stream_session(state, session, params, host_tag, handle).await;
+    close_handles(bastions).await;
+    result
+}
 
-    let mut handle = tokio::time::timeout(
-        Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        russh::client::connect(config, (params.address.as_str(), params.port), handler),
-    )
-    .await
-    .map_err(|_| format!("Connection timed out after {CONNECT_TIMEOUT_SECS}s — check the address and port"))?
-    .map_err(|e| {
-        let s = e.to_string();
-        if s.contains("UnknownKey") || s.contains("unknown key") || s.contains("Unknown server key") {
-            "Host key rejected".to_string()
-        } else {
-            format!("Connection failed: {s}")
-        }
-    })?;
-
-    // ---- authenticate ----
-    let authed = match &params.auth {
-        AuthSpec::Password(pw) => {
-            let by_password = handle
-                .authenticate_password(&params.username, pw)
-                .await
-                .map_err(|e| format!("Auth error: {e}"))?;
-            // Many servers (shared hosts like Hostinger, some cloud images)
-            // disable the "password" method but accept the same secret via
-            // keyboard-interactive. Answer its prompts with the password.
-            if by_password {
-                true
-            } else {
-                authenticate_keyboard_interactive(&mut handle, &params.username, pw).await
-            }
-        }
-        AuthSpec::Key { path, passphrase } => {
-            let key = russh::keys::load_secret_key(path, passphrase.as_deref())
-                .map_err(|e| format!("Could not load key: {e}"))?;
-            handle
-                .authenticate_publickey(&params.username, Arc::new(key))
-                .await
-                .map_err(|e| format!("Auth error: {e}"))?
-        }
-    };
-
-    if !authed {
-        return Err("Authentication failed: check username and credentials".into());
-    }
-
+async fn stream_session(
+    state: &Arc<AppState>,
+    session: &Arc<SshSession>,
+    params: &ConnParams,
+    host_tag: &str,
+    handle: russh::client::Handle<ClientHandler>,
+) -> Result<StreamEnd, ConnectError> {
     // ---- detect the server OS on a quiet exec channel ----
     if let Some(host_id) = session.host_id {
         let detected = detect_os(&handle).await.unwrap_or_else(|| "unknown".into());
@@ -488,17 +838,17 @@ async fn connect_and_stream(
     let channel = handle
         .channel_open_session()
         .await
-        .map_err(|e| format!("Could not open channel: {e}"))?;
+        .map_err(|e| ConnectError::transient(format!("Could not open channel: {e}")))?;
 
     let mut channel = channel;
     channel
         .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
         .await
-        .map_err(|e| format!("PTY request failed: {e}"))?;
+        .map_err(|e| ConnectError::transient(format!("PTY request failed: {e}")))?;
     channel
         .request_shell(true)
         .await
-        .map_err(|e| format!("Shell request failed: {e}"))?;
+        .map_err(|e| ConnectError::transient(format!("Shell request failed: {e}")))?;
 
     *session.handle.lock().await = Some(handle);
     let writer = channel.make_writer();
@@ -517,6 +867,11 @@ async fn connect_and_stream(
     let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(8);
     *session.resize_tx.lock().await = Some(resize_tx);
 
+    // Closed while the dial was in flight (tab closed, or "Stop" during a
+    // reconnect): never announce a session nobody is waiting for
+    if session.closed.is_cancelled() {
+        return Ok(StreamEnd::UserClosed);
+    }
     emit_status(&state.app, session.id, "connected", None);
 
     // Session history (SSH only)
@@ -545,14 +900,19 @@ async fn connect_and_stream(
         }
     }
 
-    // ---- pump output; service resizes; end on EOF/Close ----
+    // ---- pump output; service resizes; end on close or transport loss ----
     let mut output_tail = String::new();
     let mut sudo_fills: u32 = 0;
     let mut last_sudo_fill = Instant::now() - Duration::from_secs(10);
 
-    loop {
+    // russh 0.45 never forwards CHANNEL_CLOSE to the channel — a close just
+    // ends wait() with None, same as a dead transport. An exit status or
+    // signal seen first means the shell ended on purpose.
+    let mut shell_exited = false;
+
+    let end = loop {
         tokio::select! {
-            _ = session.closed.cancelled() => break,
+            _ = session.closed.cancelled() => break StreamEnd::UserClosed,
             msg = channel.wait() => {
                 match msg {
                     Some(russh::ChannelMsg::Data { data }) => {
@@ -586,8 +946,16 @@ async fn connect_and_stream(
                             StdoutEvent { session_id: session.id, data: B64.encode(&data) },
                         );
                     }
-                    Some(russh::ChannelMsg::ExitStatus { .. }) => {}
-                    Some(russh::ChannelMsg::Eof | russh::ChannelMsg::Close) | None => break,
+                    Some(russh::ChannelMsg::ExitStatus { .. } | russh::ChannelMsg::ExitSignal { .. }) => {
+                        shell_exited = true;
+                    }
+                    // The server ended the channel on purpose: the shell exited
+                    Some(russh::ChannelMsg::Eof | russh::ChannelMsg::Close) => break StreamEnd::RemoteExit,
+                    // The channel vanished: after an exit status that's the
+                    // normal close; without one the transport died (network
+                    // drop, sleep, keepalive timeout)
+                    None if shell_exited => break StreamEnd::RemoteExit,
+                    None => break StreamEnd::Lost,
                     _ => {}
                 }
             }
@@ -595,7 +963,7 @@ async fn connect_and_stream(
                 let _ = channel.window_change(cols, rows, 0, 0).await;
             }
         }
-    }
+    };
 
     // Wipe the in-memory password when the session ends
     *session.sudo_password.lock().unwrap() = None;
@@ -604,8 +972,8 @@ async fn connect_and_stream(
             let _ = db::session_log_end(&conn, log_id);
         }
     }
-    emit_status(&state.app, session.id, "closed", None);
-    Ok(())
+    // run_session reports the outcome — it may reconnect instead of closing
+    Ok(end)
 }
 
 const MAX_SUDO_FILLS: u32 = 3;

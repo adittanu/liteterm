@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { KeyRound, LockKeyhole, MoreHorizontal, Pencil, Plus, Trash2, IdCard } from 'lucide-vue-next'
+import { KeyRound, LockKeyhole, MoreHorizontal, Pencil, Plus, Trash2, IdCard, Fingerprint } from 'lucide-vue-next'
 import { useCredentialsStore } from '../stores/credentials'
 import { useHostsStore } from '../stores/hosts'
 import { useDialogsStore } from '../stores/dialogs'
@@ -48,6 +48,7 @@ function keyFile(c: Credential): string {
 
 function secretState(c: Credential): { label: string; tone: 'success' | 'warning' | '' } {
   if (c.auth_method === 'key') return { label: keyFile(c) || 'Private key', tone: '' }
+  if (c.auth_method === 'agent') return { label: 'SSH agent', tone: '' }
   return c.has_password
     ? { label: 'Password saved', tone: 'success' }
     : { label: 'Asks on connect', tone: 'warning' }
@@ -148,6 +149,7 @@ async function remove(cred: Credential) {
           <div class="cred-top">
             <span class="cred-tile" :class="cred.auth_method">
               <KeyRound v-if="cred.auth_method === 'key'" :size="17" :stroke-width="1.5" aria-hidden="true" />
+              <Fingerprint v-else-if="cred.auth_method === 'agent'" :size="17" :stroke-width="1.5" aria-hidden="true" />
               <LockKeyhole v-else :size="17" :stroke-width="1.5" aria-hidden="true" />
             </span>
             <span class="cred-text">

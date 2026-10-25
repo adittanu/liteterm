@@ -125,14 +125,7 @@ pub fn spawn_local(state: &AppState, command: Option<&str>) -> Result<u32, Strin
                 Err(_) => break,
             }
         }
-        let _ = app.emit(
-            "session:status",
-            crate::ssh::pool::StatusEvent {
-                session_id: session_for_reader.id,
-                status: "closed".into(),
-                error: None,
-            },
-        );
+        crate::ssh::pool::emit_status(&app, session_for_reader.id, "closed", None);
         session_for_reader.closed.cancel();
     });
 

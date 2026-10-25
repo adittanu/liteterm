@@ -9,7 +9,7 @@ pub struct Host {
     pub address: String,
     pub port: i64,
     pub username: String,
-    pub auth_method: String, // "password" | "key"
+    pub auth_method: String, // "password" | "key" | "agent"
     pub password_saved: bool,
     pub has_password: bool,
     pub key_path: Option<String>,
@@ -18,6 +18,8 @@ pub struct Host {
     pub os: Option<String>, // detected distro id ("ubuntu", "debian", "macos", …)
     pub sort: i64,
     pub last_used_at: Option<i64>, // ms since epoch, bumped on connect
+    /// Saved host to hop through (ProxyJump); None = direct
+    pub jump_host_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +37,8 @@ pub struct HostInput {
     pub key_passphrase: Option<String>,
     pub credential_id: Option<i64>,
     pub create_credential: Option<CredentialInput>,
+    #[serde(default)]
+    pub jump_host_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +87,8 @@ pub struct Note {
     pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Host this note belongs to (shown in its details panel); None = unlinked
+    pub host_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,10 +122,17 @@ pub struct AppSettings {
     pub keybindings: HashMap<String, String>, // action id -> combo ("Ctrl+K")
     #[serde(default = "default_hosts_layout")]
     pub hosts_layout: String, // "modern" | "classic" (Termius-style folders)
+    /// Re-establish SSH sessions that drop (network change, sleep) with backoff
+    #[serde(default = "default_true")]
+    pub auto_reconnect: bool,
 }
 
 fn default_hosts_layout() -> String {
     "modern".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AppSettings {
@@ -131,6 +144,7 @@ impl Default for AppSettings {
             auto_sudo_password: true,
             keybindings: HashMap::new(),
             hosts_layout: default_hosts_layout(),
+            auto_reconnect: true,
         }
     }
 }

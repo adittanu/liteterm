@@ -93,7 +93,7 @@ function statusFor(hostId: number): Status {
   const tab = sessions.tabs.find((t) => t.hostId === hostId)
   if (!tab) return 'idle'
   if (tab.status === 'connected') return 'connected'
-  if (tab.status === 'connecting' || tab.status === 'hostkey') return 'connecting'
+  if (tab.status === 'connecting' || tab.status === 'hostkey' || tab.status === 'reconnecting') return 'connecting'
   if (tab.status === 'error') return 'error'
   return 'idle'
 }
@@ -201,6 +201,7 @@ async function duplicate(h: Host) {
       auth_method: h.auth_method,
       key_path: h.key_path,
       credential_id: h.credential_id,
+      jump_host_id: h.jump_host_id,
       save_password: false,
     })
     selectedId.value = copy.id

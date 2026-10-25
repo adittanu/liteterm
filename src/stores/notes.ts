@@ -90,6 +90,26 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
+  // Link (or unlink) a note to a host — shown in that host's details panel
+  async function setHost(id: number, hostId: number | null) {
+    const note = notes.value.find((n) => n.id === id)
+    if (!note) return
+    const prev = note.host_id
+    note.host_id = hostId
+    try {
+      await api.setNoteHost(id, hostId)
+    } catch (e) {
+      note.host_id = prev
+      throw e
+    }
+  }
+
+  // A host was deleted: the database already nulled the links (ON DELETE
+  // SET NULL); mirror that here without a reload
+  function forgetHost(hostId: number) {
+    for (const n of notes.value) if (n.host_id === hostId) n.host_id = null
+  }
+
   async function setTags(id: number, tags: string[]) {
     const note = notes.value.find((n) => n.id === id)
     if (!note) return
@@ -122,11 +142,18 @@ export const useNotesStore = defineStore('notes', () => {
         .then(async (restored) => {
           if (note.tags.length) await api.setNoteTags(restored.id, note.tags)
           restored.tags = note.tags
+          // The host may be gone by now — keep the link only if it saved
+          if (note.host_id !== null) {
+            await api
+              .setNoteHost(restored.id, note.host_id)
+              .then(() => (restored.host_id = note.host_id))
+              .catch(() => {})
+          }
           notes.value.unshift(restored)
         })
         .catch((e) => useUiStore().toast('error', `Could not restore note: ${errorText(e)}`))
     }
   }
 
-  return { notes, loaded, load, create, edit, setPinned, setTags, remove }
+  return { notes, loaded, load, create, edit, setPinned, setHost, forgetHost, setTags, remove }
 })

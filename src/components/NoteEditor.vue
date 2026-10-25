@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { EditorContent, useEditor } from '@tiptap/vue-3'
+import { computed, provide, ref, watch } from 'vue'
+import { EditorContent, VueNodeViewRenderer, useEditor } from '@tiptap/vue-3'
 import type { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
+import CodeBlock from '@tiptap/extension-code-block'
 import Placeholder from '@tiptap/extension-placeholder'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
@@ -25,21 +26,55 @@ import {
   Pin,
   PinOff,
   Plus,
+  Server,
   Table as TableIcon,
   Trash2,
 } from 'lucide-vue-next'
 import { useNotesStore } from '../stores/notes'
+import { useHostsStore } from '../stores/hosts'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
 import { Hashtag } from './hashtagExtension'
 import { TabKeys } from './tabKeysExtension'
+import CodeBlockView from './CodeBlockView.vue'
+import SearchSelect, { type ComboOption } from './SearchSelect.vue'
+import { NOTE_HOST_ID } from './noteContext'
 import type { Note } from '../types'
 
 const props = defineProps<{ note: Note; back?: boolean }>()
 const emit = defineEmits<{ remove: []; back: [] }>()
 
 const notes = useNotesStore()
+const hosts = useHostsStore()
 const ui = useUiStore()
+
+// ---- host link: where this note's code blocks run ----
+provide(NOTE_HOST_ID, computed(() => props.note.host_id))
+
+const hostOptions = computed<ComboOption[]>(() => [
+  { value: null, label: 'No host', muted: true },
+  ...[...hosts.hosts]
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .map((h) => ({ value: h.id, label: h.label, hint: h.address })),
+])
+
+async function linkHost(value: string | number | null) {
+  const hostId = typeof value === 'number' ? value : null
+  if (hostId === props.note.host_id) return
+  try {
+    await notes.setHost(props.note.id, hostId)
+  } catch (e) {
+    ui.toast('error', `Could not link note: ${errorText(e)}`)
+  }
+}
+
+// Code blocks get Copy/Run actions through a Vue node view; same node
+// name, so markdown storage and the other extensions see no difference
+const RunnableCodeBlock = CodeBlock.extend({
+  addNodeView() {
+    return VueNodeViewRenderer(CodeBlockView)
+  },
+})
 
 const title = ref(props.note.title)
 const titleEl = ref<HTMLInputElement | null>(null)
@@ -59,7 +94,8 @@ function markdownOf(e: Editor): string {
 const editor = useEditor({
   content: props.note.body,
   extensions: [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
+    StarterKit.configure({ heading: { levels: [1, 2, 3] }, codeBlock: false }),
+    RunnableCodeBlock,
     Placeholder.configure({ placeholder: 'Start typing… #tag to organize' }),
     TaskList,
     TaskItem.configure({ nested: true }),
@@ -308,6 +344,16 @@ defineExpose({
         </template>
       </div>
       <div class="editor-actions">
+        <div class="host-link" title="Linked host — code blocks run there, and the note shows in its details">
+          <Server :size="13" :stroke-width="1.5" class="host-link-icon" aria-hidden="true" />
+          <SearchSelect
+            compact
+            :model-value="note.host_id"
+            :options="hostOptions"
+            aria-label="Linked host"
+            @update:model-value="linkHost"
+          />
+        </div>
         <button
           class="btn-icon"
           :class="{ pinned: note.pinned }"
@@ -395,7 +441,33 @@ defineExpose({
 
 .editor-actions {
   display: flex;
+  align-items: center;
   gap: 2px;
+}
+
+.host-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+  max-width: 200px;
+  min-width: 0;
+}
+
+.host-link-icon {
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.host-link :deep(.combo-trigger.compact) {
+  max-width: 180px;
+  font-family: var(--font-ui);
+  border-color: transparent;
+  background: transparent;
+}
+
+.host-link :deep(.combo-trigger.compact:hover) {
+  background: var(--bg-hover);
 }
 
 .editor-actions .btn-icon.pinned {

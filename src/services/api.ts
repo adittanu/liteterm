@@ -69,6 +69,8 @@ export const api = {
     invoke('set_note_pinned', { id, pinned }),
   setNoteTags: (id: number, tags: string[]): Promise<Note> =>
     invoke('set_note_tags', { id, tags }),
+  setNoteHost: (id: number, hostId: number | null): Promise<Note> =>
+    invoke('set_note_host', { id, hostId }),
   deleteNote: (id: number): Promise<void> => invoke('delete_note', { id }),
 
   // ---- forwards ----
@@ -105,6 +107,7 @@ export const api = {
     invoke('connect_adhoc', { address, port, username, password }),
   confirmHostKey: (sessionId: number, accept: boolean, remember: boolean): Promise<void> =>
     invoke('confirm_host_key', { sessionId, accept, remember }),
+  reconnectNow: (sessionId: number): Promise<void> => invoke('reconnect_now', { sessionId }),
   disconnect: (sessionId: number): Promise<void> => invoke('disconnect_session', { sessionId }),
   write: (sessionId: number, data: string): Promise<void> => invoke('session_write', { sessionId, data }),
   resize: (sessionId: number, cols: number, rows: number): Promise<void> =>

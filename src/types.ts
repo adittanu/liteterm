@@ -1,6 +1,6 @@
 // Shared types between frontend and backend (mirrors Rust models via serde)
 
-export type AuthMethod = 'password' | 'key'
+export type AuthMethod = 'password' | 'key' | 'agent'
 
 export interface HostGroup {
   id: number
@@ -24,6 +24,7 @@ export interface Host {
   os: string | null // detected distro id ("ubuntu", "debian", "macos", …)
   sort: number
   last_used_at: number | null // ms since epoch, bumped on connect
+  jump_host_id: number | null // saved host to hop through (ProxyJump)
 }
 
 export interface HostInput {
@@ -40,6 +41,9 @@ export interface HostInput {
   key_passphrase?: string | null
   credential_id?: number | null
   create_credential?: CredentialInput | null
+  // Required on purpose: the backend reads a missing value as "no jump
+  // host", so every save must carry the current one forward
+  jump_host_id: number | null
 }
 
 export interface Credential {
@@ -77,6 +81,7 @@ export interface Note {
   tags: string[]
   created_at: string
   updated_at: string
+  host_id: number | null // host this note belongs to
 }
 
 export interface PortForward {
@@ -89,7 +94,13 @@ export interface PortForward {
   auto_start: boolean
 }
 
-export type SessionStatus = 'connecting' | 'hostkey' | 'connected' | 'error' | 'closed'
+export type SessionStatus =
+  | 'connecting'
+  | 'hostkey'
+  | 'connected'
+  | 'reconnecting' // dropped; the backend redials with backoff on the same session
+  | 'error'
+  | 'closed'
 export type SessionKind = 'ssh' | 'local' | 'herdr'
 
 export interface SessionTab {
@@ -101,6 +112,9 @@ export interface SessionTab {
   status: SessionStatus
   error?: string
   hostKeyFingerprint?: string // present while status === 'hostkey'
+  hostKeyAddress?: string // addr:port being verified — a jump host's, not always the target's
+  // present while status === 'reconnecting'
+  reconnect?: { attempt: number; maxAttempts: number; retryAt: number /* epoch ms; 0 = dialing */ }
   sftpOpen: boolean
 }
 
@@ -128,6 +142,7 @@ export interface AppSettings {
   terminalFontSize: number
   confirmDeleteFile: boolean
   autoSudoPassword: boolean
+  autoReconnect: boolean // redial dropped SSH sessions with backoff
   keybindings: Record<string, string> // action id -> combo ("Ctrl+K"); absent = default
   hostsLayout: 'modern' | 'classic' // Hosts page: chips + quick actions, or Termius-style folders
 }

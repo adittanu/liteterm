@@ -259,6 +259,41 @@ ol {
   transform: scale(0.96);
 }
 
+/* ---- Segmented auth-method toggle (host + credential editors) ---- */
+.auth-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 3px;
+}
+
+.auth-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition: background-color var(--dur-hover) ease, color var(--dur-hover) ease;
+}
+
+.auth-option:hover {
+  color: var(--text-1);
+}
+
+.auth-option.on {
+  background: var(--bg-selected);
+  color: var(--text-1);
+  box-shadow: var(--shadow-1);
+}
+
 /* ---- Badges: static cues that pair with any status ---- */
 
 .badge {

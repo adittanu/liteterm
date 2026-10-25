@@ -7,22 +7,24 @@ use crate::ssh::pool::{self, AuthSpec, ConnParams, AppState, SshSession};
 use crate::store::db;
 use crate::Db;
 
-fn resolve_conn_params(
+/// Build the auth for one saved host. `password` is a secret the user just
+/// typed for this host (password or key passphrase); `None` falls back to
+/// the keyring. `missing` decides how a missing secret is reported.
+fn resolve_auth(
     conn: &Connection,
-    host_id: i64,
+    host: &crate::store::models::Host,
     password: Option<String>,
-) -> Result<(ConnParams, String), String> {
-    let host = db::get_host(conn, host_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Host not found")?;
-
+    missing: &dyn Fn(&str, &str) -> String,
+) -> Result<(String, AuthSpec), String> {
+    let host_id = host.id;
     // A linked credential supplies username + auth; inline fields are the
     // fallback for hosts without one
-    let (username, auth) = if let Some(cred_id) = host.credential_id {
+    if let Some(cred_id) = host.credential_id {
         let cred = db::get_credential(conn, cred_id)
             .map_err(|e| e.to_string())?
             .ok_or("The linked credential no longer exists")?;
         let auth = match cred.auth_method.as_str() {
+            "agent" => AuthSpec::Agent,
             "key" => {
                 let key_path = cred
                     .key_path
@@ -33,7 +35,7 @@ fn resolve_conn_params(
                     .or_else(|| db::keyring_get(&db::cred_keypass_entry(cred_id)));
                 if let Err(e) = russh::keys::load_secret_key(&key_path, passphrase.as_deref()) {
                     if matches!(e, russh::keys::Error::KeyIsEncrypted) && passphrase.is_none() {
-                        return Err(format!("passphrase_required:{}", cred.name));
+                        return Err(missing("passphrase", &cred.name));
                     }
                     return Err(format!("Could not load key: {e}"));
                 }
@@ -45,41 +47,95 @@ fn resolve_conn_params(
                     .or_else(|| db::keyring_get(&db::cred_password_entry(cred_id)))
                 {
                     Some(pw) => pw,
-                    None => return Err(format!("password_required:{}", cred.name)),
+                    None => return Err(missing("password", &cred.name)),
                 };
                 AuthSpec::Password(pw)
             }
         };
-        (cred.username, auth)
-    } else {
-        let auth = match host.auth_method.as_str() {
-            "key" => {
-                let key_path = host.key_path.clone().ok_or("No key file configured")?;
-                let passphrase = password
-                    .clone()
-                    .or_else(|| db::keyring_get(&db::keypass_entry(host_id)));
-                // Fail fast here (in the command, not the session task) on a locked key
-                if let Err(e) = russh::keys::load_secret_key(&key_path, passphrase.as_deref()) {
-                    if matches!(e, russh::keys::Error::KeyIsEncrypted) && passphrase.is_none() {
-                        return Err(format!("passphrase_required:{}", host.label));
-                    }
-                    return Err(format!("Could not load key: {e}"));
+        return Ok((cred.username, auth));
+    }
+
+    let auth = match host.auth_method.as_str() {
+        "agent" => AuthSpec::Agent,
+        "key" => {
+            let key_path = host.key_path.clone().ok_or("No key file configured")?;
+            let passphrase = password
+                .clone()
+                .or_else(|| db::keyring_get(&db::keypass_entry(host_id)));
+            // Fail fast here (in the command, not the session task) on a locked key
+            if let Err(e) = russh::keys::load_secret_key(&key_path, passphrase.as_deref()) {
+                if matches!(e, russh::keys::Error::KeyIsEncrypted) && passphrase.is_none() {
+                    return Err(missing("passphrase", &host.label));
                 }
-                AuthSpec::Key { path: key_path, passphrase }
+                return Err(format!("Could not load key: {e}"));
             }
-            _ => {
-                let pw = match password
-                    .clone()
-                    .or_else(|| db::keyring_get(&db::password_entry(host_id)))
-                {
-                    Some(pw) => pw,
-                    None => return Err(format!("password_required:{}", host.label)),
-                };
-                AuthSpec::Password(pw)
-            }
-        };
-        (host.username.clone(), auth)
+            AuthSpec::Key { path: key_path, passphrase }
+        }
+        _ => {
+            let pw = match password
+                .clone()
+                .or_else(|| db::keyring_get(&db::password_entry(host_id)))
+            {
+                Some(pw) => pw,
+                None => return Err(missing("password", &host.label)),
+            };
+            AuthSpec::Password(pw)
+        }
     };
+    Ok((host.username.clone(), auth))
+}
+
+fn resolve_conn_params(
+    conn: &Connection,
+    host_id: i64,
+    password: Option<String>,
+) -> Result<(ConnParams, String), String> {
+    let host = db::get_host(conn, host_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Host not found")?;
+
+    // The target can prompt: the frontend reopens its password dialog
+    let prompt = |kind: &str, name: &str| format!("{kind}_required:{name}");
+    let (username, auth) = resolve_auth(conn, &host, password, &prompt)?;
+
+    // Bastions can't prompt (the dialog would answer for the target), so
+    // their secret must already be saved — say exactly what to fix
+    let mut jump: Option<Box<ConnParams>> = None;
+    let mut chain: Vec<crate::store::models::Host> = Vec::new();
+    let mut seen = vec![host.id];
+    let mut next = host.jump_host_id;
+    while let Some(jid) = next {
+        if seen.contains(&jid) {
+            return Err(format!("Jump hosts for “{}” form a loop — check each host's Jump host", host.label));
+        }
+        if chain.len() >= pool::MAX_JUMP_DEPTH {
+            return Err(format!("Too many jump hosts chained for “{}”", host.label));
+        }
+        seen.push(jid);
+        let bastion = db::get_host(conn, jid)
+            .map_err(|e| e.to_string())?
+            .ok_or("The jump host no longer exists — edit this host and pick another")?;
+        next = bastion.jump_host_id;
+        chain.push(bastion);
+    }
+    // chain = [nearest bastion, …, outermost]; nest from the outside in
+    for bastion in chain.into_iter().rev() {
+        let saved_only = |kind: &str, name: &str| {
+            format!(
+                "Jump host “{name}” needs a saved {kind} — edit it and turn on “Remember”, \
+                 or switch it to SSH agent / key authentication"
+            )
+        };
+        let (b_user, b_auth) = resolve_auth(conn, &bastion, None, &saved_only)?;
+        jump = Some(Box::new(ConnParams {
+            address: bastion.address.clone(),
+            port: bastion.port as u16,
+            username: b_user,
+            auth: b_auth,
+            label: bastion.label.clone(),
+            jump,
+        }));
+    }
 
     Ok((
         ConnParams {
@@ -87,6 +143,8 @@ fn resolve_conn_params(
             port: host.port as u16,
             username,
             auth,
+            label: host.label.clone(),
+            jump,
         },
         host.label,
     ))
@@ -148,6 +206,8 @@ pub async fn connect_adhoc(
         port,
         username: username.clone(),
         auth: AuthSpec::Password(password.unwrap_or_default()),
+        label: format!("{username}@{address}"),
+        jump: None,
     };
     let session_id = pool::create_session(
         &app_state,
@@ -181,6 +241,12 @@ pub async fn confirm_host_key(
     tx.send(pool::HostKeyDecision { accept, remember })
         .await
         .map_err(|_| "Connection already ended".to_string())
+}
+
+/// Skip the remaining backoff of an auto-reconnecting session.
+#[tauri::command]
+pub async fn reconnect_now(state: State<'_, Arc<AppState>>, session_id: u32) -> Result<(), String> {
+    pool::reconnect_now(state.inner(), session_id)
 }
 
 #[tauri::command]

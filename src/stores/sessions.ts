@@ -42,6 +42,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     if (key) {
       tab.status = 'hostkey'
       tab.hostKeyFingerprint = key.fingerprint
+      tab.hostKeyAddress = key.address
       hostKeyBuffer.delete(tab.id)
     }
     const status = statusBuffer.get(tab.id)
@@ -169,6 +170,28 @@ export const useSessionsStore = defineStore('sessions', () => {
     await api.confirmHostKey(sessionId, accept, remember)
   }
 
+  // ---- auto-reconnect controls (the backend owns the retry loop) ----
+
+  function reconnectNow(sessionId: number) {
+    void api.reconnectNow(sessionId).catch(() => {})
+  }
+
+  // Stop retrying. The tab stays open (closed state) with a manual
+  // Reconnect button, which starts a fresh session
+  async function stopReconnecting(sessionId: number) {
+    try {
+      await api.disconnect(sessionId)
+    } catch {
+      // already gone
+    }
+    const tab = tabs.value.find((t) => t.id === sessionId)
+    if (tab) {
+      tab.status = 'closed'
+      tab.reconnect = undefined
+      tab.error = 'Connection lost'
+    }
+  }
+
   async function disconnect(sessionId: number) {
     try {
       await api.disconnect(sessionId)
@@ -249,6 +272,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       sessionId: number
       status: SessionStatus
       error?: string
+      attempt?: number
+      maxAttempts?: number
+      retryInMs?: number
+      reason?: 'exit' | 'lost'
     }>('session:status', (e) => {
       const { sessionId, status, error } = e.payload
       const tab = tabs.value.find((t) => t.id === sessionId)
@@ -256,7 +283,26 @@ export const useSessionsStore = defineStore('sessions', () => {
         statusBuffer.set(sessionId, { status, error })
         return
       }
+      const prev = tab.status
       setStatus(sessionId, status, error)
+
+      if (status === 'reconnecting') {
+        const { attempt = 1, maxAttempts = 1, retryInMs = 0 } = e.payload
+        tab.reconnect = {
+          attempt,
+          maxAttempts,
+          retryAt: retryInMs > 0 ? Date.now() + retryInMs : 0,
+        }
+        // The banner says it on the visible tab; elsewhere a toast does
+        if (prev === 'connected' && useUiStore().activeView !== sessionView(sessionId)) {
+          useUiStore().toast('info', `${tab.label}: connection lost — reconnecting…`, { duration: 3000 })
+        }
+        return
+      }
+      tab.reconnect = undefined
+      if (status === 'connected' && prev === 'reconnecting') {
+        useUiStore().toast('success', `Reconnected to ${tab.label}`, { duration: 2500 })
+      }
       if (status === 'error' && error) {
         useUiStore().toast('error', `${tab.label}: ${error}`)
       }
@@ -270,6 +316,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       }
       tab.status = 'hostkey'
       tab.hostKeyFingerprint = e.payload.fingerprint
+      tab.hostKeyAddress = e.payload.address
     })
 
     await listen<{
@@ -305,6 +352,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     connectLocal,
     connectHerdr,
     confirmHostKey,
+    reconnectNow,
+    stopReconnecting,
     disconnect,
     write,
     resize,

@@ -80,6 +80,7 @@ fn apply_parsed_hosts(
     }
 
     let mut host_ids = Vec::new();
+    let mut pending_jumps: Vec<(i64, String)> = Vec::new();
     for h in hosts {
         if h.alias.trim().is_empty() || h.hostname.trim().is_empty() {
             continue;
@@ -121,9 +122,28 @@ fn apply_parsed_hosts(
             key_passphrase: h.key_passphrase.clone(),
             credential_id: None,
             create_credential: None,
+            jump_host_id: None,
         };
         let host = db::upsert_host(conn, &input).map_err(|e| e.to_string())?;
         host_ids.push(host.id);
+        if let Some(jump) = h.proxy_jump.as_deref() {
+            pending_jumps.push((host.id, jump.to_string()));
+        }
+    }
+
+    // ProxyJump second pass: point each host at its bastion, matched by
+    // label (imported aliases become labels) or address among saved hosts
+    if !pending_jumps.is_empty() {
+        let saved = db::list_hosts(conn).map_err(|e| e.to_string())?;
+        for (host_id, jump) in pending_jumps {
+            let target = saved
+                .iter()
+                .find(|s| s.label.eq_ignore_ascii_case(&jump))
+                .or_else(|| saved.iter().find(|s| s.address.eq_ignore_ascii_case(&jump)));
+            if let Some(bastion) = target.filter(|b| b.id != host_id) {
+                db::set_host_jump(conn, host_id, Some(bastion.id)).map_err(|e| e.to_string())?;
+            }
+        }
     }
     Ok(host_ids)
 }
