@@ -234,6 +234,18 @@ pub async fn download_update(app: AppHandle, asset: UpdateAsset) -> Result<Strin
     Ok(final_path.to_string_lossy().into_owned())
 }
 
+/// `\\?\C:\foo` -> `C:\foo` (and `\\?\UNC\srv\share` -> `\\srv\share`).
+fn strip_verbatim_prefix(p: &std::path::Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 #[tauri::command]
 pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> {
     let installer = PathBuf::from(path);
@@ -254,6 +266,12 @@ pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> 
 
     let exe = std::env::current_exe().map_err(|e| format!("Could not locate LiteTerm: {e}"))?;
 
+    // canonicalize() yields `\\?\C:\...` verbatim paths on Windows, which
+    // cmd.exe / `start` cannot parse (they get cut down to `\\` and Windows
+    // reports "cannot find '\\'"). Hand cmd plain drive-letter paths.
+    let installer = strip_verbatim_prefix(&installer);
+    let exe = strip_verbatim_prefix(&exe);
+
     // A detached cmd wrapper survives this process being killed by the
     // silent installer: it waits for the installer to finish, then starts
     // the freshly replaced LiteTerm at the same path.
@@ -267,8 +285,10 @@ pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> 
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // raw_arg: Rust's normal arg quoting escapes `"` as `\"`, which cmd
+        // does not understand. The outer quotes are stripped by cmd /C.
         std::process::Command::new("cmd.exe")
-            .args(["/C", &script])
+            .raw_arg(format!("/C \"{script}\""))
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Could not start the installer: {e}"))?;
