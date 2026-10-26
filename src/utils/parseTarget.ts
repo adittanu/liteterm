@@ -1,5 +1,6 @@
 // Parse a "quick connect" string into an SSH target: `user@host:port`,
-// `host`, bare IP, `sub.domain.tld`, optionally prefixed with `ssh://`.
+// `host`, bare IP, `sub.domain.tld`, optionally prefixed with `ssh://`, or given as a web URL
+// (`http://` / `https://`, with an optional trailing path or slash).
 // Anything that doesn't look like a connectable target (plain search words
 // like "prod") returns null so the regular search flow stays untouched.
 
@@ -32,8 +33,14 @@ export function parseTarget(raw: string): SmartTarget | null {
   let s = raw.trim()
   if (!s || /\s/.test(s)) return null
 
-  const scheme = /^ssh:\/\//i
-  if (scheme.test(s)) s = s.replace(scheme, '')
+  // A pasted web URL (https://hris.dev-dq.web.id/app?x=1#top) is treated as
+  // "connect to that server": drop the scheme and any path/query/fragment.
+  // Its port is the web port, not SSH, so it's ignored for http(s).
+  const scheme = /^(ssh|https?):\/\//i
+  const m = s.match(scheme)
+  const isWeb = !!m && m[1].toLowerCase() !== 'ssh'
+  if (m) s = s.slice(m[0].length)
+  if (m || /[/?#]/.test(s)) s = s.split(/[/?#]/, 1)[0]
   if (!s) return null
 
   // IPv6 literals contain multiple colons — out of scope for v1
@@ -44,7 +51,7 @@ export function parseTarget(raw: string): SmartTarget | null {
   if (portMatch) {
     const p = Number(portMatch[1])
     if (p < 1 || p > 65535) return null
-    port = p
+    if (!isWeb) port = p
     s = s.slice(0, -portMatch[0].length)
   }
   if (!s) return null
