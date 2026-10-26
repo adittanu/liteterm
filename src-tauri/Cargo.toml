@@ -1,6 +1,6 @@
 [package]
 name = "liteterm"
-version = "1.8.1"
+version = "1.8.2"
 description = "A fast, lightweight SSH client"
 authors = ["you"]
 edition = "2021"
