@@ -62,6 +62,8 @@ export const api = {
 
   // ---- notes ----
   listNotes: (): Promise<Note[]> => invoke('list_notes'),
+  saveNoteImage: (dataBase64: string, ext: string): Promise<string> =>
+    invoke('save_note_image', { dataBase64, ext }),
   createNote: (title = '', body = ''): Promise<Note> => invoke('create_note', { title, body }),
   updateNote: (id: number, title: string, body: string): Promise<Note> =>
     invoke('update_note', { id, title, body }),

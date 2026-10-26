@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { StickyNote } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
+import QuickNoteBody from './QuickNoteBody.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useNotesStore } from '../stores/notes'
 import { useUiStore } from '../stores/ui'
@@ -16,7 +17,7 @@ const title = ref('')
 const body = ref('')
 const noteId = ref<number | null>(null)
 const titleEl = ref<HTMLInputElement | null>(null)
-const bodyEl = ref<HTMLTextAreaElement | null>(null)
+const bodyRef = ref<InstanceType<typeof QuickNoteBody> | null>(null)
 
 // The note row is created on the first keystroke, never on open — an
 // aborted Quick Note leaves no empty note behind.
@@ -45,13 +46,19 @@ function close() {
 }
 
 function onTitleEnter() {
-  bodyEl.value?.focus()
+  bodyRef.value?.focus()
 }
 
-async function onInput() {
+// Body changes arrive as markdown from the rich editor, the same format
+// Notes stores, so the entry opens identically in both places.
+function onBodyChange(markdown: string) {
+  body.value = markdown
+  void persist()
+}
+
+async function persist() {
   if (noteId.value !== null) {
     notes.edit(noteId.value, title.value, body.value)
-    autogrow()
     return
   }
   if (!title.value.trim() && !body.value.trim()) return
@@ -73,16 +80,6 @@ async function onInput() {
     creating = false
   }
 }
-
-function autogrow() {
-  const el = bodyEl.value
-  if (!el) return
-  el.style.height = 'auto'
-  const max = 320
-  const h = Math.min(el.scrollHeight, max)
-  el.style.height = `${h}px`
-  el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden'
-}
 </script>
 
 <template>
@@ -96,17 +93,10 @@ function autogrow() {
         placeholder="Title"
         aria-label="Note title"
         spellcheck="false"
-        @input="onInput"
+        @input="persist"
         @keydown.enter.prevent="onTitleEnter"
       />
-      <textarea
-        ref="bodyEl"
-        v-model="body"
-        class="quick-body"
-        placeholder="Write something…"
-        aria-label="Note body"
-        @input="onInput"
-      ></textarea>
+      <QuickNoteBody ref="bodyRef" :initial="body" @change="onBodyChange" />
       <p class="quick-hint">
         <StickyNote :size="12" :stroke-width="1.5" aria-hidden="true" />
         <span>Saves automatically to Notes · {{ shortcutHint }} opens this from anywhere</span>
@@ -136,23 +126,6 @@ function autogrow() {
 }
 
 .quick-title::placeholder {
-  color: var(--text-4);
-}
-
-.quick-body {
-  width: 100%;
-  min-height: 140px;
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: var(--text-md);
-  line-height: 1.6;
-  color: var(--text-1);
-  resize: none;
-  padding: 0;
-}
-
-.quick-body::placeholder {
   color: var(--text-4);
 }
 

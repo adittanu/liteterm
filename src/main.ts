@@ -6,6 +6,7 @@ import './styles/tokens.css'
 import './styles/base.css'
 import './styles/motion.css'
 import './styles/themes.css'
+import './styles/prose.css'
 import '@xterm/xterm/css/xterm.css'
 
 const app = createApp(App)

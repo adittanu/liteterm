@@ -1,17 +1,7 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from 'vue'
-import { EditorContent, VueNodeViewRenderer, useEditor } from '@tiptap/vue-3'
+import { EditorContent, useEditor } from '@tiptap/vue-3'
 import type { Editor } from '@tiptap/core'
-import StarterKit from '@tiptap/starter-kit'
-import CodeBlock from '@tiptap/extension-code-block'
-import Placeholder from '@tiptap/extension-placeholder'
-import TaskList from '@tiptap/extension-task-list'
-import TaskItem from '@tiptap/extension-task-item'
-import Table from '@tiptap/extension-table'
-import TableRow from '@tiptap/extension-table-row'
-import TableHeader from '@tiptap/extension-table-header'
-import TableCell from '@tiptap/extension-table-cell'
-import { Markdown } from 'tiptap-markdown'
 import {
   ArrowLeft,
   Bold,
@@ -34,9 +24,7 @@ import { useNotesStore } from '../stores/notes'
 import { useHostsStore } from '../stores/hosts'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
-import { Hashtag } from './hashtagExtension'
-import { TabKeys } from './tabKeysExtension'
-import CodeBlockView from './CodeBlockView.vue'
+import { noteExtensions } from './noteExtensions'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import { NOTE_HOST_ID } from './noteContext'
 import type { Note } from '../types'
@@ -68,14 +56,6 @@ async function linkHost(value: string | number | null) {
   }
 }
 
-// Code blocks get Copy/Run actions through a Vue node view; same node
-// name, so markdown storage and the other extensions see no difference
-const RunnableCodeBlock = CodeBlock.extend({
-  addNodeView() {
-    return VueNodeViewRenderer(CodeBlockView)
-  },
-})
-
 const title = ref(props.note.title)
 const titleEl = ref<HTMLInputElement | null>(null)
 
@@ -93,22 +73,7 @@ function markdownOf(e: Editor): string {
 
 const editor = useEditor({
   content: props.note.body,
-  extensions: [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] }, codeBlock: false }),
-    RunnableCodeBlock,
-    Placeholder.configure({ placeholder: 'Start typing… #tag to organize' }),
-    TaskList,
-    TaskItem.configure({ nested: true }),
-    Table.configure({ resizable: false }),
-    TableRow,
-    TableHeader,
-    TableCell,
-    Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
-    Hashtag,
-    // Last on purpose: its Tab handling must run after the list/task
-    // indent shortcuts so it only sees keys they didn't consume
-    TabKeys,
-  ],
+  extensions: noteExtensions('Start typing… #tag to organize'),
   onUpdate: ({ editor }) => {
     notes.edit(props.note.id, title.value, markdownOf(editor))
   },
@@ -518,257 +483,4 @@ defineExpose({
   margin: 0 0 var(--space-4);
 }
 
-/* ---- inline #tags (decorated by the Hashtag extension) ---- */
-
-.note-prose :deep(.hashtag) {
-  color: var(--tag-color, var(--accent));
-  background: color-mix(in oklch, var(--tag-color, var(--accent)) 10%, transparent);
-  border-radius: 4px;
-  padding: 0 3px;
-  font-weight: 500;
-}
-
-/* ---- prose (Tiptap) ---- */
-
-.note-prose {
-  display: block;
-}
-
-.note-prose :deep(.tiptap) {
-  outline: none;
-  min-height: 45vh;
-  font-size: var(--text-md);
-  line-height: 1.65;
-  color: var(--text-1);
-  overflow-wrap: break-word;
-  caret-color: var(--text-1);
-}
-
-.note-prose :deep(.tiptap > * + *) {
-  margin-top: 0.55em;
-}
-
-.note-prose :deep(.tiptap h1) {
-  font-size: 1.4em;
-  font-weight: 700;
-  letter-spacing: var(--tracking-tight);
-  line-height: var(--leading-tight);
-  margin-top: 1.1em;
-}
-
-.note-prose :deep(.tiptap h2) {
-  font-size: 1.18em;
-  font-weight: 650;
-  letter-spacing: var(--tracking-tight);
-  line-height: var(--leading-tight);
-  margin-top: 1em;
-}
-
-.note-prose :deep(.tiptap h3) {
-  font-size: 1.05em;
-  font-weight: 600;
-  margin-top: 0.9em;
-}
-
-/* base.css resets all lists app-wide — the prose gets real markers back */
-.note-prose :deep(.tiptap ul) {
-  list-style: disc;
-}
-
-.note-prose :deep(.tiptap ol) {
-  list-style: decimal;
-}
-
-.note-prose :deep(.tiptap ul ul) {
-  list-style: circle;
-}
-
-.note-prose :deep(.tiptap ol ol) {
-  list-style: lower-alpha;
-}
-
-.note-prose :deep(.tiptap ul),
-.note-prose :deep(.tiptap ol) {
-  padding-left: 1.4em;
-}
-
-.note-prose :deep(.tiptap li) {
-  margin-top: 0.2em;
-}
-
-.note-prose :deep(.tiptap li::marker) {
-  color: var(--text-3);
-}
-
-.note-prose :deep(.tiptap ul ul),
-.note-prose :deep(.tiptap ol ol),
-.note-prose :deep(.tiptap ul ol),
-.note-prose :deep(.tiptap ol ul) {
-  margin-top: 0.2em;
-}
-
-.note-prose :deep(.tiptap blockquote) {
-  border-left: 3px solid color-mix(in oklch, var(--accent) 45%, var(--border));
-  padding-left: 12px;
-  color: var(--text-2);
-}
-
-.note-prose :deep(.tiptap code) {
-  font-family: var(--font-mono);
-  font-size: 0.875em;
-  background: color-mix(in oklch, var(--accent) 9%, transparent);
-  color: color-mix(in oklch, var(--accent) 55%, var(--text-1));
-  border-radius: 4px;
-  padding: 1px 5px;
-}
-
-.note-prose :deep(.tiptap pre) {
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  overflow-x: auto;
-}
-
-.note-prose :deep(.tiptap pre code) {
-  background: transparent;
-  color: var(--text-1);
-  padding: 0;
-  font-size: 0.85em;
-  line-height: 1.6;
-}
-
-.note-prose :deep(.tiptap hr) {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 1.2em 0;
-}
-
-.note-prose :deep(.tiptap hr.ProseMirror-selectednode) {
-  border-top-color: var(--accent);
-}
-
-/* Checklists */
-.note-prose :deep(.tiptap ul[data-type='taskList']) {
-  list-style: none;
-  padding-left: 2px;
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] li) {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] li > label) {
-  margin-top: 3.5px;
-  flex-shrink: 0;
-  user-select: none;
-}
-
-/* Round checkbox, Apple Notes style. Press feedback on pointer-down;
-   the check is always rendered and transitions in (interruptible —
-   rapid toggling retargets instead of restarting). */
-.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']) {
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border: 1.5px solid var(--border-strong);
-  border-radius: 999px;
-  background: transparent;
-  cursor: pointer;
-  display: block;
-  position: relative;
-  transition:
-    transform var(--dur-press) ease-out,
-    background-color var(--dur-hover) ease,
-    border-color var(--dur-hover) ease;
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']::after) {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-color: var(--accent-text);
-  clip-path: polygon(22% 48%, 15% 55%, 41% 79%, 85% 30%, 78% 23%, 41% 66%);
-  opacity: 0;
-  transform: scale(0.6);
-  transition:
-    opacity 120ms var(--ease-out),
-    transform 200ms var(--ease-out);
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:active) {
-  transform: scale(0.9);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:hover) {
-    border-color: var(--accent);
-  }
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:checked) {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] input[type='checkbox']:checked::after) {
-  opacity: 1;
-  transform: scale(1);
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] li > div) {
-  transition: color var(--dur-hover) ease;
-}
-
-.note-prose :deep(.tiptap ul[data-type='taskList'] li[data-checked='true'] > div) {
-  color: var(--text-3);
-  text-decoration: line-through;
-  text-decoration-color: var(--text-4);
-}
-
-/* Tables */
-.note-prose :deep(.tiptap table) {
-  border-collapse: collapse;
-  table-layout: fixed;
-  width: 100%;
-  margin: 0.8em 0;
-  overflow: hidden;
-}
-
-.note-prose :deep(.tiptap td),
-.note-prose :deep(.tiptap th) {
-  border: 1px solid var(--border);
-  padding: 5px 10px;
-  vertical-align: top;
-  position: relative;
-}
-
-.note-prose :deep(.tiptap th) {
-  background: var(--bg-surface-2);
-  font-weight: 600;
-  text-align: left;
-}
-
-.note-prose :deep(.tiptap .selectedCell::after) {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: var(--accent-bg);
-  pointer-events: none;
-}
-
-/* Placeholder — only the very first empty paragraph */
-.note-prose :deep(.tiptap p.is-editor-empty:first-child::before) {
-  content: attr(data-placeholder);
-  color: var(--text-4);
-  float: left;
-  height: 0;
-  pointer-events: none;
-}
-
-.note-prose :deep(.tiptap) ::selection {
-  background: var(--accent-bg-hover);
-}
 </style>

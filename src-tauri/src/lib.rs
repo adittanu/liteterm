@@ -91,6 +91,7 @@ pub fn run() {
             commands::notes::reorder_notes,
             commands::notes::set_note_archived,
             commands::notes::delete_note,
+            commands::notes::save_note_image,
             commands::forwards::list_forwards,
             commands::forwards::list_active_forwards,
             commands::forwards::upsert_forward,
