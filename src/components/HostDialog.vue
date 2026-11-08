@@ -11,6 +11,7 @@ import { useUiStore } from '../stores/ui'
 import { api } from '../services/api'
 import { isIpv4 } from '../utils/parseTarget'
 import { jumpCandidates } from '../utils/jumpHosts'
+import { secretStore, sshAgentName } from '../utils/platform'
 import type { AuthMethod } from '../types'
 
 const dialogs = useDialogsStore()
@@ -235,6 +236,11 @@ async function save() {
     }
 
     const saved = await hosts.saveHost(input)
+    // "New credential" is created by the backend inside the host save; the
+    // credentials store never heard of it, so the Keychain page and every
+    // credential dropdown lacked it until restart (and editing this host later
+    // read as "no credential" and detached it)
+    if (credentialChoice.value === 'new') await credentials.load().catch(() => {})
     const shouldConnect = connectAfter.value
     // Use the just-typed secret for the first connection even if "Remember"
     // is off — the backend prefers a passed secret over the keyring
@@ -364,7 +370,7 @@ async function save() {
         </div>
         <div class="cred-detail-row">
           <dt>Password</dt>
-          <dd>{{ selectedCred.has_password ? 'Saved in Credential Manager' : 'Asked on connect' }}</dd>
+          <dd>{{ selectedCred.has_password ? `Saved in ${secretStore}` : 'Asked on connect' }}</dd>
         </div>
       </dl>
 
@@ -442,8 +448,8 @@ async function save() {
         </div>
 
         <p v-if="form.auth_method === 'agent'" class="field-hint agent-hint">
-          Signs in with keys from the running SSH agent — the Windows “OpenSSH Authentication
-          Agent” service, 1Password, Bitwarden or KeePassXC. Nothing secret is stored here.
+          Signs in with keys from the running SSH agent — {{ sshAgentName }}, 1Password,
+          Bitwarden or KeePassXC. Nothing secret is stored here.
         </p>
 
         <template v-if="form.auth_method === 'password'">
@@ -460,7 +466,7 @@ async function save() {
             <span class="field-hint">
               <label class="check">
                 <input v-model="form.save_password" type="checkbox" />
-                Remember password (Windows Credential Manager)
+                Remember password ({{ secretStore }})
               </label>
             </span>
           </div>

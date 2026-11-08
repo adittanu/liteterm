@@ -5,6 +5,7 @@ import PlanetAvatar from '../PlanetAvatar.vue'
 import { useHostsStore } from '../../stores/hosts'
 import { useSessionsStore } from '../../stores/sessions'
 import { matchesQuery } from '../../utils/pageHelpers'
+import { thisComputer } from '../../utils/platform'
 
 // Chooses what one side of the SFTP view shows: this PC or a saved host.
 // Connected hosts lead the list — they open instantly.
@@ -39,7 +40,7 @@ const hostList = computed(() =>
 )
 
 const showLocalRow = computed(
-  () => props.showLocal && matchesQuery(query.value, 'local this pc computer windows'),
+  () => props.showLocal && matchesQuery(query.value, 'local this pc mac computer windows linux'),
 )
 
 const items = computed<Item[]>(() => [
@@ -120,7 +121,7 @@ onMounted(() => {
       >
         <span class="sp-tile"><Laptop :size="15" :stroke-width="1.5" aria-hidden="true" /></span>
         <span class="sp-text">
-          <span class="sp-name">This PC</span>
+          <span class="sp-name">{{ thisComputer }}</span>
           <span class="sp-sub">Local files</span>
         </span>
       </button>

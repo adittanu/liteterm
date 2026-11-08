@@ -185,6 +185,8 @@ export interface ParsedHost {
   password: string | null
   key_pem: string | null
   key_passphrase: string | null
+  /** "agent" | "key" | "password" as a LiteTerm export declares it */
+  auth_method?: string | null
 }
 
 export interface ImportPreview {
@@ -223,4 +225,7 @@ export interface UpdateInfo {
   releaseUrl: string | null
   notes: string | null
   asset: UpdateAsset | null
+  /** The app can download and run the installer itself (Windows only);
+   *  elsewhere an update means opening the release page. */
+  autoInstall: boolean
 }

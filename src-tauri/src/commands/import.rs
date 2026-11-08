@@ -8,8 +8,18 @@ use crate::store::models::HostInput;
 use crate::Db;
 
 fn read_or_empty(path: &std::path::Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+    // Notepad saves UTF-8 with a BOM; left in, it glues itself to the first
+    // `Host` line and that whole host silently disappears from the import
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim_start_matches('\u{feff}')
+        .to_owned()
 }
+
+/// The user an import assumes when the source names none. apply_parsed_hosts
+/// stores it, so the duplicate check must compare against the same value —
+/// comparing against "" made every host without a `User` line look new.
+const DEFAULT_IMPORT_USER: &str = "root";
 
 fn dedup_against_db(conn: &Connection, mut hosts: Vec<ParsedHost>) -> Vec<ParsedHost> {
     if let Ok(existing) = db::list_hosts(conn) {
@@ -17,7 +27,8 @@ fn dedup_against_db(conn: &Connection, mut hosts: Vec<ParsedHost>) -> Vec<Parsed
             h.exists = existing.iter().any(|e| {
                 e.address.eq_ignore_ascii_case(&h.hostname)
                     && e.port == h.port
-                    && e.username.eq_ignore_ascii_case(h.user.as_deref().unwrap_or(""))
+                    && e.username
+                        .eq_ignore_ascii_case(h.user.as_deref().unwrap_or(DEFAULT_IMPORT_USER))
             });
         }
     }
@@ -27,16 +38,31 @@ fn dedup_against_db(conn: &Connection, mut hosts: Vec<ParsedHost>) -> Vec<Parsed
 /// Directory where private keys embedded in import files (Termius exports
 /// inline PEM) are materialized.
 fn imported_keys_dir() -> std::path::PathBuf {
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    std::path::Path::new(&home).join(".ssh").join("liteterm-keys")
+    crate::paths::home_dir().unwrap_or_default().join(".ssh").join("liteterm-keys")
+}
+
+/// Write a private key that only its owner can read. On Unix a plain
+/// `fs::write` would leave it world-readable under the default umask.
+fn write_private_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(contents.as_bytes())
 }
 
 fn sanitize_file_stem(name: &str) -> String {
+    // Cut by characters, not bytes: `String::truncate(48)` panics when byte 48
+    // falls inside a multibyte letter, and is_alphanumeric keeps those
     let mut out: String = name
         .chars()
+        .take(48)
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
         .collect();
-    out.truncate(48);
     if out.is_empty() {
         out.push_str("key");
     }
@@ -58,12 +84,24 @@ fn materialize_key(host: &ParsedHost) -> Result<String, String> {
     for n in 2..100 {
         let candidate = dir.join(format!("{stem}-{n}.pem"));
         if !candidate.exists() {
-            std::fs::write(&candidate, host.key_pem.as_deref().unwrap_or_default())
+            write_private_file(&candidate, host.key_pem.as_deref().unwrap_or_default())
                 .map_err(|e| format!("cannot write key: {e}"))?;
             return Ok(candidate.to_string_lossy().into_owned());
         }
     }
     Err("too many duplicate key files".into())
+}
+
+/// A key beats everything; an export that says "agent" keeps that (there is no
+/// secret to carry over); anything else falls back to a password.
+fn import_auth_method(has_key: bool, declared: Option<&str>) -> &'static str {
+    if has_key {
+        "key"
+    } else if declared == Some("agent") {
+        "agent"
+    } else {
+        "password"
+    }
 }
 
 /// Shared apply: create groups, then hosts. Handles inline keys and
@@ -114,8 +152,8 @@ fn apply_parsed_hosts(
             label: h.alias.trim().to_string(),
             address: h.hostname.trim().to_string(),
             port: h.port,
-            username: h.user.clone().unwrap_or_else(|| "root".to_string()),
-            auth_method: if key_path.is_some() { "key" } else { "password" }.to_string(),
+            username: h.user.clone().unwrap_or_else(|| DEFAULT_IMPORT_USER.to_string()),
+            auth_method: import_auth_method(key_path.is_some(), h.auth_method.as_deref()).to_string(),
             password,
             save_password: Some(save_passwords && h.password.as_deref().is_some_and(|p| !p.is_empty())),
             key_path,
@@ -175,8 +213,28 @@ pub fn import_ssh_apply(
     if import_known_hosts {
         let known = read_or_empty(&import::known_hosts_path());
         for entry in import::parse_known_hosts(&known) {
-            if db::remember_host_key(&conn, &entry.host_tag, &entry.key_type, &entry.public_key, "")
-                .is_ok()
+            // A key the user already verified in LiteTerm stays: silently
+            // replacing it with whatever the file holds would defeat the
+            // "HOST KEY CHANGED" check for that host
+            let trusted_already = db::get_known_hosts(&conn, &entry.host_tag)
+                .map(|keys| keys.iter().any(|(key_type, _)| key_type == &entry.key_type))
+                .unwrap_or(false);
+            if trusted_already {
+                continue;
+            }
+            // known_hosts carries no fingerprint; derive it from the key so the
+            // Known Hosts page does not show "No fingerprint"
+            let fingerprint = russh::keys::parse_public_key_base64(&entry.public_key)
+                .map(|key| key.fingerprint())
+                .unwrap_or_default();
+            if db::remember_host_key(
+                &conn,
+                &entry.host_tag,
+                &entry.key_type,
+                &entry.public_key,
+                &fingerprint,
+            )
+            .is_ok()
             {
                 known_imported += 1;
             }
@@ -319,4 +377,62 @@ pub fn export_hosts(
         group_count,
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_stem_is_never_cut_inside_a_multibyte_letter() {
+        // 47 ASCII bytes, then 'é' (2 bytes): byte 48 is mid-letter, which made
+        // the old byte-based truncate(48) panic
+        let alias = format!("{}é-and-more", "a".repeat(47));
+        let stem = sanitize_file_stem(&alias);
+        assert_eq!(stem.chars().count(), 48);
+        assert!(stem.ends_with('é'));
+
+        assert_eq!(sanitize_file_stem("Серверы-продакшн"), "Серверы-продакшн");
+        assert_eq!(sanitize_file_stem("web 01/prod"), "web-01-prod");
+        assert_eq!(sanitize_file_stem(""), "key");
+    }
+
+    #[test]
+    fn auth_method_follows_key_then_declared_agent_then_password() {
+        assert_eq!(import_auth_method(true, Some("agent")), "key");
+        assert_eq!(import_auth_method(false, Some("agent")), "agent");
+        assert_eq!(import_auth_method(false, Some("password")), "password");
+        assert_eq!(import_auth_method(false, None), "password");
+    }
+
+    #[test]
+    fn a_host_imported_without_a_user_is_recognised_afterwards() {
+        let dir = std::env::temp_dir().join(format!("liteterm-import-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let conn = db::open_db(&dir).unwrap();
+        // password_saved stays 0, so list_hosts never reads the real keyring
+        conn.execute(
+            "INSERT INTO hosts (label, address, port, username, auth_method) \
+             VALUES ('nas', '192.168.1.10', 22, 'root', 'password')",
+            [],
+        )
+        .unwrap();
+
+        // No `User` line: apply stores it as root, so it must match that row
+        let parsed = ParsedHost {
+            alias: "nas".into(),
+            hostname: "192.168.1.10".into(),
+            ..Default::default()
+        };
+        assert!(dedup_against_db(&conn, vec![parsed])[0].exists);
+
+        let other = ParsedHost {
+            hostname: "192.168.1.11".into(),
+            ..Default::default()
+        };
+        assert!(!dedup_against_db(&conn, vec![other])[0].exists);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

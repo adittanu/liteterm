@@ -11,6 +11,7 @@ import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
 import { copyText, matchesQuery } from '../utils/pageHelpers'
 import { waitForConnection } from '../utils/sessionWait'
+import { thisComputerLower } from '../utils/platform'
 import type { PortForward } from '../types'
 
 const forwards = useForwardsStore()
@@ -79,8 +80,9 @@ async function toggle(f: PortForward) {
     }
     if (hostStatus(f.host_id) !== 'connected') {
       setPending(f.id, 'connecting')
+      const failuresBefore = sessions.connectFailures[f.host_id] ?? 0
       await sessions.connect(f.host_id, undefined, { silent: true })
-      if ((await waitForConnection(f.host_id)) === null) {
+      if ((await waitForConnection(f.host_id, undefined, failuresBefore)) === null) {
         ui.toast('error', `Couldn’t connect to ${hostLabel(f.host_id)} — the tunnel was not started`)
         return
       }
@@ -168,7 +170,7 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
           Port Forwarding
           <span v-if="forwards.forwards.length" class="page-count">{{ forwards.forwards.length }}</span>
         </h2>
-        <p class="page-sub">Reach a service behind an SSH host as if it ran on this PC.</p>
+        <p class="page-sub">Reach a service behind an SSH host as if it ran on {{ thisComputerLower }}.</p>
       </div>
       <div v-if="hosts.hosts.length" class="page-actions">
         <button class="btn btn-primary" @click="openNew">
@@ -203,7 +205,7 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
         <p class="empty-title">No forwards yet</p>
         <p class="empty-sub">
           For example, open a database that only listens on the server at
-          <code class="mono">localhost:5432</code> on this PC.
+          <code class="mono">localhost:5432</code> on {{ thisComputerLower }}.
         </p>
         <button class="btn btn-primary" @click="openNew">
           <Plus :size="14" :stroke-width="2" aria-hidden="true" />

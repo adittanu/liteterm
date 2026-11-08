@@ -6,6 +6,7 @@ import { api } from '../../services/api'
 import { errorText, useSessionsStore } from '../../stores/sessions'
 import { useHostsStore } from '../../stores/hosts'
 import { useUiStore } from '../../stores/ui'
+import { isWindows, thisComputer } from '../../utils/platform'
 import { waitForConnection } from '../../utils/sessionWait'
 import type { FileEntry } from '../../types'
 import { baseName, joinPath, samePath, type PaneKind, type SortKey } from './fsUtils'
@@ -68,7 +69,7 @@ export function isReady(p: Pane): boolean {
 }
 
 export function paneLabel(p: Pane): string {
-  return p.kind === 'local' ? 'This PC' : p.hostLabel || 'Remote'
+  return p.kind === 'local' ? thisComputer : p.hostLabel || 'Remote'
 }
 
 // ---- local roots (drives + Home/Desktop/…) loaded once per app run ----
@@ -217,9 +218,15 @@ export async function bindLocal(p: Pane, path?: string) {
   p.entries = []
   p.path = ''
   const start =
-    path ?? remembered(p) ?? localRoots.places.find((x) => x.label === 'Home')?.path ?? localRoots.drives[0] ?? 'C:\\'
+    path ??
+    remembered(p) ??
+    localRoots.places.find((x) => x.label === 'Home')?.path ??
+    localRoots.drives[0] ??
+    (isWindows ? 'C:\\' : '/')
   const ok = await navigate(p, start, { push: false })
-  if (!ok && start !== localRoots.drives[0] && localRoots.drives[0]) {
+  // navigate() also returns false when the pane was re-bound while it ran
+  // (then p is no longer local and a drive path means nothing to it)
+  if (!ok && p.kind === 'local' && start !== localRoots.drives[0] && localRoots.drives[0]) {
     await navigate(p, localRoots.drives[0], { push: false })
   }
 }
@@ -244,8 +251,11 @@ export async function bindHost(p: Pane, hostId: number) {
   clearSelection(p)
 
   const live = sessions.tabs.find((t) => t.hostId === hostId && t.kind === 'ssh' && t.status === 'connected')
+  // A connect that fails before any session exists makes no tab; the failure
+  // counter lets the wait end at once instead of after 90 s
+  const failuresBefore = sessions.connectFailures[hostId] ?? 0
   if (!live) void sessions.connect(hostId, undefined, { silent: true })
-  const sessionId = live?.id ?? (await waitForConnection(hostId))
+  const sessionId = live?.id ?? (await waitForConnection(hostId, undefined, failuresBefore))
   if (token !== p.loadToken) return // user picked something else meanwhile
   if (sessionId === null) {
     p.connecting = false
@@ -265,7 +275,12 @@ export async function bindHost(p: Pane, hostId: number) {
   p.connecting = false
   const start = remembered(p) ?? home
   const ok = await navigate(p, start, { push: false })
-  if (!ok && start !== home && p.sessionId !== null) await navigate(p, home, { push: false })
+  // navigate() also returns false when the pane was re-bound while it ran —
+  // that must not list *this* host's home folder on whatever the pane shows now
+  // (it would also bump loadToken and leave the new bind stuck on "Connecting…")
+  if (!ok && start !== home && p.hostId === hostId && p.sessionId === sessionId) {
+    await navigate(p, home, { push: false })
+  }
 }
 
 /** Back to the host chooser. */

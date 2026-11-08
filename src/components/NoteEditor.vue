@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from 'vue'
+import { modKey } from '../utils/platform'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import type { Editor } from '@tiptap/core'
 import {
@@ -124,14 +125,20 @@ function insertTable() {
   run((c) => c?.insertTable({ rows: 2, cols: 2, withHeaderRow: true }).run())
 }
 
-// Swap content when a different note opens — the editor instance
-// itself lives as long as the pane does.
+// Swap content if a parent ever reuses this editor for another note (NotesView
+// keys it by note id, so today each note gets a fresh one). The swap stays out
+// of the undo history: otherwise Ctrl+Z reverts to the previous note's text
+// and the autosave writes it over this note.
 watch(
   () => props.note.id,
   (id) => {
     const note = notes.notes.find((n) => n.id === id)
     title.value = note?.title ?? ''
-    if (editor.value) editor.value.commands.setContent(note?.body ?? '', false)
+    editor.value
+      ?.chain()
+      .setMeta('addToHistory', false)
+      .setContent(note?.body ?? '', false)
+      .run()
   },
 )
 
@@ -253,7 +260,7 @@ defineExpose({
           <button
             class="btn-icon"
             :class="{ on: active.bold }"
-            title="Bold (Ctrl+B)"
+            :title="`Bold (${modKey}B)`"
             aria-label="Bold"
             @click="run((c) => c?.toggleBold().run())"
           >
@@ -262,7 +269,7 @@ defineExpose({
           <button
             class="btn-icon"
             :class="{ on: active.italic }"
-            title="Italic (Ctrl+I)"
+            :title="`Italic (${modKey}I)`"
             aria-label="Italic"
             @click="run((c) => c?.toggleItalic().run())"
           >
@@ -271,7 +278,7 @@ defineExpose({
           <button
             class="btn-icon"
             :class="{ on: active.code || active.codeBlock }"
-            title="Code (Ctrl+E)"
+            :title="`Code (${modKey}E)`"
             aria-label="Code"
             @click="run((c) => c?.toggleCode().run())"
           >

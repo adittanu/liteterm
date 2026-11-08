@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { hasMod, thisComputerLower } from '../utils/platform'
 import {
   ClipboardCopy,
   Copy,
@@ -32,7 +33,7 @@ import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
 import { fuzzy, highlight } from '../utils/fuzzy'
 import { copyText, plural, relativeAge } from '../utils/pageHelpers'
-import { comboFor } from '../services/shortcuts'
+import { comboFor, comboText } from '../services/shortcuts'
 import type { Host, HostGroup } from '../types'
 
 const hosts = useHostsStore()
@@ -378,12 +379,12 @@ function onSearchKey(e: KeyboardEvent) {
   }
 }
 
-// "/" or Ctrl+F jumps to search from anywhere on the page
+// "/" or Ctrl+F (Cmd+F on a Mac) jumps to search from anywhere on the page
 function onGlobalKey(e: KeyboardEvent) {
   if (ui.activeView !== 'hosts') return
   const t = e.target as HTMLElement | null
   const typing = t?.closest('input, textarea, [contenteditable="true"]')
-  if ((e.key === '/' && !typing) || (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'f')) {
+  if ((e.key === '/' && !typing) || (hasMod(e) && !e.shiftKey && e.key.toLowerCase() === 'f')) {
     if (document.querySelector('[role="dialog"]')) return
     e.preventDefault()
     searchEl.value?.focus()
@@ -422,7 +423,7 @@ function pickGroup(g: GroupFilter) {
           </h2>
         </div>
         <div class="hv-actions">
-          <button class="btn btn-secondary" :title="`Open a terminal on this PC (${comboFor('newLocal', ui.settings)})`" @click="sessions.connectLocal()">
+          <button class="btn btn-secondary" :title="`Open a terminal on ${thisComputerLower} (${comboText(comboFor('newLocal', ui.settings))})`" @click="sessions.connectLocal()">
             <SquareTerminal :size="14" :stroke-width="1.5" aria-hidden="true" />
             Local terminal
           </button>

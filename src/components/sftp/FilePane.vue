@@ -36,6 +36,7 @@ import { useSessionsStore } from '../../stores/sessions'
 import { useDialogsStore } from '../../stores/dialogs'
 import { useUiStore } from '../../stores/ui'
 import { copyText, plural } from '../../utils/pageHelpers'
+import { isWindows, modShiftKey, thisComputer } from '../../utils/platform'
 import {
   baseName,
   crumbsFor,
@@ -44,6 +45,7 @@ import {
   fmtModified,
   fmtPerms,
   isHidden,
+  joinPath,
   octalPerms,
   parentOf,
   rangeNames,
@@ -156,7 +158,7 @@ const send = computed(() => {
   else if (!isReady(o)) reason = 'Open a location on the other side first'
   else if (p.kind === 'local' && o.kind === 'local') reason = 'Copying between local folders isn’t supported'
   if (p.kind === 'local' && o.kind === 'ssh') label = `Upload to ${o.hostLabel}`
-  else if (p.kind === 'ssh' && o.kind === 'local') label = 'Download to This PC'
+  else if (p.kind === 'ssh' && o.kind === 'local') label = `Download to ${thisComputer}`
   else if (p.kind === 'ssh' && o.kind === 'ssh')
     label = o.sessionId === p.sessionId ? `Move to ${baseName(o.path) || '/'}` : `Copy to ${o.hostLabel}`
   return { files, folders, label, reason }
@@ -517,7 +519,7 @@ function rowMenu(e: MouseEvent, entry: FileEntry) {
     icon: ClipboardCopy,
     action: () =>
       void copyText(
-        sel.map((x) => (p.kind === 'ssh' ? `${p.path.replace(/\/$/, '')}/${x.name}` : `${p.path.replace(/\\$/, '')}\\${x.name}`)).join('\n'),
+        sel.map((x) => joinPath(p.kind, p.path, x.name)).join('\n'),
         single ? 'Path copied' : 'Paths copied',
       ),
   })
@@ -669,7 +671,7 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
           :crumbs="crumbsFor(pane.kind, pane.path)"
           :list-fn="ready ? (dir: string) => listDir(pane, dir) : null"
           :drives="pane.kind === 'local' ? localRoots.drives : []"
-          :sep="pane.kind === 'local' ? '\\' : '/'"
+          :sep="pane.kind === 'local' && isWindows ? '\\' : '/'"
           :placeholder="pane.kind === 'local' ? 'Type a path…' : 'Type a remote path…'"
           @navigate="(path: string) => navigate(pane, path)"
         />
@@ -677,7 +679,7 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
         <button class="tool" aria-label="Refresh" title="Refresh (F5)" @click="refresh(pane)">
           <RefreshCw :size="14" :stroke-width="1.6" :class="{ spinning: pane.loading }" aria-hidden="true" />
         </button>
-        <button class="tool" aria-label="New folder" title="New folder (Ctrl+Shift+N)" @click="startCreate">
+        <button class="tool" aria-label="New folder" :title="`New folder (${modShiftKey}N)`" @click="startCreate">
           <FolderPlus :size="15" :stroke-width="1.6" aria-hidden="true" />
         </button>
         <button v-if="pane.kind === 'ssh'" class="tool" aria-label="Upload files" title="Upload files…" @click="pickUpload">

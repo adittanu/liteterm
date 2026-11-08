@@ -24,7 +24,9 @@ const tooltip = computed(() => {
     case 'checking':
       return 'Checking for updates…'
     case 'available':
-      return `Download LiteTerm v${latest} (installed v${current})`
+      return updater.info?.autoInstall === false
+        ? `Open the download page for LiteTerm v${latest} (installed v${current})`
+        : `Download LiteTerm v${latest} (installed v${current})`
     case 'downloading':
       return `Downloading v${latest} — ${fmtMB(updater.downloaded)} of ${fmtMB(updater.total)} MB`
     case 'ready':

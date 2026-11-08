@@ -1,6 +1,10 @@
 //! Self-update from GitHub Releases: check the latest release, stream the
 //! NSIS installer to a temp dir with progress events, then run it silently
 //! and bring the app back up. Only the setup.exe asset is ever executed.
+//!
+//! That whole path is Windows-only. On macOS and Linux an update is a
+//! download the user installs themselves, so the app only says one exists
+//! (`UpdateInfo::auto_install` is false) and opens the release page.
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -32,6 +36,8 @@ pub struct UpdateInfo {
     pub release_url: Option<String>,
     pub notes: Option<String>,
     pub asset: Option<UpdateAsset>,
+    /// True when the app can download and run the installer itself (Windows).
+    pub auto_install: bool,
 }
 
 #[derive(Deserialize)]
@@ -96,19 +102,33 @@ fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-/// Pick the Windows NSIS setup asset: prefer the x64 build, then any setup.
-fn pick_asset(assets: &[GhAsset]) -> Option<UpdateAsset> {
-    let chosen = assets
-        .iter()
-        .find(|a| a.name.to_lowercase().ends_with("x64-setup.exe"))
-        .or_else(|| assets.iter().find(|a| a.name.to_lowercase().ends_with("-setup.exe")))
-        .or_else(|| assets.iter().find(|a| a.name.to_lowercase().ends_with(".exe")))?;
+/// The release asset meant for `os` (an `std::env::consts::OS` value).
+/// Windows: the NSIS setup, preferring the x64 build. macOS: the dmg. Linux:
+/// the AppImage, then deb, then rpm. A release that lacks the asset for this
+/// OS (its build failed, or has not finished) offers no update here at all.
+fn pick_asset_for(os: &str, assets: &[GhAsset]) -> Option<UpdateAsset> {
+    let find = |suffix: &str| assets.iter().find(|a| a.name.to_lowercase().ends_with(suffix));
+    let chosen = match os {
+        "windows" => find("x64-setup.exe")
+            .or_else(|| find("-setup.exe"))
+            .or_else(|| find(".exe")),
+        "macos" => find(".dmg"),
+        "linux" => find(".appimage").or_else(|| find(".deb")).or_else(|| find(".rpm")),
+        _ => None,
+    }?;
     Some(UpdateAsset {
         name: chosen.name.clone(),
         size: chosen.size,
         url: chosen.browser_download_url.clone(),
     })
 }
+
+fn pick_asset(assets: &[GhAsset]) -> Option<UpdateAsset> {
+    pick_asset_for(std::env::consts::OS, assets)
+}
+
+/// The in-app download-and-run flow exists on Windows only.
+const AUTO_INSTALL: bool = cfg!(windows);
 
 #[tauri::command]
 pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
@@ -132,6 +152,7 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
             release_url: None,
             notes: None,
             asset: None,
+            auto_install: AUTO_INSTALL,
         });
     }
     if !resp.status().is_success() {
@@ -153,6 +174,7 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
         release_url: release.html_url,
         notes: release.body,
         asset,
+        auto_install: AUTO_INSTALL,
     })
 }
 
@@ -303,4 +325,113 @@ pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> 
     tokio::time::sleep(Duration::from_millis(250)).await;
     app.exit(0);
     Ok(())
+}
+
+/// Only this repo's own GitHub pages: an address from the frontend must not
+/// turn this into "open anything".
+fn is_release_url(url: &str) -> bool {
+    let prefix = format!("https://github.com/{REPO}/");
+    url.starts_with(&prefix) && !url.chars().any(char::is_whitespace)
+}
+
+/// Outside Windows an update is a download: open the release page in the
+/// default browser and let the user take it from there.
+#[tauri::command]
+pub fn open_release_page(url: String) -> Result<(), String> {
+    if !is_release_url(&url) {
+        return Err("Refusing to open an unexpected address".into());
+    }
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(windows)]
+    let program = "explorer.exe";
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let program = "xdg-open";
+
+    let mut child = std::process::Command::new(program)
+        .arg(&url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Could not open the browser ({program}): {e}"))?;
+    // Reap the launcher once it exits instead of leaving a zombie behind
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assets(names: &[&str]) -> Vec<GhAsset> {
+        names
+            .iter()
+            .map(|n| GhAsset {
+                name: (*n).to_string(),
+                size: 1,
+                browser_download_url: format!("https://example.invalid/{n}"),
+            })
+            .collect()
+    }
+
+    const ALL: &[&str] = &[
+        "LiteTerm_1.9.0_universal.dmg",
+        "LiteTerm_1.9.0_amd64.deb",
+        "LiteTerm_1.9.0_amd64.AppImage",
+        "LiteTerm-1.9.0-1.x86_64.rpm",
+        "LiteTerm_1.9.0_x64-setup.exe",
+    ];
+
+    fn pick(os: &str, names: &[&str]) -> Option<String> {
+        pick_asset_for(os, &assets(names)).map(|a| a.name)
+    }
+
+    #[test]
+    fn each_os_gets_its_own_installer_from_a_shared_release() {
+        assert_eq!(pick("windows", ALL).as_deref(), Some("LiteTerm_1.9.0_x64-setup.exe"));
+        assert_eq!(pick("macos", ALL).as_deref(), Some("LiteTerm_1.9.0_universal.dmg"));
+        assert_eq!(pick("linux", ALL).as_deref(), Some("LiteTerm_1.9.0_amd64.AppImage"));
+    }
+
+    #[test]
+    fn linux_falls_back_from_appimage_to_deb_to_rpm() {
+        let no_appimage = &ALL[..2];
+        assert_eq!(pick("linux", no_appimage).as_deref(), Some("LiteTerm_1.9.0_amd64.deb"));
+        assert_eq!(pick("linux", &["LiteTerm-1.9.0-1.x86_64.rpm"]).as_deref(), Some("LiteTerm-1.9.0-1.x86_64.rpm"));
+    }
+
+    #[test]
+    fn a_release_without_a_build_for_this_os_offers_nothing() {
+        // The macOS build failed (or is still running): Mac users see no update
+        let windows_only = &["LiteTerm_1.9.0_x64-setup.exe"];
+        assert_eq!(pick("macos", windows_only), None);
+        assert_eq!(pick("linux", windows_only), None);
+        assert_eq!(pick("windows", &["LiteTerm_1.9.0_universal.dmg"]), None);
+        assert_eq!(pick("freebsd", ALL), None);
+    }
+
+    #[test]
+    fn windows_still_prefers_the_x64_setup() {
+        assert_eq!(
+            pick("windows", &["a-setup.exe", "LiteTerm_x64-setup.exe", "b.exe"]).as_deref(),
+            Some("LiteTerm_x64-setup.exe")
+        );
+        assert_eq!(pick("windows", &["a-setup.exe", "b.exe"]).as_deref(), Some("a-setup.exe"));
+        assert_eq!(pick("windows", &["b.exe"]).as_deref(), Some("b.exe"));
+    }
+
+    #[test]
+    fn only_this_repos_release_pages_may_be_opened() {
+        assert!(is_release_url("https://github.com/adittanu/liteterm/releases/tag/v1.9.0"));
+        assert!(!is_release_url("https://github.com/adittanu/liteterm-fork/releases"));
+        assert!(!is_release_url("https://github.com/someone/else/releases"));
+        assert!(!is_release_url("https://evil.example/https://github.com/adittanu/liteterm/"));
+        assert!(!is_release_url("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_release_url("-oProxyCommand=x"));
+        assert!(!is_release_url("https://github.com/adittanu/liteterm/ x"));
+        assert!(!is_release_url(""));
+    }
 }

@@ -17,7 +17,28 @@ use crate::store::{db, models};
 
 const KEEPALIVE_SECS: u64 = 30;
 const CONNECT_TIMEOUT_SECS: u64 = 15;
+/// How long a dial may sit on the "verify this fingerprint" prompt. The prompt
+/// is part of the dial, so the plain 15 s limit turned a slow reader's first
+/// connect into a bogus "timed out" error. A person gets minutes; a dead
+/// network or a port that never speaks SSH still gets 15 s, because the
+/// longer limit only starts once the prompt actually appears.
+const HOST_KEY_PROMPT_TIMEOUT_SECS: u64 = 300;
 const TRANSFER_CHUNK: usize = 32 * 1024;
+
+/// An `Instant` that is `age` in the past — or just now, if the clock has not
+/// run that long yet. (`Instant::now() - age` panics when the machine booted
+/// less than `age` ago, and the release build aborts on a panic.)
+fn instant_ago(age: Duration) -> Instant {
+    Instant::now().checked_sub(age).unwrap_or_else(Instant::now)
+}
+
+/// A release build pushes PTY bytes much faster than `tauri dev`. One IPC
+/// event per SSH packet starves the WebView frame loop; xterm then drops
+/// its paint and a full-screen TUI (opencode, and the same path for other
+/// chatty tools) stays blank or half-drawn. Debug builds emit slowly
+/// enough that the frame still lands. Coalesce to one event per flush.
+const STDOUT_FLUSH: Duration = Duration::from_millis(8);
+const STDOUT_FLUSH_BYTES: usize = 32 * 1024;
 
 /// Answer keyboard-interactive prompts with the password (up to 3 rounds).
 async fn authenticate_keyboard_interactive(
@@ -61,6 +82,10 @@ pub struct AppState {
     pub app: AppHandle,
     pub db_path: PathBuf,
     pub next_session_id: AtomicU32,
+    /// Transfer ids are unique across sessions: the progress event carries
+    /// only the id, so per-session counters made two servers' transfers
+    /// overwrite each other's rows in the UI
+    pub next_transfer_id: AtomicU32,
     pub sessions: Mutex<HashMap<u32, Arc<SshSession>>>,
     pub local_sessions: Mutex<HashMap<u32, Arc<crate::local::LocalSession>>>,
     pub pending_hostkey: Mutex<HashMap<u32, mpsc::Sender<HostKeyDecision>>>,
@@ -75,6 +100,8 @@ pub struct HostKeyDecision {
 pub struct ForwardHandle {
     pub cancel: CancellationToken,
     pub listener: tokio::task::JoinHandle<()>,
+    /// The SSH session this tunnel rides on; it ends when that session does
+    pub session_id: u32,
 }
 
 type Shared<T> = Arc<tokio::sync::Mutex<T>>;
@@ -89,7 +116,8 @@ pub struct SshSession {
     pub address: String,
     pub handle: Shared<Option<russh::client::Handle<ClientHandler>>>,
     pub writer: Shared<Option<ChannelWriter>>,
-    pub resize_tx: Shared<Option<mpsc::Sender<(u32, u32)>>>,
+    /// cols, rows, pixel width, pixel height
+    pub resize_tx: Shared<Option<mpsc::Sender<(u32, u32, u32, u32)>>>,
     pub sftp: Arc<tokio::sync::Mutex<Option<russh_sftp::client::SftpSession>>>,
     /// The key-mismatch path reports its own detailed error; this flag
     /// tells run_session not to stack a generic second one
@@ -100,7 +128,6 @@ pub struct SshSession {
     pub log_id: Mutex<Option<i64>>,
     pub closed: CancellationToken,
     pub transfers: Mutex<HashMap<u32, CancellationToken>>,
-    pub next_transfer_id: AtomicU32,
     /// Skips the backoff wait while auto-reconnecting ("Reconnect now")
     pub reconnect_now: tokio::sync::Notify,
 }
@@ -229,6 +256,52 @@ fn parse_os(output: &str) -> String {
     "unknown".into()
 }
 
+fn emit_pending_stdout(app: &AppHandle, session_id: u32, pending: &mut Vec<u8>) {
+    if pending.is_empty() {
+        return;
+    }
+    // A dropped chunk corrupts the screen, and the release build has no
+    // console to say so — leave a (throttled) line in the app log instead
+    if let Err(e) = app.emit(
+        "ssh:stdout",
+        StdoutEvent {
+            session_id,
+            data: B64.encode(&pending[..]),
+        },
+    ) {
+        crate::applog::write_throttled(
+            "ssh stdout emit",
+            &format!("could not deliver terminal output of session {session_id}: {e}"),
+        );
+    }
+    pending.clear();
+}
+
+/// Append PTY bytes and flush immediately once the buffer is a full frame.
+/// The caller arms `flush_at` so a short interactive chunk is not held
+/// until the next packet.
+fn queue_stdout(
+    app: &AppHandle,
+    session_id: u32,
+    pending: &mut Vec<u8>,
+    flush_at: &mut Option<tokio::time::Instant>,
+    data: &[u8],
+) {
+    if data.is_empty() {
+        return;
+    }
+    let was_empty = pending.is_empty();
+    pending.extend_from_slice(data);
+    if pending.len() >= STDOUT_FLUSH_BYTES
+        || flush_at.is_some_and(|at| tokio::time::Instant::now() >= at)
+    {
+        emit_pending_stdout(app, session_id, pending);
+        *flush_at = None;
+    } else if was_empty {
+        *flush_at = Some(tokio::time::Instant::now() + STDOUT_FLUSH);
+    }
+}
+
 pub fn emit_status(app: &AppHandle, session_id: u32, status: &str, error: Option<String>) {
     let _ = app.emit(
         "session:status",
@@ -285,6 +358,9 @@ pub struct ClientHandler {
     /// run_session can skip the generic follow-up error
     pub key_mismatch: Arc<std::sync::atomic::AtomicBool>,
     pub state: Arc<AppState>,
+    /// Signalled when the handshake starts waiting for the user to verify a
+    /// host key, so the dial's deadline can move out to a human's pace
+    pub prompting: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait::async_trait]
@@ -360,6 +436,8 @@ impl russh::client::Handler for ClientHandler {
                 address: self.host_tag.clone(),
             },
         );
+        // The dial is about to wait on a person, not on the network
+        self.prompting.notify_one();
 
         match rx.recv().await {
             Some(decision) => {
@@ -473,7 +551,6 @@ pub fn create_session(
         log_id: Mutex::new(None),
         closed: CancellationToken::new(),
         transfers: Mutex::new(HashMap::new()),
-        next_transfer_id: AtomicU32::new(1),
         reconnect_now: tokio::sync::Notify::new(),
     };
     state.sessions.lock().unwrap().insert(id, Arc::new(session));
@@ -592,6 +669,7 @@ pub async fn run_session(state: Arc<AppState>, session: Arc<SshSession>, params:
         emit_reconnecting(&state.app, session.id, attempt, Duration::ZERO);
     }
 
+    stop_forwards_for_session(&state, session.id);
     remove_session(&state, session.id);
 }
 
@@ -688,6 +766,29 @@ async fn connect_agent() -> Result<russh::keys::agent::client::AgentClient<tokio
         .map_err(|e| format!("No SSH agent (SSH_AUTH_SOCK): {e}"))
 }
 
+/// Drive `work` to completion, giving up with `None` after `base` — unless
+/// `extend` is signalled first, which moves the deadline to `extended` from
+/// that moment. (`base` is the network's allowance, `extended` a person's.)
+async fn with_extendable_deadline<F: std::future::Future>(
+    work: F,
+    base: Duration,
+    extended: Duration,
+    extend: &tokio::sync::Notify,
+) -> Option<F::Output> {
+    tokio::pin!(work);
+    let deadline = tokio::time::sleep(base);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            output = &mut work => return Some(output),
+            _ = &mut deadline => return None,
+            _ = extend.notified() => {
+                deadline.as_mut().reset(tokio::time::Instant::now() + extended);
+            }
+        }
+    }
+}
+
 /// Connect and authenticate one hop — over TCP, or through `via` (the
 /// previous bastion) as a direct-tcpip tunnel. Each hop verifies its own
 /// host key under its own `addr:port` tag.
@@ -704,12 +805,14 @@ async fn open_hop(
         .and_then(|conn| db::get_known_hosts(&conn, &host_tag).ok())
         .unwrap_or_default();
 
+    let prompting = Arc::new(tokio::sync::Notify::new());
     let handler = ClientHandler {
         host_tag,
         session_id: session.id,
         known_keys,
         key_mismatch: session.key_mismatch.clone(),
         state: state.clone(),
+        prompting: prompting.clone(),
     };
 
     let dial = async {
@@ -724,9 +827,20 @@ async fn open_hop(
         }
     };
 
-    let mut handle = tokio::time::timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), dial)
-        .await
-        .map_err(|_| {
+    // A dead network (or a port that never says "SSH-2.0") gets CONNECT_TIMEOUT_SECS.
+    // The host-key prompt is part of the dial, though: once it appears the
+    // deadline moves out to HOST_KEY_PROMPT_TIMEOUT_SECS, so the time spent
+    // reading a fingerprint is not charged to the connection.
+    let dialed = with_extendable_deadline(
+        dial,
+        Duration::from_secs(CONNECT_TIMEOUT_SECS),
+        Duration::from_secs(HOST_KEY_PROMPT_TIMEOUT_SECS),
+        &prompting,
+    )
+    .await;
+
+    let mut handle = dialed
+        .ok_or_else(|| {
             ConnectError::transient(format!(
                 "Connection timed out after {CONNECT_TIMEOUT_SECS}s — check the address and port"
             ))
@@ -864,7 +978,7 @@ async fn stream_session(
         .map(|s| s.auto_sudo_password)
         .unwrap_or(true);
 
-    let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(8);
+    let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32, u32, u32)>(8);
     *session.resize_tx.lock().await = Some(resize_tx);
 
     // Closed while the dial was in flight (tab closed, or "Stop" during a
@@ -903,7 +1017,10 @@ async fn stream_session(
     // ---- pump output; service resizes; end on close or transport loss ----
     let mut output_tail = String::new();
     let mut sudo_fills: u32 = 0;
-    let mut last_sudo_fill = Instant::now() - Duration::from_secs(10);
+    let mut last_sudo_fill = instant_ago(Duration::from_secs(10));
+    // Held across packets so a TUI frame arrives as one IPC message.
+    let mut pending_out: Vec<u8> = Vec::new();
+    let mut flush_at: Option<tokio::time::Instant> = None;
 
     // russh 0.45 never forwards CHANNEL_CLOSE to the channel — a close just
     // ends wait() with None, same as a dead transport. An exit status or
@@ -911,8 +1028,19 @@ async fn stream_session(
     let mut shell_exited = false;
 
     let end = loop {
+        let wake = flush_at;
         tokio::select! {
             _ = session.closed.cancelled() => break StreamEnd::UserClosed,
+            _ = async {
+                if let Some(at) = wake {
+                    tokio::time::sleep_until(at).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                emit_pending_stdout(&state.app, session.id, &mut pending_out);
+                flush_at = None;
+            }
             msg = channel.wait() => {
                 match msg {
                     Some(russh::ChannelMsg::Data { data }) => {
@@ -935,16 +1063,10 @@ async fn stream_session(
                                 }
                             }
                         }
-                        let _ = state.app.emit(
-                            "ssh:stdout",
-                            StdoutEvent { session_id: session.id, data: B64.encode(&data) },
-                        );
+                        queue_stdout(&state.app, session.id, &mut pending_out, &mut flush_at, &data);
                     }
                     Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
-                        let _ = state.app.emit(
-                            "ssh:stdout",
-                            StdoutEvent { session_id: session.id, data: B64.encode(&data) },
-                        );
+                        queue_stdout(&state.app, session.id, &mut pending_out, &mut flush_at, &data);
                     }
                     Some(russh::ChannelMsg::ExitStatus { .. } | russh::ChannelMsg::ExitSignal { .. }) => {
                         shell_exited = true;
@@ -959,11 +1081,12 @@ async fn stream_session(
                     _ => {}
                 }
             }
-            Some((cols, rows)) = resize_rx.recv() => {
-                let _ = channel.window_change(cols, rows, 0, 0).await;
+            Some((cols, rows, pix_w, pix_h)) = resize_rx.recv() => {
+                let _ = channel.window_change(cols, rows, pix_w, pix_h).await;
             }
         }
     };
+    emit_pending_stdout(&state.app, session.id, &mut pending_out);
 
     // Wipe the in-memory password when the session ends
     *session.sudo_password.lock().unwrap() = None;
@@ -1195,7 +1318,7 @@ pub async fn run_cross_transfer(
 
     let cancel = CancellationToken::new();
     src.transfers.lock().unwrap().insert(transfer_id, cancel.clone());
-    let mut last_emit = Instant::now() - Duration::from_secs(1);
+    let mut last_emit = instant_ago(Duration::from_secs(1));
 
     let name = src_path.rsplit('/').next().unwrap_or("file").to_string();
     let temp = std::env::temp_dir().join(format!("liteterm_xfer_{transfer_id}_{name}"));
@@ -1252,7 +1375,12 @@ pub async fn run_cross_transfer(
                     done_bytes += n as u64;
                     emit_transfer(&state.app, transfer_id, size / 2 + done_bytes / 2, size, false, None, &mut last_emit, false);
                 }
-                let _ = remote.shutdown().await;
+                // Pending write errors (disk full, quota) only surface here:
+                // russh-sftp queues writes without waiting for their acks
+                remote
+                    .shutdown()
+                    .await
+                    .map_err(|e| format!("Destination write failed: {e}"))?;
             }
         }
 
@@ -1312,7 +1440,7 @@ pub async fn run_upload(
         .unwrap()
         .insert(transfer_id, cancel.clone());
 
-    let mut last_emit = Instant::now() - Duration::from_secs(1);
+    let mut last_emit = instant_ago(Duration::from_secs(1));
     let result = upload_inner(
         &session,
         &local,
@@ -1391,7 +1519,13 @@ async fn upload_inner(
             transferred += n as u64;
             emit_transfer(app, transfer_id, transferred, size, false, None, last_emit, false);
         }
-        let _ = remote_file.shutdown().await;
+        // Pending write errors (disk full, quota) only surface here:
+        // russh-sftp queues writes without waiting for their acks, so
+        // discarding this result reported "Done" for a failed upload
+        remote_file
+            .shutdown()
+            .await
+            .map_err(|e| format!("Remote write failed: {e}"))?;
     }
     Ok(size)
 }
@@ -1410,7 +1544,7 @@ pub async fn run_download(
         .unwrap()
         .insert(transfer_id, cancel.clone());
 
-    let mut last_emit = Instant::now() - Duration::from_secs(1);
+    let mut last_emit = instant_ago(Duration::from_secs(1));
     let result = download_inner(
         &session,
         &remote,
@@ -1544,25 +1678,48 @@ pub async fn forward_start(
     let remote_host = forward.remote_host.clone();
     let remote_port = forward.remote_port as u32;
     let task_cancel = cancel.clone();
+    let session_id = session.id;
 
     let listener_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = task_cancel.cancelled() => break,
                 accepted = listener.accept() => {
-                    let Ok((tcp, peer)) = accepted else { break };
-                    let res = pump_connection(
-                        session.clone(),
-                        tcp,
-                        peer,
-                        remote_host.clone(),
-                        remote_port,
-                    )
-                    .await;
-                    if res.is_err() {
-                        // The SSH connection is gone — stop the tunnel and tell the UI
-                        break;
-                    }
+                    let (tcp, peer) = match accepted {
+                        Ok(pair) => pair,
+                        // A client that resets before accept() returns (browsers do)
+                        // is no reason to end the tunnel for everyone else
+                        Err(e) if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::Interrupted
+                                | std::io::ErrorKind::TimedOut
+                        ) => {
+                            crate::applog::write_throttled(
+                                "forward accept",
+                                &format!("tunnel {fw_id}: accept failed, continuing: {e}"),
+                            );
+                            continue;
+                        }
+                        Err(_) => break,
+                    };
+                    // One task per connection: a browser or a database client
+                    // opens several at once and they must not queue behind
+                    // each other. A connection that cannot be served (the far
+                    // side refused it, or the session is reconnecting) is
+                    // dropped on its own — the tunnel stays up for the next
+                    // one. It ends when the session does
+                    // (stop_forwards_for_session) or the user stops it.
+                    let session = session.clone();
+                    let remote_host = remote_host.clone();
+                    let conn_cancel = task_cancel.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = conn_cancel.cancelled() => {}
+                            _ = pump_connection(session, tcp, peer, remote_host, remote_port) => {}
+                        }
+                    });
                 }
             }
         }
@@ -1577,6 +1734,7 @@ pub async fn forward_start(
         ForwardHandle {
             cancel,
             listener: listener_task,
+            session_id,
         },
     );
     let _ = state
@@ -1623,6 +1781,120 @@ pub async fn forward_stop(state: Arc<AppState>, forward_id: i64) {
         .emit("forward:stopped", ForwardEvent { id: forward_id, active: false });
 }
 
+/// Stop every tunnel riding on `session_id`. Called when a session is gone
+/// for good: its listeners would keep reporting "Listening" while every
+/// connection they accept can never be served.
+pub fn stop_forwards_for_session(state: &AppState, session_id: u32) {
+    let stopped: Vec<(i64, ForwardHandle)> = {
+        let mut forwards = state.forwards.lock().unwrap();
+        let ids: Vec<i64> = forwards
+            .iter()
+            .filter(|(_, handle)| handle.session_id == session_id)
+            .map(|(id, _)| *id)
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| forwards.remove(&id).map(|handle| (id, handle)))
+            .collect()
+    };
+    for (id, handle) in stopped {
+        handle.cancel.cancel();
+        handle.listener.abort();
+        let _ = state
+            .app
+            .emit("forward:stopped", ForwardEvent { id, active: false });
+    }
+}
+
 pub fn list_active_forwards(state: &AppState) -> Vec<i64> {
     state.forwards.lock().unwrap().keys().copied().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant as StdInstant;
+
+    #[tokio::test]
+    async fn a_dial_that_finishes_in_time_is_returned() {
+        let extend = tokio::sync::Notify::new();
+        let out = with_extendable_deadline(
+            async { 7 },
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+            &extend,
+        )
+        .await;
+        assert_eq!(out, Some(7));
+    }
+
+    #[tokio::test]
+    async fn a_silent_dial_times_out_at_the_base_limit() {
+        let extend = tokio::sync::Notify::new();
+        let started = StdInstant::now();
+        let out = with_extendable_deadline(
+            std::future::pending::<u8>(),
+            Duration::from_millis(150),
+            Duration::from_secs(5),
+            &extend,
+        )
+        .await;
+        assert_eq!(out, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a port that never speaks SSH must not get the host-key prompt's allowance"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_moves_the_deadline_out_to_a_human_pace() {
+        let extend = Arc::new(tokio::sync::Notify::new());
+        let prompt = extend.clone();
+        // The prompt appears at 50 ms and the person answers at 400 ms: past the
+        // base limit (150 ms) but inside the extended one
+        let work = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            prompt.notify_one();
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            "accepted"
+        };
+        let out = with_extendable_deadline(
+            work,
+            Duration::from_millis(150),
+            Duration::from_secs(5),
+            &extend,
+        )
+        .await;
+        assert_eq!(out, Some("accepted"));
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_prompt_still_ends_at_the_extended_limit() {
+        let extend = Arc::new(tokio::sync::Notify::new());
+        let prompt = extend.clone();
+        let work = async move {
+            prompt.notify_one();
+            std::future::pending::<u8>().await
+        };
+        let started = StdInstant::now();
+        let out = with_extendable_deadline(
+            work,
+            Duration::from_millis(100),
+            Duration::from_millis(300),
+            &extend,
+        )
+        .await;
+        assert_eq!(out, None);
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(250) && took < Duration::from_secs(3),
+            "took {took:?}"
+        );
+    }
+
+    #[test]
+    fn a_young_clock_does_not_panic() {
+        // `Instant::now() - age` panics when the machine booted less than `age`
+        // ago; an absurd age stands in for that
+        let _ = instant_ago(Duration::from_secs(u64::MAX / 4));
+    }
 }

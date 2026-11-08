@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { api } from '../services/api'
 import type { UpdateInfo } from '../types'
 import { useUiStore } from './ui'
+import { useNotesStore } from './notes'
 
 export type UpdateStatus =
   | 'idle' // nothing known — "Check for updates"
@@ -70,7 +71,7 @@ export const useUpdaterStore = defineStore('updater', () => {
         status.value = 'available'
         if (silent) {
           ui.toast('info', `LiteTerm ${result.latestVersion} is available`, {
-            actionLabel: 'Download',
+            actionLabel: result.autoInstall ? 'Download' : 'Open',
             action: () => void download(),
           })
         }
@@ -86,9 +87,27 @@ export const useUpdaterStore = defineStore('updater', () => {
     }
   }
 
+  /** Off Windows the app cannot install itself, so the update is the release page. */
+  async function openReleasePage(update: UpdateInfo) {
+    if (!update.releaseUrl) {
+      ui.toast('error', 'This release has no page to open')
+      return
+    }
+    try {
+      await api.openReleasePage(update.releaseUrl)
+    } catch (e) {
+      ui.toast('error', String(e))
+    }
+  }
+
   async function download() {
-    const asset = info.value?.asset
-    if (!asset || status.value === 'downloading' || status.value === 'ready') return
+    const update = info.value
+    const asset = update?.asset
+    if (!update || !asset || status.value === 'downloading' || status.value === 'ready') return
+    if (!update.autoInstall) {
+      await openReleasePage(update)
+      return
+    }
     clearRevert()
     status.value = 'downloading'
     downloaded.value = 0
@@ -107,6 +126,12 @@ export const useUpdaterStore = defineStore('updater', () => {
     if (!installerPath || restarting) return
     restarting = true
     try {
+      // The backend exits the app as part of installing, so write any note
+      // edit still waiting out its autosave debounce first
+      await Promise.race([
+        useNotesStore().flushPending(),
+        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+      ])
       // The backend exits the app as part of installing — this call not
       // resolving is the normal path.
       await api.installUpdate(installerPath)

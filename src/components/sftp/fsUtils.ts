@@ -15,22 +15,49 @@ import {
   type LucideIcon,
 } from 'lucide-vue-next'
 import type { FileEntry } from '../../types'
+import { isWindows } from '../../utils/platform'
 
 export type PaneKind = 'local' | 'ssh'
 
 // ---- paths ----
+// Remote paths are always POSIX. Local ones follow the OS this app runs on:
+// `\` and drive letters on Windows, `/` on macOS and Linux — the `windows`
+// parameters below default to that and exist so both spellings can be tested.
 
 export function joinRemote(dir: string, name: string): string {
   return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`
 }
 
-export function joinLocal(dir: string, name: string): string {
-  const sep = dir.includes('/') && !dir.includes('\\') ? '/' : '\\'
+export function joinLocal(dir: string, name: string, windows = isWindows): string {
+  const forwardOnly = dir.includes('/') && !dir.includes('\\')
+  const sep = !windows || forwardOnly ? '/' : '\\'
   return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`
 }
 
 export function joinPath(kind: PaneKind, dir: string, name: string): string {
   return kind === 'ssh' ? joinRemote(dir, name) : joinLocal(dir, name)
+}
+
+// Characters Windows refuses in a file name — plus ":" which NTFS reads as an
+// alternate-data-stream separator, so `app-12:30.log` would be "downloaded" into
+// a hidden stream of a 0-byte file called `app-12`
+// eslint-disable-next-line no-control-regex
+const ILLEGAL_LOCAL_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g
+const RESERVED_LOCAL_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+
+/** A remote (POSIX) file name made safe to create on the local disk. */
+export function safeLocalName(name: string, windows = isWindows): string {
+  if (!windows) {
+    // POSIX reserves only "/" and NUL. The name comes from the server, so
+    // "../x" must not be able to climb out of the download folder.
+    const safe = name.replace(/[/\0]/g, '_')
+    return safe === '' || safe === '.' || safe === '..' ? '_' : safe
+  }
+  // Windows silently drops trailing dots and spaces, which would change the name
+  let out = name.replace(ILLEGAL_LOCAL_CHARS, '_').replace(/[. ]+$/, '')
+  if (!out) out = '_'
+  if (RESERVED_LOCAL_NAMES.test(out)) out = `_${out}`
+  return out
 }
 
 export function remoteParent(p: string): string | null {
@@ -40,7 +67,8 @@ export function remoteParent(p: string): string | null {
   return idx <= 0 ? '/' : trimmed.slice(0, idx)
 }
 
-export function localParent(p: string): string | null {
+export function localParent(p: string, windows = isWindows): string | null {
+  if (!windows) return remoteParent(p)
   const norm = p.replace(/\//g, '\\').replace(/\\+$/, '')
   if (/^[A-Z]:$/i.test(norm) || !norm) return null
   const idx = norm.lastIndexOf('\\')
@@ -53,22 +81,30 @@ export function parentOf(kind: PaneKind, p: string): string | null {
   return kind === 'ssh' ? remoteParent(p) : localParent(p)
 }
 
-export function baseName(p: string): string {
-  const parts = p.split(/[\\/]/).filter(Boolean)
+export function baseName(p: string, windows = isWindows): string {
+  // A backslash is an ordinary file-name character off Windows
+  const parts = p.split(windows ? /[\\/]/ : '/').filter(Boolean)
   return parts[parts.length - 1] ?? p
 }
 
-/** Same location, ignoring trailing separators (and case on Windows). */
-export function samePath(kind: PaneKind, a: string, b: string): boolean {
+/** Same location, ignoring trailing separators (and case for Windows paths). */
+export function samePath(kind: PaneKind, a: string, b: string, windows = isWindows): boolean {
   const norm = (s: string) => {
-    const t = s.replace(/[\\/]+$/, '') || s
-    return kind === 'local' ? t.replace(/\//g, '\\').toLowerCase() : t
+    if (kind === 'local' && windows) {
+      const t = s.replace(/[\\/]+$/, '') || s
+      return t.replace(/\//g, '\\').toLowerCase()
+    }
+    return s.replace(/\/+$/, '') || s
   }
   return norm(a) === norm(b)
 }
 
-export function crumbsFor(kind: PaneKind, path: string): { name: string; path: string }[] {
-  if (kind === 'ssh') {
+export function crumbsFor(
+  kind: PaneKind,
+  path: string,
+  windows = isWindows,
+): { name: string; path: string }[] {
+  if (kind === 'ssh' || !windows) {
     const parts = path.split('/').filter(Boolean)
     return [
       { name: '/', path: '/' },

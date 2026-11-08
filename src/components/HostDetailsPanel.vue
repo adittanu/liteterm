@@ -10,6 +10,7 @@ import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
 import { api } from '../services/api'
 import { jumpCandidates } from '../utils/jumpHosts'
+import { secretStore, sshAgentName } from '../utils/platform'
 import { previewOf } from '../utils/notePreview'
 import PlanetAvatar from './PlanetAvatar.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
@@ -130,40 +131,71 @@ function onKey(e: KeyboardEvent) {
 onMounted(() => window.addEventListener('keydown', onKey))
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 
+// The form is a copy of the host, and the host can change underneath it: the
+// HostDialog saves it (the store swaps in a new object), a credential is
+// edited, a bastion is deleted. A copy that only re-read on `host.id` kept the
+// old values, and the next blur / Connect / SFTP click wrote them back over
+// the edit — and connected to the old address.
+//
+// So remember what the form was last filled from. When the host changes, a
+// field still equal to that baseline is untouched and takes the new value; one
+// the user has been typing in keeps their text.
+function snapshot(h: Host) {
+  return {
+    label: h.label,
+    address: h.address,
+    port: String(h.port),
+    group_id: h.group_id,
+    jump_host_id: h.jump_host_id ?? null,
+    credential_id: h.credential_id,
+    username: h.username,
+    auth_method: h.auth_method,
+    save_password: h.password_saved,
+    key_path: h.key_path ?? '',
+  }
+}
+
+let baseline = snapshot(props.host)
+let shownHostId = props.host.id
+
 watch(
-  () => props.host.id,
-  () => {
-    form.label = props.host.label
-    form.address = props.host.address
-    form.port = String(props.host.port)
-    form.group_id = props.host.group_id
-    form.jump_host_id = props.host.jump_host_id ?? null
-    form.credential_id = props.host.credential_id
-    form.username = props.host.username
-    form.auth_method = props.host.auth_method
-    form.password = ''
-    form.save_password = props.host.password_saved
-    form.key_path = props.host.key_path ?? ''
-    form.key_passphrase = ''
+  () => props.host,
+  (fresh) => {
+    const next = snapshot(fresh)
+    if (fresh.id !== shownHostId) {
+      // A different host: start over, secrets typed for the previous one included
+      Object.assign(form, next, { password: '', key_passphrase: '' })
+      shownHostId = fresh.id
+    } else {
+      for (const key of Object.keys(next) as (keyof typeof next)[]) {
+        if (form[key] === baseline[key]) (form as Record<string, unknown>)[key] = next[key]
+      }
+    }
+    baseline = next
+    // A bastion deleted in the meantime must never be saved back as the jump host
+    if (form.jump_host_id !== null && !hosts.hostById(form.jump_host_id)) form.jump_host_id = null
   },
 )
 
-// The store mirrors ON DELETE SET NULL when a bastion is deleted, or the
-// HostDialog may change it — follow it so the next blur never saves a
-// stale (possibly deleted) jump host
-watch(
-  () => props.host.jump_host_id,
-  (v) => {
-    form.jump_host_id = v ?? null
-  },
-)
-
-async function saveField() {
+/** True when the host is saved (or nothing needed saving). */
+async function saveField(): Promise<boolean> {
   try {
     await saveFieldUnsafe()
+    return true
   } catch (e) {
     ui.toast('error', `Could not save host: ${errorText(e)}`)
+    return false
   }
+}
+
+// `Number(form.port) || old` quietly swapped a bad entry for the old port while
+// the box kept the bad text; 99999 wrapped around to 34463 in the backend
+function parsePort(): number {
+  const n = Number(form.port)
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error('Port must be a whole number from 1 to 65535')
+  }
+  return n
 }
 
 async function saveFieldUnsafe() {
@@ -197,7 +229,7 @@ function buildInput() {
     jump_host_id: form.jump_host_id,
     label: form.label.trim() || props.host.label,
     address: form.address.trim() || props.host.address,
-    port: Number(form.port) || props.host.port,
+    port: parsePort(),
     username: usingCred ? usingCred.username : form.username.trim() || props.host.username,
     auth_method: usingCred ? usingCred.auth_method : form.auth_method,
     password: inlineMode.value && form.auth_method === 'password' && form.password ? form.password : null,
@@ -229,7 +261,11 @@ function connect() {
       : inlineMode.value && form.auth_method === 'key'
         ? form.key_passphrase || undefined
         : undefined
-  void saveField().then(() => sessions.connect(props.host.id, pending))
+  // Not connecting on a failed save: the host on screen would differ from
+  // the one being dialled
+  void saveField().then((saved) => {
+    if (saved) void sessions.connect(props.host.id, pending)
+  })
 }
 </script>
 
@@ -316,7 +352,7 @@ function connect() {
             </button>
           </div>
           <span v-if="form.auth_method === 'agent'" class="field-hint">
-            Uses the OpenSSH Authentication Agent, 1Password, Bitwarden or KeePassXC.
+            Uses {{ sshAgentName }}, 1Password, Bitwarden or KeePassXC.
           </span>
         </div>
 
@@ -327,7 +363,7 @@ function connect() {
             <span class="field-hint">
               <label class="check">
                 <input v-model="form.save_password" type="checkbox" @change="saveField" />
-                Remember password (Windows Credential Manager)
+                Remember password ({{ secretStore }})
               </label>
             </span>
           </div>
@@ -387,7 +423,7 @@ function connect() {
         class="btn btn-secondary sftp-btn"
         :aria-label="`Browse files on ${host.label}`"
         title="Browse files (SFTP)"
-        @click="saveField().then(() => ui.openSftpFor(host.id))"
+        @click="saveField().then((saved) => saved && ui.openSftpFor(host.id))"
       >
         <FolderTree :size="15" :stroke-width="1.5" aria-hidden="true" />
         SFTP

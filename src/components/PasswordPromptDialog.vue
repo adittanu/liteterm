@@ -66,7 +66,7 @@ async function rememberSecret(hostId: number, kind: 'password' | 'passphrase', s
 
 async function submit() {
   if (!prompt.value || !value.value) return
-  const { hostId, kind } = prompt.value
+  const { hostId, kind, silent } = prompt.value
   const secret = value.value
   const shouldRemember = remember.value
   submitting.value = true
@@ -80,7 +80,7 @@ async function submit() {
       }
     }
     // The typed secret drives this connection even if the keyring write failed
-    await sessions.connect(hostId, secret)
+    await sessions.connect(hostId, secret, { silent })
   } finally {
     submitting.value = false
     value.value = ''

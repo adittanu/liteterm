@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Sun,
   MoonStar,
@@ -22,11 +22,14 @@ import {
   captureActive,
   comboFor,
   comboOf,
+  comboText,
+  defaultFor,
   isDefault,
   isModifierOnly,
   keyLabel,
   type ShortcutDef,
 } from '../services/shortcuts'
+import { isMac } from '../utils/platform'
 
 const dialogs = useDialogsStore()
 const ui = useUiStore()
@@ -125,7 +128,9 @@ function onCaptureKey(e: KeyboardEvent) {
   const acceptable =
     combo && (e.ctrlKey || e.altKey || e.metaKey || /^F\d+$/.test(e.key))
   if (!acceptable) {
-    captureError.value = 'Needs Ctrl or Alt (or an F-key) so typing stays free'
+    captureError.value = isMac
+      ? 'Needs ⌘, ⌃ or ⌥ (or an F-key) so typing stays free'
+      : 'Needs Ctrl or Alt (or an F-key) so typing stays free'
     return
   }
   const clash = SHORTCUTS.find(
@@ -146,6 +151,17 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onCaptureKey, true)
   cancelCapture()
 })
+
+// This component lives as long as the app; only its modal comes and goes. Closing
+// the dialog (X, backdrop) in the middle of a capture used to leave capture mode
+// on: every app shortcut and every key typed into a terminal stayed dead, and
+// the next Ctrl/Alt combo silently rebound the action.
+watch(
+  () => dialogs.showSettings,
+  (open) => {
+    if (!open) cancelCapture()
+  },
+)
 </script>
 
 <template>
@@ -374,7 +390,7 @@ onUnmounted(() => {
                   <div class="row-text">
                     <span class="row-label">{{ s.label }}</span>
                     <span v-if="!isDefault(s.id, ui.settings)" class="row-desc">
-                      Default: {{ s.defaultKeys }}
+                      Default: {{ comboText(defaultFor(s.id)) }}
                     </span>
                   </div>
                   <button

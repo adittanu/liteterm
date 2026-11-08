@@ -82,10 +82,18 @@ export const useDialogsStore = defineStore('dialogs', () => {
     hostId: number
     label: string
     kind: 'password' | 'passphrase'
+    // The connect that asked came from SFTP or Forwards, which must keep the
+    // view they are on instead of being thrown to the terminal tab
+    silent: boolean
   } | null>(null)
 
-  function openPasswordPrompt(hostId: number, label: string, kind: 'password' | 'passphrase') {
-    passwordPrompt.value = { open: true, hostId, label, kind }
+  function openPasswordPrompt(
+    hostId: number,
+    label: string,
+    kind: 'password' | 'passphrase',
+    silent = false,
+  ) {
+    passwordPrompt.value = { open: true, hostId, label, kind, silent }
   }
   function closePasswordPrompt() {
     passwordPrompt.value = null

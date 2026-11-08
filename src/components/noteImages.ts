@@ -45,6 +45,11 @@ async function insertImages(editor: Editor, files: File[]) {
     try {
       const ext = IMAGE_EXTS[file.type]
       const path = await api.saveNoteImage(await blobToBase64(file), ext)
+      // The user may have opened another note while the image was being saved.
+      // Each note has its own editor, so this one is gone: the picture stays on
+      // disk but has nowhere to go (and a destroyed editor throws, which used to
+      // surface as a misleading "Could not add image" toast).
+      if (editor.isDestroyed) return
       editor
         .chain()
         .focus()

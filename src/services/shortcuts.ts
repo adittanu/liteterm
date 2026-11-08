@@ -4,6 +4,7 @@
 import { ref } from 'vue'
 import type { ViewId } from '../stores/ui'
 import type { AppSettings } from '../types'
+import { isMac } from '../utils/platform'
 
 export interface ShortcutDef {
   id: string
@@ -52,9 +53,24 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'closeTab', label: 'Close active session', group: 'Tabs', defaultKeys: 'Ctrl+W' },
 ]
 
+// The table above is written with Ctrl, as on Windows and Linux. On macOS the
+// app's own commands move to Cmd (stored as "Meta"), where people expect them
+// and where Ctrl+<letter> stays free for the shell. Ctrl+Tab is the Mac
+// convention too, and Quick note keeps its Option key (Cmd+Q would quit).
+export function platformKeys(id: string, keys: string, mac = isMac): string {
+  if (!mac || id === 'nextTab' || id === 'prevTab' || id === 'quickNote') return keys
+  if (/^tab[1-9]$/.test(id)) return keys.replace(/^Alt\+/, 'Meta+')
+  return keys.replace(/^Ctrl\+/, 'Meta+')
+}
+
 const defaults: Record<string, string> = Object.fromEntries(
-  SHORTCUTS.map((s) => [s.id, s.defaultKeys]),
+  SHORTCUTS.map((s) => [s.id, platformKeys(s.id, s.defaultKeys)]),
 )
+
+/** The built-in binding for this OS (what "Reset" returns to). */
+export function defaultFor(id: string): string {
+  return defaults[id]
+}
 
 // True while the settings dialog listens for a replacement binding;
 // global handlers must stand down so captured keys don't fire actions.
@@ -77,9 +93,28 @@ function keyToken(e: KeyboardEvent): string {
   return key.length === 1 ? key.toUpperCase() : key // Tab, F5, ArrowUp…
 }
 
-// Pretty token for kbd display: the canonical 'Plus' token renders as '+'
+const MAC_GLYPHS: Record<string, string> = { Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Meta: '⌘' }
+
+export function keyLabelFor(part: string, mac: boolean): string {
+  if (part === 'Plus') return '+'
+  return mac ? (MAC_GLYPHS[part] ?? part) : part
+}
+
+// Pretty token for kbd display: the canonical 'Plus' token renders as '+', and
+// on a Mac the modifiers become ⌃ ⌥ ⇧ ⌘. One argument on purpose — it is
+// passed straight to .map(), which would hand a second one in as the index.
 export function keyLabel(part: string): string {
-  return part === 'Plus' ? '+' : part
+  return keyLabelFor(part, isMac)
+}
+
+/** A whole combo as tooltip text: "Ctrl+K" as stored, "⌘K" on a Mac. */
+export function comboText(combo: string, mac = isMac): string {
+  if (!mac) return combo
+  return combo
+    .split('+')
+    .filter(Boolean)
+    .map((part) => keyLabelFor(part, true))
+    .join('')
 }
 
 // Canonical combo string ("Ctrl+Shift+Tab"), or null when the event can

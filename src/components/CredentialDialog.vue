@@ -6,6 +6,7 @@ import { useCredentialsStore } from '../stores/credentials'
 import { useUiStore } from '../stores/ui'
 import { api } from '../services/api'
 import { errorText } from '../stores/sessions'
+import { secretStore, sshAgentName } from '../utils/platform'
 import type { AuthMethod, Credential } from '../types'
 
 const props = defineProps<{ credential: Credential | null }>()
@@ -154,7 +155,7 @@ async function save() {
           </button>
         </div>
         <span v-if="form.auth_method === 'agent'" class="field-hint">
-          Keys come from the running SSH agent (OpenSSH Authentication Agent, 1Password,
+          Keys come from the running SSH agent ({{ sshAgentName }}, 1Password,
           Bitwarden, KeePassXC). Nothing secret is stored.
         </span>
       </div>
@@ -173,7 +174,7 @@ async function save() {
           <span class="field-hint">
             <label class="check">
               <input v-model="form.save_password" type="checkbox" />
-              Remember password (Windows Credential Manager)
+              Remember password ({{ secretStore }})
             </label>
           </span>
         </div>

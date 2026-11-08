@@ -19,6 +19,10 @@ pub struct ParsedHost {
     pub key_passphrase: Option<String>,
     /// ProxyJump alias (last hop of the chain), resolved to a saved host on import
     pub proxy_jump: Option<String>,
+    /// "agent" | "key" | "password" as a LiteTerm export declares it (None for
+    /// every other source). Only "agent" changes anything: it has no secret
+    /// or key file to carry, so without this it came back as a password host.
+    pub auth_method: Option<String>,
 }
 
 impl Default for ParsedHost {
@@ -35,6 +39,7 @@ impl Default for ParsedHost {
             key_pem: None,
             key_passphrase: None,
             proxy_jump: None,
+            auth_method: None,
         }
     }
 }
@@ -69,10 +74,10 @@ fn group_from_comment(comment: &str) -> Option<String> {
 
 fn expand_home(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/").or(path.strip_prefix("~\\")) {
-        if let Ok(home) = std::env::var("USERPROFILE") {
-            let mut p = home;
+        if let Some(home) = crate::paths::home_dir() {
+            let mut p = home.to_string_lossy().into_owned();
             if !p.ends_with('\\') && !p.ends_with('/') {
-                p.push('\\');
+                p.push(std::path::MAIN_SEPARATOR);
             }
             p.push_str(rest);
             return p;
@@ -281,7 +286,9 @@ pub fn parse_import_text(text: &str) -> Result<FileImport, String> {
         }
         Ok(FileImport { format, hosts })
     } else {
-        let hosts = parse_ssh_config(text);
+        // The JSON branch already skips a BOM; here it would end up glued to
+        // the first `Host` line and that host would vanish
+        let hosts = parse_ssh_config(text.trim_start_matches('\u{feff}'));
         if hosts.is_empty() {
             return Err("No hosts found in this SSH config file".into());
         }
@@ -469,17 +476,17 @@ fn host_from_json(host: &serde_json::Value, idx: &JsonIndex) -> Option<ParsedHos
         key_pem: key_pem.filter(|k| k.contains("PRIVATE KEY") || k.contains("OPENSSH")),
         key_passphrase,
         proxy_jump: None,
+        auth_method: first_str(host, &["authMethod", "auth_method"])
+            .filter(|m| matches!(m.as_str(), "agent" | "key" | "password")),
     })
 }
 
 pub fn ssh_config_path() -> std::path::PathBuf {
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    std::path::Path::new(&home).join(".ssh").join("config")
+    crate::paths::home_dir().unwrap_or_default().join(".ssh").join("config")
 }
 
 pub fn known_hosts_path() -> std::path::PathBuf {
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    std::path::Path::new(&home).join(".ssh").join("known_hosts")
+    crate::paths::home_dir().unwrap_or_default().join(".ssh").join("known_hosts")
 }
 
 #[cfg(test)]
@@ -663,6 +670,31 @@ Host nas
         assert_eq!(h.user.as_deref(), Some("admin"));
         assert_eq!(h.identity_file.as_deref(), Some("C:\\Users\\me\\.ssh\\id_ed25519"));
         assert_eq!(h.group.as_deref(), Some("AWS"));
+    }
+
+    #[test]
+    fn an_ssh_config_saved_with_a_bom_keeps_its_first_host() {
+        let text = "\u{feff}Host first\n  HostName 10.0.0.1\nHost second\n  HostName 10.0.0.2\n";
+        let parsed = parse_import_text(text).unwrap();
+        assert_eq!(parsed.format, "ssh-config");
+        assert_eq!(parsed.hosts.len(), 2);
+        assert_eq!(parsed.hosts[0].alias, "first");
+    }
+
+    #[test]
+    fn liteterm_export_keeps_the_agent_auth_method() {
+        let text = r#"{
+            "app": "liteterm",
+            "hosts": [
+                {"label": "a", "address": "10.0.0.1", "username": "u", "authMethod": "agent"},
+                {"label": "b", "address": "10.0.0.2", "username": "u", "authMethod": "bogus"},
+                {"label": "c", "address": "10.0.0.3", "username": "u"}
+            ]
+        }"#;
+        let hosts = parse_import_text(text).unwrap().hosts;
+        assert_eq!(hosts[0].auth_method.as_deref(), Some("agent"));
+        assert_eq!(hosts[1].auth_method, None, "unknown values are ignored");
+        assert_eq!(hosts[2].auth_method, None);
     }
 
     #[test]

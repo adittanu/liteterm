@@ -18,7 +18,8 @@ import {
   paneLabel,
   type Pane,
 } from '../components/sftp/pane'
-import { baseName, joinLocal, joinPath, joinRemote, samePath } from '../components/sftp/fsUtils'
+import { baseName, joinLocal, joinPath, joinRemote, safeLocalName, samePath } from '../components/sftp/fsUtils'
+import { hasMod, isWindows } from '../utils/platform'
 
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
@@ -180,11 +181,15 @@ async function transfer(fromIdx: 0 | 1, names: string[], toIdx: 0 | 1, folder: s
     if (clash.length && !(await confirmReplace(clash, `${paneLabel(to)} · ${baseName(toDir) || toDir}`))) return
   }
 
+  let renamedForLocalDisk = 0
   for (const f of files) {
     if (from.kind === 'local' && to.sessionId !== null) {
       track(api.sftpUpload(to.sessionId, joinLocal(from.path, f.name), joinRemote(toDir, f.name)), { sessionId: to.sessionId, kind: 'upload', name: f.name, size: f.size }, to, toDir)
     } else if (from.kind === 'ssh' && from.sessionId !== null && to.kind === 'local') {
-      track(api.sftpDownload(from.sessionId, joinRemote(from.path, f.name), joinLocal(toDir, f.name)), { sessionId: from.sessionId, kind: 'download', name: f.name, size: f.size }, to, toDir)
+      // Linux allows names Windows doesn't (a ":" in a timestamped log, say)
+      const localName = safeLocalName(f.name)
+      if (localName !== f.name) renamedForLocalDisk++
+      track(api.sftpDownload(from.sessionId, joinRemote(from.path, f.name), joinLocal(toDir, localName)), { sessionId: from.sessionId, kind: 'download', name: f.name, size: f.size }, to, toDir)
     } else if (from.sessionId !== null && to.sessionId !== null) {
       track(
         api.sftpCrossTransfer(from.sessionId, joinRemote(from.path, f.name), to.sessionId, toDir),
@@ -195,16 +200,33 @@ async function transfer(fromIdx: 0 | 1, names: string[], toIdx: 0 | 1, folder: s
     }
   }
   if (skipped) ui.toast('info', `${skipped === 1 ? '1 folder was' : `${skipped} folders were`} skipped — only files transfer for now`)
+  if (renamedForLocalDisk) {
+    const count = renamedForLocalDisk === 1 ? '1 file name was' : `${renamedForLocalDisk} file names were`
+    const why = isWindows ? 'adjusted for Windows (characters like : ? * are not allowed)' : 'adjusted so it can be saved here'
+    ui.toast('info', `${count} ${why}`)
+  }
 }
 
 /** Files from Explorer (OS drop or file picker) into an SSH pane. */
-function uploadPaths(idx: 0 | 1, paths: string[], folder: string | null = null) {
+async function uploadPaths(idx: 0 | 1, paths: string[], folder: string | null = null) {
   const to = panes[idx]
   if (to.kind !== 'ssh' || to.sessionId === null) return
+  const sessionId = to.sessionId
   const dir = folder ? joinRemote(to.path, folder) : to.path
+  // Same rule as in-app transfers: ask before replacing. (Only possible when the
+  // destination listing is the one on screen; a folder row's contents aren't loaded.)
+  // Dropping config.json from Explorer used to overwrite the server's copy silently.
+  if (!folder) {
+    const clash = paths
+      .map((path) => baseName(path) || 'file')
+      .filter((name) => to.entries.some((e) => e.name === name))
+    if (clash.length && !(await confirmReplace(clash, `${paneLabel(to)} · ${baseName(dir) || dir}`))) return
+    // The pane may have been pointed elsewhere while the dialog was open
+    if (to.sessionId !== sessionId) return
+  }
   for (const path of paths) {
     const name = baseName(path) || 'file'
-    track(api.sftpUpload(to.sessionId, path, joinRemote(dir, name)), { sessionId: to.sessionId, kind: 'upload', name, size: 0 }, to, dir)
+    track(api.sftpUpload(sessionId, path, joinRemote(dir, name)), { sessionId, kind: 'upload', name, size: 0 }, to, dir)
   }
 }
 
@@ -290,7 +312,7 @@ function onKeydown(e: KeyboardEvent) {
     hover.value = null
     return
   }
-  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyL') {
+  if (hasMod(e) && !e.shiftKey && !e.altKey && e.code === 'KeyL') {
     e.preventDefault()
     paneRefs.value[activeIdx.value]?.focusPath()
   }
@@ -360,6 +382,7 @@ watch(
 // ---- lifecycle ----
 
 let unlistenDrop: (() => void) | null = null
+let unmounted = false
 
 onMounted(async () => {
   window.addEventListener('pointermove', onPointerMove)
@@ -398,14 +421,22 @@ onMounted(async () => {
         ui.toast('info', 'Drop files on a server pane to upload them')
         return
       }
-      uploadPaths(idx, pl.paths, hit?.folder ?? null)
+      void uploadPaths(idx, pl.paths, hit?.folder ?? null)
     })
+    // The view may have been left while the listener was being registered; the
+    // unmount hook found nothing to remove then, so remove it here — otherwise
+    // the next visit has two listeners and one Explorer drop uploads twice
+    if (unmounted) {
+      unlistenDrop()
+      unlistenDrop = null
+    }
   } catch {
     // not running inside Tauri (e.g. plain browser preview)
   }
 })
 
 onUnmounted(() => {
+  unmounted = true
   window.removeEventListener('pointermove', onPointerMove)
   window.removeEventListener('pointerup', onPointerUp)
   window.removeEventListener('keydown', onKeydown, true)

@@ -19,6 +19,10 @@ export const TabKeys = Extension.create({
             if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey) {
               return false
             }
+            // Inside a table, Tab belongs to the Table extension (next cell, or a
+            // new row at the end). This plugin runs first, so swallowing the key
+            // here made table navigation by keyboard impossible.
+            if (insideTable(view.state.selection.$from)) return false
             event.preventDefault()
             const { state } = view
             if (state.selection.$from.parent.type.name === 'codeBlock') {
@@ -47,9 +51,40 @@ function listItemAround($from: ResolvedPos): string | null {
   return null
 }
 
+function insideTable($from: ResolvedPos): boolean {
+  for (let d = $from.depth; d > 0; d--) {
+    if ($from.node(d).type.name === 'table') return true
+  }
+  return false
+}
+
 function indentCode(view: EditorView) {
-  const { from, to } = view.state.selection
-  view.dispatch(view.state.tr.insertText('  ', from, to))
+  const { state } = view
+  const { from, to, empty, $from } = state.selection
+  if (empty) {
+    view.dispatch(state.tr.insertText('  ', from, to))
+    return
+  }
+  // A selection: indent every line it touches. Replacing the selection with
+  // two spaces — what this did — deleted the code that was selected.
+  const blockStart = $from.start()
+  const text = $from.parent.textContent
+  const first = from - blockStart
+  const last = Math.min(to - blockStart, text.length)
+  const lineStarts: number[] = []
+  let lineStart = 0
+  for (;;) {
+    const lineEnd = text.indexOf('\n', lineStart)
+    const end = lineEnd === -1 ? text.length : lineEnd
+    // a line is touched when the selection overlaps it (or ends right at its start)
+    if (end >= first && lineStart <= last) lineStarts.push(lineStart)
+    if (lineEnd === -1) break
+    lineStart = lineEnd + 1
+  }
+  const tr = state.tr
+  // Back to front, so earlier positions stay valid while inserting
+  for (const offset of lineStarts.reverse()) tr.insertText('  ', blockStart + offset)
+  view.dispatch(tr)
 }
 
 function outdentCode(view: EditorView) {

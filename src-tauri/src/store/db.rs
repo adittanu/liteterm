@@ -185,8 +185,14 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
     })
 }
 
-const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, h.username, h.auth_method, \
-    h.password_saved, h.key_path, h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id";
+// A host linked to a credential shows (and is exported and deduplicated as) the
+// credential's login. The host row only mirrors username / auth_method / key as
+// of its own last save, so editing the credential used to leave the host list,
+// tab labels and "Copy SSH command" showing the old user.
+const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, \
+    COALESCE(c.username, h.username), COALESCE(c.auth_method, h.auth_method), \
+    h.password_saved, CASE WHEN c.id IS NULL THEN h.key_path ELSE c.key_path END, \
+    h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -835,13 +841,66 @@ pub fn keyring_get(account: &str) -> Option<String> {
 }
 
 pub fn keyring_set(account: &str, value: &str) {
-    if let Ok(entry) = keyring::Entry::new("LiteTerm", account) {
-        let _ = entry.set_password(value);
+    // The caller has nowhere to report a failure, and on Linux it is a real
+    // possibility (no Secret Service running) — leave a line in the app log
+    // instead of losing the password without a trace.
+    if let Err(e) = keyring::Entry::new("LiteTerm", account).and_then(|entry| entry.set_password(value)) {
+        crate::applog::write(&format!("could not save {account} to the OS keyring: {e}"));
     }
 }
 
 pub fn keyring_delete(account: &str) {
     if let Ok(entry) = keyring::Entry::new("LiteTerm", account) {
         let _ = entry.delete_credential();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_host_linked_to_a_credential_shows_the_credentials_login() {
+        let dir = std::env::temp_dir().join(format!("liteterm-db-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let conn = open_db(&dir).unwrap();
+        // Raw SQL and password_saved = 0 throughout: nothing here may touch the
+        // real Windows Credential Manager entries (host:<id>:password)
+        conn.execute(
+            "INSERT INTO credentials (id, name, username, auth_method, key_path) \
+             VALUES (1, 'ops', 'alice', 'key', 'C:\\keys\\ops')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hosts (id, label, address, port, username, auth_method, key_path, credential_id) \
+             VALUES (1, 'linked', 'a.example', 22, 'stale', 'password', 'C:\\old', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hosts (id, label, address, port, username, auth_method, key_path) \
+             VALUES (2, 'plain', 'b.example', 22, 'bob', 'password', NULL)",
+            [],
+        )
+        .unwrap();
+
+        let hosts = list_hosts(&conn).unwrap();
+        let linked = hosts.iter().find(|h| h.id == 1).unwrap();
+        assert_eq!(linked.username, "alice");
+        assert_eq!(linked.auth_method, "key");
+        assert_eq!(linked.key_path.as_deref(), Some("C:\\keys\\ops"));
+        let plain = hosts.iter().find(|h| h.id == 2).unwrap();
+        assert_eq!(plain.username, "bob");
+        assert_eq!(plain.auth_method, "password");
+        assert_eq!(plain.key_path, None);
+
+        // Editing the credential later shows up without touching the host row
+        conn.execute("UPDATE credentials SET username = 'carol' WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(get_host(&conn, 1).unwrap().unwrap().username, "carol");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

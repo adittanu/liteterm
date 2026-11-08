@@ -4,7 +4,6 @@ import CodeBlock from '@tiptap/extension-code-block'
 import Placeholder from '@tiptap/extension-placeholder'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
-import Table from '@tiptap/extension-table'
 import TableRow from '@tiptap/extension-table-row'
 import TableHeader from '@tiptap/extension-table-header'
 import TableCell from '@tiptap/extension-table-cell'
@@ -12,6 +11,7 @@ import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import { Markdown } from 'tiptap-markdown'
 import { Hashtag } from './hashtagExtension'
 import { NoteImages } from './noteImages'
+import { NoteTable } from './noteTable'
 import { TabKeys } from './tabKeysExtension'
 import CodeBlockView from './CodeBlockView.vue'
 
@@ -32,11 +32,16 @@ export function noteExtensions(placeholder: string): Extensions {
     Placeholder.configure({ placeholder }),
     TaskList,
     TaskItem.configure({ nested: true }),
-    Table.configure({ resizable: false }),
+    NoteTable.configure({ resizable: false }),
     TableRow,
     TableHeader,
     TableCell,
-    Markdown.configure({ html: false, breaks: true, transformPastedText: true }),
+    // transformPastedText stays off: it runs plain pasted text through
+    // markdown-it, which eats the backslash in `C:\Users\me\.ssh\config`,
+    // `\\server\share` and `grep '\.log$'`, and turns `__init__.py` bold —
+    // and notes are mostly pasted commands and paths. Typed markdown
+    // shortcuts (`- `, `# `, `*x*`, …) still work.
+    Markdown.configure({ html: false, breaks: true, transformPastedText: false }),
     Hashtag,
     NoteImages,
     // Last on purpose: its Tab handling must run after the list/task

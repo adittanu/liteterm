@@ -18,6 +18,11 @@ pub fn list_groups(db: State<Db>) -> Result<Vec<HostGroup>, String> {
 
 #[tauri::command]
 pub fn upsert_host(db: State<Db>, input: HostInput) -> Result<Host, String> {
+    // The column is an i64 but connecting casts it `as u16`, which silently
+    // wrapped 99999 into 34463
+    if !(1..=65535).contains(&input.port) {
+        return Err("Port must be 1–65535".into());
+    }
     let conn = db.0.lock().map_err(|_| "database busy")?;
     db::upsert_host(&conn, &input).map_err(|e| e.to_string())
 }

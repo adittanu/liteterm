@@ -10,6 +10,7 @@ import CredentialDialog from '../components/CredentialDialog.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
 import { matchesQuery, plural } from '../utils/pageHelpers'
+import { secretStore } from '../utils/platform'
 import type { Credential } from '../types'
 
 const credentials = useCredentialsStore()
@@ -103,7 +104,7 @@ async function remove(cred: Credential) {
           Keychain
           <span v-if="credentials.credentials.length" class="page-count">{{ credentials.credentials.length }}</span>
         </h2>
-        <p class="page-sub">Save a login once, reuse it on any host. Secrets stay in the Windows Credential Manager.</p>
+        <p class="page-sub">Save a login once, reuse it on any host. Secrets stay in the {{ secretStore }}.</p>
       </div>
       <div class="page-actions">
         <button class="btn btn-primary" @click="openNew">

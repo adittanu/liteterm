@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
+import { warnIfPasswordNotKept } from '../utils/savedSecret'
 import { useNotesStore } from './notes'
 import type { Host, HostGroup, HostInput } from '../types'
 
@@ -30,6 +31,8 @@ export const useHostsStore = defineStore('hosts', () => {
     const i = hosts.value.findIndex((x) => x.id === host.id)
     if (i === -1) hosts.value.push(host)
     else hosts.value[i] = host
+    // With a credential attached the host's own password is not the one in play
+    if (!input.credential_id && !input.create_credential) warnIfPasswordNotKept(input, host.has_password)
     return host
   }
 

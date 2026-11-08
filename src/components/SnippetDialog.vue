@@ -4,6 +4,7 @@ import BaseModal from './BaseModal.vue'
 import { useSnippetsStore } from '../stores/extras'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
+import { modKey } from '../utils/platform'
 import type { Snippet } from '../types'
 
 const props = defineProps<{ snippet: Snippet | null }>()
@@ -62,7 +63,7 @@ onMounted(() => nextTick(() => commandEl.value?.focus()))
           @keydown.meta.enter.prevent="save"
         ></textarea>
         <span v-if="submitted && commandError" class="field-error">{{ commandError }}</span>
-        <span v-else class="field-hint">Multiple lines run one after another. Ctrl+Enter to save.</span>
+        <span v-else class="field-hint">Multiple lines run one after another. {{ modKey }}Enter to save.</span>
       </div>
 
       <div class="field">

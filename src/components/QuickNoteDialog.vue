@@ -7,7 +7,7 @@ import { useDialogsStore } from '../stores/dialogs'
 import { useNotesStore } from '../stores/notes'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
-import { comboFor } from '../services/shortcuts'
+import { comboFor, comboText } from '../services/shortcuts'
 
 const dialogs = useDialogsStore()
 const notes = useNotesStore()
@@ -24,7 +24,7 @@ const bodyRef = ref<InstanceType<typeof QuickNoteBody> | null>(null)
 let creating = false
 let unsent: { title: string; body: string } | null = null
 
-const shortcutHint = computed(() => comboFor('quickNote', ui.settings))
+const shortcutHint = computed(() => comboText(comboFor('quickNote', ui.settings)))
 
 // The component stays mounted next to App.vue, so every open starts
 // from a clean slate and hands focus to the title.

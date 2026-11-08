@@ -64,7 +64,7 @@ pub async fn sftp_upload(
 ) -> Result<u32, String> {
     let app_state = state.inner().clone();
     let session = pool_session(state.inner(), session_id)?;
-    let transfer_id = session.next_transfer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let transfer_id = app_state.next_transfer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     tauri::async_runtime::spawn(async move {
         pool::run_upload(app_state, session, transfer_id, local_path, remote_path).await;
@@ -81,7 +81,7 @@ pub async fn sftp_download(
 ) -> Result<u32, String> {
     let app_state = state.inner().clone();
     let session = pool_session(state.inner(), session_id)?;
-    let transfer_id = session.next_transfer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let transfer_id = app_state.next_transfer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     tauri::async_runtime::spawn(async move {
         pool::run_download(app_state, session, transfer_id, remote_path, local_path).await;
@@ -111,7 +111,7 @@ pub async fn sftp_cross_transfer(
     if src.id == dst.id {
         return Err("Source and destination are the same session — use move instead".into());
     }
-    let transfer_id = src.next_transfer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let transfer_id = app_state.next_transfer_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     tauri::async_runtime::spawn(async move {
         pool::run_cross_transfer(app_state.clone(), src.clone(), dst, transfer_id, src_path, dst_dir).await;

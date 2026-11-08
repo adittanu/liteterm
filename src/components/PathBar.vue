@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
+import { modKey } from '../utils/platform'
 import { Folder, HardDrive, Pencil } from 'lucide-vue-next'
 import type { FileEntry } from '../types'
 
@@ -226,7 +227,7 @@ function onIdleClick(e: MouseEvent) {
         <button
           class="crumb-edit"
           :aria-label="`Edit ${placeholder.toLowerCase()}`"
-          title="Edit path (Ctrl+L)"
+          :title="`Edit path (${modKey}L)`"
           tabindex="-1"
           @click.stop="beginEdit"
         >

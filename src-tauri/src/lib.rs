@@ -1,6 +1,9 @@
+mod applog;
 mod commands;
 mod import;
 mod local;
+mod menu;
+mod paths;
 mod ssh;
 mod store;
 
@@ -14,8 +17,16 @@ pub struct Db(pub Mutex<rusqlite::Connection>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    // First thing: the installed build has no console, so a panic would
+    // otherwise leave nothing behind (see applog.rs)
+    applog::install_panic_hook();
+
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // Tauri's default macOS menu would claim Cmd+W (see menu.rs)
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(menu::macos);
+
+    builder
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let conn = store::db::open_db(&data_dir)
@@ -25,6 +36,7 @@ pub fn run() {
                 app: app.handle().clone(),
                 db_path: data_dir.join("hosts.db"),
                 next_session_id: std::sync::atomic::AtomicU32::new(1),
+                next_transfer_id: std::sync::atomic::AtomicU32::new(1),
                 sessions: Mutex::new(HashMap::new()),
                 local_sessions: Mutex::new(HashMap::new()),
                 pending_hostkey: Mutex::new(HashMap::new()),
@@ -103,6 +115,7 @@ pub fn run() {
             commands::update::check_update,
             commands::update::download_update,
             commands::update::install_update,
+            commands::update::open_release_page,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LiteTerm");

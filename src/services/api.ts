@@ -115,8 +115,14 @@ export const api = {
   reconnectNow: (sessionId: number): Promise<void> => invoke('reconnect_now', { sessionId }),
   disconnect: (sessionId: number): Promise<void> => invoke('disconnect_session', { sessionId }),
   write: (sessionId: number, data: string): Promise<void> => invoke('session_write', { sessionId, data }),
-  resize: (sessionId: number, cols: number, rows: number): Promise<void> =>
-    invoke('session_resize', { sessionId, cols, rows }),
+  resize: (
+    sessionId: number,
+    cols: number,
+    rows: number,
+    pixWidth = 0,
+    pixHeight = 0,
+  ): Promise<void> =>
+    invoke('session_resize', { sessionId, cols, rows, pixWidth, pixHeight }),
 
   // ---- sftp ----
   sftpOpen: (sessionId: number): Promise<void> => invoke('sftp_open', { sessionId }),
@@ -151,6 +157,7 @@ export const api = {
   downloadUpdate: (asset: UpdateAsset): Promise<string> =>
     invoke('download_update', { asset }),
   installUpdate: (path: string): Promise<void> => invoke('install_update', { path }),
+  openReleasePage: (url: string): Promise<void> => invoke('open_release_page', { url }),
 
   // ---- import / export ----
   importSshPreview: (): Promise<ImportPreview> => invoke('import_ssh_preview'),

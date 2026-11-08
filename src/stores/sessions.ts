@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
+import { thisComputerLower } from '../utils/platform'
 import { useHostsStore } from './hosts'
 import { useUiStore } from './ui'
 import { useDialogsStore } from './dialogs'
@@ -17,6 +18,12 @@ export const useSessionsStore = defineStore('sessions', () => {
   const tabs = ref<SessionTab[]>([])
   const activeId = ref<number | null>(null)
   const transfers = ref<Transfer[]>([])
+
+  // Bumped when a connect attempt fails before any session exists (key file
+  // missing, host gone, …). No tab appears then, so whoever waits for a
+  // connection (an SFTP pane, a port-forward switch) watches this instead of
+  // sitting out a 90 s timeout.
+  const connectFailures = ref<Record<number, number>>({})
 
   // TerminalPane registers its xterm sink per session id
   const sinks = new Map<number, OutputSink>()
@@ -84,6 +91,10 @@ export const useSessionsStore = defineStore('sessions', () => {
     const dup = tabs.value.find((t) => t.hostId === hostId)
     if (dup) {
       activeId.value = dup.id
+      // Connect / double-click / Enter on a host that already has a tab used to
+      // do nothing visible; take the user to that tab (silent callers — SFTP,
+      // Forwards — stay where they are)
+      if (!opts?.silent) useUiStore().openView(sessionView(dup.id))
       return
     }
 
@@ -105,12 +116,16 @@ export const useSessionsStore = defineStore('sessions', () => {
       if (!opts?.silent) useUiStore().openView(sessionView(sessionId))
     } catch (e) {
       const msg = errorText(e)
+      const silent = !!opts?.silent
+      // Everything after the first colon is the name: a label may hold colons too
+      const promptName = () => msg.slice(msg.indexOf(':') + 1) || host.label
       // Backend asks for credentials at connect time
       if (msg.startsWith('password_required:')) {
-        useDialogsStore().openPasswordPrompt(hostId, msg.split(':')[1] ?? host.label, 'password')
+        useDialogsStore().openPasswordPrompt(hostId, promptName(), 'password', silent)
       } else if (msg.startsWith('passphrase_required:')) {
-        useDialogsStore().openPasswordPrompt(hostId, msg.split(':')[1] ?? host.label, 'passphrase')
+        useDialogsStore().openPasswordPrompt(hostId, promptName(), 'passphrase', silent)
       } else {
+        connectFailures.value[hostId] = (connectFailures.value[hostId] ?? 0) + 1
         useUiStore().toast('error', `Failed to start connection: ${msg}`)
       }
     }
@@ -147,7 +162,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function connectLocal() {
-    return spawnLocalTab({ kind: 'local', label: 'Local', address: 'this PC' })
+    return spawnLocalTab({ kind: 'local', label: 'Local', address: thisComputerLower })
   }
 
   // herdr multiplexer: a local PTY whose child is the herdr TUI itself
@@ -221,18 +236,45 @@ export const useSessionsStore = defineStore('sessions', () => {
     })
   }
 
-  function resize(sessionId: number, cols: number, rows: number) {
-    void api.resize(sessionId, cols, rows).catch(() => {})
+  function resize(
+    sessionId: number,
+    cols: number,
+    rows: number,
+    pixWidth = 0,
+    pixHeight = 0,
+  ) {
+    void api.resize(sessionId, cols, rows, pixWidth, pixHeight).catch(() => {})
   }
 
   // ---- transfers ----
+
+  // Progress can arrive before the start command has handed back the id a row
+  // is tracked under — a transfer that fails at once (a folder dropped from
+  // Explorer, a locked file) reports within microseconds. Keep such events so
+  // the row does not sit on "Starting…" forever.
+  const earlyTransferEvents = new Map<number, Partial<Transfer>>()
+  const MAX_EARLY_TRANSFER_EVENTS = 50
+
   function trackTransfer(t: Transfer) {
+    const early = earlyTransferEvents.get(t.id)
+    if (early) {
+      earlyTransferEvents.delete(t.id)
+      Object.assign(t, early)
+    }
     transfers.value.push(t)
   }
 
   function updateTransfer(transferId: number, patch: Partial<Transfer>) {
     const t = transfers.value.find((x) => x.id === transferId)
-    if (t) Object.assign(t, patch)
+    if (t) {
+      Object.assign(t, patch)
+      return
+    }
+    earlyTransferEvents.set(transferId, { ...earlyTransferEvents.get(transferId), ...patch })
+    if (earlyTransferEvents.size > MAX_EARLY_TRANSFER_EVENTS) {
+      const oldest = earlyTransferEvents.keys().next().value
+      if (oldest !== undefined) earlyTransferEvents.delete(oldest)
+    }
   }
 
   function removeTransfer(transferId: number) {
@@ -348,6 +390,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     tabs,
     activeId,
     transfers,
+    connectFailures,
     connect,
     connectLocal,
     connectHerdr,

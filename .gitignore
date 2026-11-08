@@ -23,3 +23,6 @@ Thumbs.db
 
 # Shell history accidentally dropped in the repo dir
 .bash_history
+
+# Host exports/imports can carry plaintext passwords; the repo is public
+/dataquest-import.json

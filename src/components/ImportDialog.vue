@@ -64,7 +64,9 @@ function open() {
       configFound.value = preview.config_found
       knownHostCount.value = preview.known_host_count
       allHosts.value = preview.hosts
-      selected.value = new Set(preview.hosts.map((h) => h.alias))
+      // Hosts already saved start unticked: they used to be sent too, and the
+      // backend creates whatever it is given, so re-importing duplicated them
+      selected.value = new Set(preview.hosts.filter((h) => !h.exists).map((h) => h.alias))
     })
     .catch((e) => {
       loadError.value = errorText(e)
@@ -151,7 +153,8 @@ async function loadFile(path: string) {
     fileName.value = path.split(/[\\/]/).pop() ?? path
     fileFormat.value = preview.format
     fileHosts.value = preview.hosts
-    fileSelected.value = new Set(preview.hosts.map(keyOf))
+    // Same as the SSH-config tab: already-saved hosts start unticked
+    fileSelected.value = new Set(preview.hosts.filter((h) => !h.exists).map(keyOf))
     fileState.value = 'ready'
   } catch (e) {
     fileError.value = errorText(e)
@@ -192,14 +195,19 @@ async function applyFile() {
 
 // ---- drag & drop (webview-level, app-wide while the dialog is open) ----
 let unlistenDrop: (() => void) | null = null
+let attaching = false
 
 async function attachDrop() {
-  if (unlistenDrop) return
+  if (unlistenDrop || attaching) return
+  attaching = true
   try {
     const { getCurrentWebview } = await import('@tauri-apps/api/webview')
-    unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+    const off = await getCurrentWebview().onDragDropEvent((event) => {
       const payload = event.payload as { type: string; paths?: string[] }
-      if (source.value !== 'file') return
+      // `source` stays 'file' after the dialog closes; without the open check a
+      // listener that outlived it would turn any file dropped on the window
+      // into an import preview
+      if (!dialogs.showImport || source.value !== 'file') return
       if (payload.type === 'enter' || payload.type === 'over') {
         if (payload.paths?.length) dragging.value = true
       } else if (payload.type === 'leave') {
@@ -210,8 +218,17 @@ async function attachDrop() {
         if (path) loadFile(path)
       }
     })
+    // Closed while the listener was being registered: detachDrop found nothing
+    // to remove, so remove it here instead of leaking it
+    if (!dialogs.showImport) {
+      off()
+      return
+    }
+    unlistenDrop = off
   } catch {
     // drag-drop events unavailable — the file picker still works
+  } finally {
+    attaching = false
   }
 }
 

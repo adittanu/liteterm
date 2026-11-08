@@ -28,6 +28,7 @@ import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
 import { fuzzy, highlight } from '../utils/fuzzy'
 import { comboFor, keyLabel, viewShortcutId } from '../services/shortcuts'
+import { localShellName, thisComputerLower } from '../utils/platform'
 import type { Host } from '../types'
 
 // Opened 100+ times a day (Ctrl+K, the + tab button): no open/close
@@ -119,7 +120,7 @@ interface ActionDef {
 }
 
 const actions = computed<ActionDef[]>(() => [
-  { key: 'local', label: 'New local terminal', sub: 'PowerShell on this PC', icon: SquareTerminal, shortcut: 'newLocal', always: true, run: () => void sessions.connectLocal() },
+  { key: 'local', label: 'New local terminal', sub: `${localShellName} on ${thisComputerLower}`, icon: SquareTerminal, shortcut: 'newLocal', always: true, run: () => void sessions.connectLocal() },
   { key: 'sftp', label: 'Browse files (SFTP)', sub: 'Dual-pane file transfer', icon: FolderTree, shortcut: viewShortcutId('sftp'), always: true, run: () => ui.openView('sftp') },
   { key: 'newhost', label: 'New host…', sub: 'Save a server', icon: Plus, always: true, run: () => dialogs.openHostDialog(null) },
   { key: 'herdr', label: 'Open herdr', sub: 'Agent multiplexer', herdr: true, always: true, run: () => void sessions.connectHerdr() },

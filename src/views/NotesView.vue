@@ -91,6 +91,12 @@ const tagList = computed(() => {
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 })
 
+// A tag filter whose last note was edited away would hide every note, with
+// no tag chip left to click to clear it
+watch(tagList, (list) => {
+  if (activeTag.value && !list.some((t) => t.name === activeTag.value)) activeTag.value = null
+})
+
 const activeCount = computed(() => notes.notes.filter((n) => !n.archived).length)
 const archivedCount = computed(() => notes.notes.filter((n) => n.archived).length)
 
@@ -216,10 +222,21 @@ function closeGallery(instant = false) {
 }
 
 onMounted(async () => {
-  if (!notes.loaded) await notes.load()
+  if (!notes.loaded) {
+    try {
+      await notes.load()
+    } catch (e) {
+      // Unhandled, the view just stayed empty with no hint why
+      ui.toast('error', `Could not load notes: ${errorText(e)}`)
+      return
+    }
+  }
   // A requested note (watch below) wins over the default first note
   if (ui.noteRequest !== null || selectedId.value !== null) return
-  if (layout.value === 'split' && sorted.value[0]) selectedId.value = sorted.value[0].id
+  // From `matches`, not `sorted`: an archived note must not open in the editor
+  // while the list (All Notes) does not show it
+  const first = matches.value[0]
+  if (layout.value === 'split' && first) selectedId.value = first.id
 })
 
 // Opened from a host's details panel: show that note, whatever the filters
@@ -363,10 +380,11 @@ function openMenu(n: Note, e: MouseEvent) {
 
 // ---- drag to reorder ----
 
-// Only in Manual order with nothing filtering the list. Pointer events, not
-// HTML5 drag: Tauri's Windows webview swallows HTML5 drag unless its native
-// file-drop is disabled, and SFTP needs that for OS file drops.
-const reorderable = computed(() => sortMode.value === 'manual' && sectioned.value)
+// Unfiltered All Notes. The drop itself switches the list to Manual order,
+// so a drag reorders without a trip to the sort menu first. Pointer events,
+// not HTML5 drag: Tauri's Windows webview swallows HTML5 drag unless its
+// native file-drop is disabled, and SFTP needs that for OS file drops.
+const reorderable = computed(() => sectioned.value)
 
 type Pt = { x: number; y: number }
 type Drag = { id: number; overId: number | null; after: boolean; dx: number; dy: number; overArchive: boolean }
@@ -388,8 +406,7 @@ function scopeEl(): HTMLElement | null {
 // The order the list would take if dropped now, or null when nothing moves
 // (dropped on itself, or across the pinned/unpinned split)
 function previewOrder(d: Drag, s: Shot): number[] | null {
-  // Only Manual order reorders; other sorts just lift the cell
-  if (sortMode.value !== 'manual' || d.overArchive) return null
+  if (d.overArchive) return null
   const overId = d.overId
   if (overId === null || overId === d.id) return null
   const from = notes.notes.find((n) => n.id === d.id)
@@ -554,15 +571,7 @@ function onDragEnd() {
     archiveDragged(d, scope)
     return
   }
-  if (order) {
-    persistOrder(order)
-  } else if (sortMode.value !== 'manual') {
-    ui.toast('info', 'Drag reorders notes in Manual order', {
-      actionLabel: 'Switch',
-      action: () => (sortMode.value = 'manual'),
-      duration: 5000,
-    })
-  }
+  if (order) persistOrder(order)
   // Runs after Vue has removed the inline offsets, so these animations pick
   // up exactly where the drag left off. A committed drop needs none for the
   // other cells: the list's FLIP moves them into their new slots.
@@ -605,7 +614,10 @@ onBeforeUnmount(() => {
 // Save a new manual order for the visible notes. Archived notes aren't on
 // screen, so they keep their relative order after the visible ones.
 function persistOrder(visibleIds: number[]) {
+  // Snapshot archived ids before the sort mode changes, so they keep the
+  // order they had. The arrangement only stays put in Manual order.
   const archivedIds = sorted.value.filter((n) => n.archived).map((n) => n.id)
+  sortMode.value = 'manual'
   notes.reorder([...visibleIds, ...archivedIds]).catch((e) => ui.toast('error', `Could not reorder notes: ${errorText(e)}`))
 }
 
@@ -844,8 +856,13 @@ function listDate(s: string): string {
         </aside>
 
         <section class="notes-editor">
+          <!-- Keyed: every note gets its own editor, and with it its own undo
+               history. One shared editor let Ctrl+Z after switching notes
+               pull the previous note's text back in and autosave it over
+               the note that was open. -->
           <NoteEditor
             v-if="selectedNote"
+            :key="selectedNote.id"
             ref="editorComp"
             :note="selectedNote"
             @remove="removeNote(selectedNote.id)"
@@ -1024,6 +1041,7 @@ function listDate(s: string): string {
             :style="{ '--page-origin': pageOrigin }"
           >
             <NoteEditor
+              :key="galleryNote.id"
               ref="editorComp"
               :note="galleryNote"
               back

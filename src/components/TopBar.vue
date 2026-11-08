@@ -6,16 +6,40 @@ import { Menu, Plus, X, FolderTree } from 'lucide-vue-next'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
-import { comboFor } from '../services/shortcuts'
+import { useNotesStore } from '../stores/notes'
+import { comboFor, comboText } from '../services/shortcuts'
+import { isMac } from '../utils/platform'
 
 const ui = useUiStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
+const notes = useNotesStore()
 const appWindow = getCurrentWindow()
+
+// A note edit waits 500 ms before it is written; closing the window inside
+// that gap used to throw the last half second of typing away. Give the save a
+// moment (but never trap the user in a window that will not close).
+async function settleNotes() {
+  try {
+    await Promise.race([
+      notes.flushPending(),
+      new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+    ])
+  } catch {
+    // closing matters more than one failed save; the failure was already toasted
+  }
+}
+
+async function closeWindow() {
+  await settleNotes()
+  void appWindow.close()
+}
 
 // Maximize glyph flips to "restore" while the window is maximized
 const isMaximized = ref(false)
 let unlistenResize: (() => void) | null = null
+let unlistenClose: (() => void) | null = null
+let closeHeld = false
 
 async function syncMaximized() {
   isMaximized.value = await appWindow.isMaximized()
@@ -26,10 +50,27 @@ onMounted(() => {
   void appWindow.onResized(() => void syncMaximized()).then((off) => {
     unlistenResize = off
   })
+  // On a Mac the window closes through the native red button, which never
+  // reaches closeWindow(): hold that first request while the note save is
+  // settled, then let the second one through.
+  if (isMac) {
+    void appWindow
+      .onCloseRequested(async (event) => {
+        if (closeHeld) return
+        closeHeld = true
+        event.preventDefault()
+        await settleNotes()
+        void appWindow.close()
+      })
+      .then((off) => {
+        unlistenClose = off
+      })
+  }
 })
 
 onUnmounted(() => {
   unlistenResize?.()
+  unlistenClose?.()
 })
 
 function toggleMaximize() {
@@ -100,7 +141,7 @@ function closeSession(sessionId: number) {
 </script>
 
 <template>
-  <header class="topbar" @mousedown="onTopbarMouseDown">
+  <header class="topbar" :class="{ mac: isMac }" @mousedown="onTopbarMouseDown">
     <button
       class="topbar-btn rail-toggle"
       :aria-label="ui.railCollapsed ? 'Expand navigation' : 'Collapse navigation'"
@@ -141,7 +182,7 @@ function closeSession(sessionId: number) {
       <button
         class="topbar-btn"
         aria-label="New session"
-        :title="`Quick connect (${comboFor('palette', ui.settings)})`"
+        :title="`Quick connect (${comboText(comboFor('palette', ui.settings))})`"
         @click="dialogs.showPalette = true"
       >
         <Plus :size="15" :stroke-width="1.5" aria-hidden="true" />
@@ -150,7 +191,8 @@ function closeSession(sessionId: number) {
 
     <div class="topbar-spacer"></div>
 
-    <div class="window-controls">
+    <!-- A Mac draws its own traffic lights (titleBarStyle Overlay), top left -->
+    <div v-if="!isMac" class="window-controls">
       <button class="win-btn" aria-label="Minimize" @click="appWindow.minimize()">
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
           <path d="M2 6h8" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
@@ -170,7 +212,7 @@ function closeSession(sessionId: number) {
           <rect x="2.25" y="2.25" width="7.5" height="7.5" rx="1.75" fill="none" stroke="currentColor" stroke-width="1.25" />
         </svg>
       </button>
-      <button class="win-btn win-close" aria-label="Close" @click="appWindow.close()">
+      <button class="win-btn win-close" aria-label="Close" @click="closeWindow()">
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
           <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
         </svg>
@@ -189,6 +231,11 @@ function closeSession(sessionId: number) {
   background: var(--bg);
   /* acts as the title bar — nothing in it is selectable text */
   user-select: none;
+}
+
+/* Room for the native traffic lights floating over the left edge */
+.topbar.mac {
+  padding-left: 68px;
 }
 
 .topbar-btn {

@@ -9,7 +9,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
 import { terminalThemeFor, xtermThemeFor } from '../services/terminalThemes'
-import { actionFor, captureActive, comboFor } from '../services/shortcuts'
+import { actionFor, captureActive, comboFor, comboText } from '../services/shortcuts'
+import { isMac, isWindows, terminalClipboardKeys } from '../utils/platform'
 import type { SessionTab } from '../types'
 
 const props = defineProps<{ session: SessionTab }>()
@@ -23,6 +24,11 @@ let term: Terminal | null = null
 let fit: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 let fitFrame = 0
+// Chunks that arrive in the same turn become one write. A timer here
+// would add echo lag; the backend already coalesces the byte stream.
+let chunks: Uint8Array[] = []
+let flushQueued = false
+let lastUnstick = 0
 
 function scheduleFit() {
   if (fitFrame) return
@@ -37,6 +43,28 @@ function scheduleFit() {
       // container hidden — fit() can throw when dimensions are 0
     }
   })
+}
+
+// OpenCode sizes its splash from the PTY's pixel winsize. A 0×0 report
+// makes that art enormous and clips the prompt.
+function terminalPixels(): { pixWidth: number; pixHeight: number } {
+  if (!term) return { pixWidth: 0, pixHeight: 0 }
+  const cell = (
+    term as unknown as {
+      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } }
+    }
+  )._core?._renderService?.dimensions?.css?.cell
+  if (!cell?.width || !cell?.height) return { pixWidth: 0, pixHeight: 0 }
+  const dpr = window.devicePixelRatio || 1
+  return {
+    pixWidth: Math.round(term.cols * cell.width * dpr),
+    pixHeight: Math.round(term.rows * cell.height * dpr),
+  }
+}
+
+function pushSize(cols: number, rows: number) {
+  const px = terminalPixels()
+  sessions.resize(props.session.id, cols, rows, px.pixWidth, px.pixHeight)
 }
 
 function terminalTheme() {
@@ -111,7 +139,7 @@ const findResult = ref<{ index: number; count: number } | null>(null)
 const findInvalid = ref(false)
 const HIGHLIGHT_LIMIT = 1000
 
-const findShortcut = computed(() => comboFor('terminalFind', ui.settings))
+const findShortcut = computed(() => comboText(comboFor('terminalFind', ui.settings)))
 
 const findCountLabel = computed(() => {
   if (findInvalid.value) return 'Invalid pattern'
@@ -212,6 +240,120 @@ watch(
   },
 )
 
+// ---- right-click context menu (Copy / Paste / Select All) ----
+// The WebView's own menu is suppressed app-wide (main.ts), so the terminal
+// carries its own. While it's open the keyboard belongs to the menu:
+// captureActive stands the app shortcuts and every xterm pane down, and a
+// capture-phase keydown listener swallows everything the menu doesn't use.
+
+const ctxMenuEl = ref<HTMLElement | null>(null)
+const ctxOpen = ref(false)
+const ctxX = ref(0)
+const ctxY = ref(0)
+const ctxHasSelection = ref(false)
+
+function openCtxMenu(e: MouseEvent) {
+  const t = e.target as HTMLElement | null
+  // Inputs outside the terminal keep the native menu — same rule as main.ts.
+  // Inside .xterm the menu takes over even when the target is the hidden
+  // helper textarea: right-click moves it under the cursor.
+  if (t && !t.closest('.xterm') && t.closest('input, textarea, [contenteditable]')) return
+  e.preventDefault()
+  e.stopPropagation()
+  if (!term || ctxOpen.value) return
+  ctxHasSelection.value = term.hasSelection()
+  ctxOpen.value = true
+  captureActive.value = true
+  window.addEventListener('keydown', onCtxKeydown, true)
+  window.addEventListener('pointerdown', onCtxPointerDown, true)
+  window.addEventListener('blur', closeCtxEvent)
+  // Clamp inside the pane once the menu has a size, then move focus in so
+  // Shift+F10 users can arrow through the items
+  nextTick(() => {
+    const el = ctxMenuEl.value
+    const pane = el?.parentElement
+    if (!el || !pane) return
+    const rect = pane.getBoundingClientRect()
+    ctxX.value = Math.max(0, Math.min(e.clientX - rect.left, rect.width - el.offsetWidth - 8))
+    ctxY.value = Math.max(0, Math.min(e.clientY - rect.top, rect.height - el.offsetHeight - 8))
+    el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+  })
+}
+
+function closeCtxEvent() {
+  closeCtxMenu()
+}
+
+function closeCtxMenu(refocus = true) {
+  if (!ctxOpen.value) return
+  ctxOpen.value = false
+  captureActive.value = false
+  window.removeEventListener('keydown', onCtxKeydown, true)
+  window.removeEventListener('pointerdown', onCtxPointerDown, true)
+  window.removeEventListener('blur', closeCtxEvent)
+  if (refocus) term?.focus()
+}
+
+function onCtxPointerDown(e: PointerEvent) {
+  if (!ctxMenuEl.value?.contains(e.target as Node)) closeCtxMenu(false)
+}
+
+function onCtxKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' || e.key === 'Tab') {
+    e.preventDefault()
+    e.stopPropagation()
+    closeCtxMenu()
+    return
+  }
+  const items = ctxMenuEl.value
+    ? Array.from(ctxMenuEl.value.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+    : []
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!items.length) return
+    const i = items.indexOf(document.activeElement as HTMLButtonElement)
+    const next = e.key === 'ArrowDown' ? items[(i + 1) % items.length] : items[(i - 1 + items.length) % items.length]
+    next.focus()
+    return
+  }
+  // Let Enter/Space activate the focused item
+  if ((e.key === 'Enter' || e.key === ' ') && items.includes(document.activeElement as HTMLButtonElement)) return
+  e.preventDefault()
+  e.stopPropagation()
+}
+
+function ctxCopy() {
+  const sel = term?.getSelection() ?? ''
+  closeCtxMenu()
+  if (!sel) return
+  navigator.clipboard.writeText(sel).catch(() => ui.toast('error', 'Could not copy to the clipboard'))
+}
+
+async function ctxPaste() {
+  closeCtxMenu()
+  let text = ''
+  try {
+    text = await navigator.clipboard.readText()
+  } catch {
+    ui.toast('error', `Clipboard unavailable — press ${terminalClipboardKeys.paste} to paste`)
+    return
+  }
+  if (!text || !term) return
+  // Dispatch a real paste event so xterm's own handler applies newline
+  // normalization and bracketed-paste wrapping (vim, zsh, …)
+  const dt = new DataTransfer()
+  dt.setData('text/plain', text)
+  term.textarea?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt }))
+  term.focus()
+}
+
+function ctxSelectAll() {
+  closeCtxMenu()
+  term?.selectAll()
+  term?.focus()
+}
+
 // WebGL repaints a full-screen TUI on the GPU; the DOM renderer draws text
 // through Chromium's own DirectWrite path (closer to Windows Terminal's
 // glyph weight) but costs more CPU. Disposing the addon falls back to DOM.
@@ -239,6 +381,47 @@ function applyRenderer() {
   term.refresh(0, term.rows - 1)
 }
 
+function unstickPaint() {
+  if (!term) return
+  const now = performance.now()
+  if (now - lastUnstick < 100) return
+  lastUnstick = now
+  const renderService = (
+    term as unknown as { _core?: { _renderService?: RenderServiceLike } }
+  )._core?._renderService
+  try {
+    renderService?._renderDebouncer?.dispose?.()
+  } catch {
+    // private API drift
+  }
+  try {
+    renderService?.refreshRows?.(0, term.rows - 1, true)
+  } catch {
+    // private API drift
+  }
+}
+
+function flushScreen() {
+  flushQueued = false
+  if (!term || chunks.length === 0) {
+    chunks = []
+    return
+  }
+  const parts = chunks
+  chunks = []
+  let n = 0
+  for (const part of parts) n += part.length
+  const out = new Uint8Array(n)
+  let offset = 0
+  for (const part of parts) {
+    out.set(part, offset)
+    offset += part.length
+  }
+  term.write(out, () => {
+    if (n >= 2048) unstickPaint()
+  })
+}
+
 onMounted(() => {
   if (!container.value) return
 
@@ -247,7 +430,7 @@ onMounted(() => {
     // (oh-my-posh, agent prompts) fall back per-glyph instead of tofu
     // Same face as this machine's Windows Terminal defaults (MesloLGM Nerd Font Mono).
     fontFamily:
-      '"MesloLGM Nerd Font Mono", "Cascadia Code", "Cascadia Code NF", "Cascadia Mono NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Hack Nerd Font", ui-monospace, Consolas, monospace',
+      '"MesloLGM Nerd Font Mono", "Cascadia Code", "Cascadia Code NF", "Cascadia Mono NF", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Hack Nerd Font", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", "Liberation Mono", monospace',
     fontSize: ui.settings.terminalFontSize,
     fontWeight: 'normal',
     // Windows Terminal's documented default intenseTextStyle is "bright"
@@ -259,6 +442,10 @@ onMounted(() => {
     lineHeight: 1,
     cursorBlink: true,
     cursorStyle: 'bar',
+    // Windows xterm's default replaces the current selection with the word
+    // under the cursor on right-click; the context menu needs the real
+    // selection kept alive so its Copy entry copies what the user dragged
+    rightClickSelectsWord: false,
     scrollback: 10000,
     // Instant scroll. A non-zero duration animates the viewport and reads as lag.
     smoothScrollDuration: 0,
@@ -308,6 +495,30 @@ onMounted(() => {
         return false
       }
     }
+    // Ctrl+C / Ctrl+V: xterm maps these to ^C/^V and preventDefault()s the
+    // keydown, which cancels the native clipboard events its own copy/paste
+    // handlers listen for. Returning false skips that so the browser fires
+    // them — paste lands through xterm's handler (newline-normalized,
+    // bracketed-paste aware) and copy writes the selection. Without a
+    // selection Ctrl+C stays a plain ^C so it can still interrupt a job.
+    // macOS skips this: Cmd+C / Cmd+V arrive as native copy and paste events
+    // through the Edit menu, and Ctrl+C is always ^C there — a selection must
+    // never turn an interrupt into a copy.
+    if (!isMac && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      if (e.key === 'c' || e.key === 'C') return !term?.hasSelection()
+      if (e.key === 'v' || e.key === 'V') return false
+    }
+    // Linux terminals (GNOME Terminal, Konsole) copy and paste with Ctrl+Shift+C / V
+    if (!isWindows && !isMac && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+      if (e.code === 'KeyC') {
+        ctxCopy()
+        return false
+      }
+      if (e.code === 'KeyV') {
+        void ctxPaste()
+        return false
+      }
+    }
     return actionFor(e, ui.settings) === null
   })
 
@@ -316,14 +527,15 @@ onMounted(() => {
     // scan only looks at the ASCII tail, so a multibyte split can't match
     const bytes = b64ToBytes(data)
     scanKitty(bytes)
-    term?.write(bytes)
+    chunks.push(bytes)
+    if (flushQueued) return
+    flushQueued = true
+    queueMicrotask(flushScreen)
   })
 
   term.onData(queueInput)
   term.onResize(({ cols, rows }) => {
-    if (props.session.status === 'connected') {
-      sessions.resize(props.session.id, cols, rows)
-    }
+    if (props.session.status === 'connected') pushSize(cols, rows)
   })
 
   resizeObserver = new ResizeObserver(() => {
@@ -390,6 +602,7 @@ watch(
   () => ui.activeView,
   (view) => {
     if (view !== `session:${props.session.id}`) return
+    closeCtxMenu(false)
     scheduleRecoverPaint()
     term?.focus()
   },
@@ -419,7 +632,7 @@ watch(
       recoverPaint()
       // A fresh PTY starts at 80×24; tell it the real size even when the
       // fit didn't change (reconnects keep this pane's dimensions)
-      if (term) sessions.resize(props.session.id, term.cols, term.rows)
+      if (term) pushSize(term.cols, term.rows)
       if (!findOpen.value) term?.focus()
     }
   },
@@ -443,7 +656,9 @@ watch(
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  closeCtxMenu(false)
   if (fitFrame) cancelAnimationFrame(fitFrame)
+  chunks = []
   sessions.detachSink(props.session.id)
   resizeObserver?.disconnect()
   webgl = null
@@ -454,7 +669,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="terminal-pane">
+  <div class="terminal-pane" @contextmenu="openCtxMenu">
     <div
       ref="container"
       class="terminal-container"
@@ -522,6 +737,28 @@ onUnmounted(() => {
         @click="closeFind"
       >
         <X :size="13" :stroke-width="1.75" aria-hidden="true" />
+      </button>
+    </div>
+
+    <!-- Right-click menu: Copy / Paste / Select All -->
+    <div
+      v-if="ctxOpen"
+      ref="ctxMenuEl"
+      class="ctx-menu"
+      role="menu"
+      aria-label="Terminal clipboard"
+      :style="{ left: `${ctxX}px`, top: `${ctxY}px` }"
+      @contextmenu.prevent.stop
+    >
+      <button class="ctx-item" role="menuitem" :disabled="!ctxHasSelection" @click="ctxCopy">
+        <span>Copy</span><kbd>{{ terminalClipboardKeys.copy }}</kbd>
+      </button>
+      <button class="ctx-item" role="menuitem" @click="ctxPaste">
+        <span>Paste</span><kbd>{{ terminalClipboardKeys.paste }}</kbd>
+      </button>
+      <div class="ctx-sep" role="separator" aria-hidden="true"></div>
+      <button class="ctx-item" role="menuitem" @click="ctxSelectAll">
+        <span>Select All</span>
       </button>
     </div>
   </div>
@@ -616,6 +853,69 @@ onUnmounted(() => {
 .find-btn:disabled {
   opacity: 0.4;
   pointer-events: none;
+}
+
+.ctx-menu {
+  position: absolute;
+  z-index: 30;
+  min-width: 176px;
+  padding: 4px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-pop);
+  user-select: none;
+  transform-origin: top left;
+  animation: ctx-in 100ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes ctx-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-hover) ease;
+}
+
+.ctx-item:hover:not(:disabled),
+.ctx-item:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.ctx-item:disabled {
+  color: var(--text-3);
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ctx-item kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 .terminal-container {

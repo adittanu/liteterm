@@ -300,18 +300,24 @@ pub async fn session_resize(
     session_id: u32,
     cols: u32,
     rows: u32,
+    pix_width: Option<u32>,
+    pix_height: Option<u32>,
 ) -> Result<(), String> {
+    let pix_width = pix_width.unwrap_or(0);
+    let pix_height = pix_height.unwrap_or(0);
     let local = state.local_sessions.lock().unwrap().get(&session_id).cloned();
     if let Some(session) = local {
         let c = u16::try_from(cols).unwrap_or(u16::MAX);
         let r = u16::try_from(rows).unwrap_or(u16::MAX);
-        return crate::local::local_resize(&session, c, r);
+        let pw = u16::try_from(pix_width).unwrap_or(u16::MAX);
+        let ph = u16::try_from(pix_height).unwrap_or(u16::MAX);
+        return crate::local::local_resize(&session, c, r, pw, ph);
     }
 
     let session = registered_session(state.inner(), session_id)?;
     let guard = session.resize_tx.lock().await;
     let tx = guard.as_ref().ok_or("Not connected")?;
-    tx.send((cols, rows))
+    tx.send((cols, rows, pix_width, pix_height))
         .await
         .map_err(|_| "Session ended".to_string())
 }

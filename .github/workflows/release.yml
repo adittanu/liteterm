@@ -1,20 +1,82 @@
-# Builds the Windows NSIS installer and publishes it to a GitHub release.
-# The in-app update button reads these releases (commands/update.rs -> REPO),
-# so the tag must match the version in src-tauri/tauri.conf.json (v1.5.0 = "1.5.0").
+# Builds the installers (Windows NSIS, macOS dmg, Linux deb/rpm/AppImage) and
+# publishes them to one GitHub release. The in-app update button reads these
+# releases (commands/update.rs -> REPO), so the tag must match the version in
+# src-tauri/tauri.conf.json (v1.5.0 = "1.5.0").
+#
+# - Push a `v*` tag: every platform is built into a draft release, which is
+#   published once the builds are in.
+# - Run it by hand (Actions > Release > Run workflow): the same builds, but
+#   nothing is released; the installers come back as workflow artifacts. Use
+#   this to try a branch.
 name: Release
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  # The release has to exist before the parallel builds attach to it; letting
+  # each build create it would race.
+  draft:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
+    steps:
+      - id: draft
+        if: github.ref_type == 'tag'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '')
+            const { owner, repo } = context.repo
+            // A re-run picks up the draft made the first time
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo })
+            const release =
+              releases.find((r) => r.tag_name === tag) ??
+              (await github.rest.repos.createRelease({
+                owner, repo, tag_name: tag, name: `LiteTerm ${tag}`, draft: true, prerelease: false,
+              })).data
+            core.setOutput('release_id', release.id)
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            args: ''
+          # `experimental`: while macOS/Linux are new, a failure there must not
+          # hold back the Windows release. Delete the flag once they are stable.
+          - name: macos
+            os: macos-latest
+            # One universal binary covers Apple Silicon and Intel
+            args: --target universal-apple-darwin --bundles dmg
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            experimental: true
+          - name: linux
+            # Oldest runner on offer: an AppImage built here runs on older distros too
+            os: ubuntu-22.04
+            args: --bundles deb,rpm,appimage
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev libssl-dev libdbus-1-dev pkg-config
 
       - uses: pnpm/action-setup@v4
         with:
@@ -26,6 +88,8 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -33,12 +97,73 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build and publish release
+      # macOS signing and notarization need an Apple Developer account. With no
+      # secrets set, the two steps below do nothing and the dmg ships unsigned.
+      # Secrets: APPLE_CERTIFICATE (the .p12, base64), APPLE_CERTIFICATE_PASSWORD,
+      # APPLE_SIGNING_IDENTITY ("Developer ID Application: Name (TEAMID)"), and for
+      # notarization APPLE_ID, APPLE_PASSWORD (an app-specific password), APPLE_TEAM_ID.
+      # Each is exported only when it has a value: tauri reads a variable that is
+      # set but empty as "provided" and then fails on it.
+      - name: Check for Apple signing secrets
+        id: apple
+        if: matrix.name == 'macos'
+        env:
+          CERT: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ -n "$CERT" ]; then echo "signing=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Export Apple signing secrets
+        if: steps.apple.outputs.signing == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            value="${!name}"
+            if [ -n "$value" ]; then echo "$name=$value" >> "$GITHUB_ENV"; fi
+          done
+
+      # With a release id the installers are uploaded to it; without one
+      # (a manual run) tauri-action only builds.
+      - name: Build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'LiteTerm ${{ github.ref_name }}'
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          args: ${{ matrix.args }}
+
+      - name: Keep the installers (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: liteterm-${{ matrix.name }}
+          path: |
+            src-tauri/target/**/release/bundle/nsis/*.exe
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/deb/*.deb
+            src-tauri/target/**/release/bundle/rpm/*.rpm
+            src-tauri/target/**/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.draft.outputs.release_id }}
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              ...context.repo,
+              release_id: Number(process.env.RELEASE_ID),
+              draft: false,
+            })

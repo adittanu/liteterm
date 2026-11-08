@@ -7,6 +7,7 @@ import { useForwardsStore } from '../stores/extras'
 import { useHostsStore } from '../stores/hosts'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
+import { thisComputer } from '../utils/platform'
 import type { PortForward } from '../types'
 
 const props = defineProps<{ forward: PortForward | null }>()
@@ -94,7 +95,7 @@ async function save() {
       <div class="route" aria-hidden="true">
         <span class="route-node">
           <Laptop :size="14" :stroke-width="1.5" />
-          <span class="route-label">This PC</span>
+          <span class="route-label">{{ thisComputer }}</span>
           <span class="route-value mono">:{{ effectiveLocal || '…' }}</span>
         </span>
         <ArrowRight :size="14" :stroke-width="1.5" class="route-arrow" />
