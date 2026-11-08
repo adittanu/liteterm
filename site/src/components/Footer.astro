@@ -1,0 +1,127 @@
+---
+import { RELEASES_URL, REPO_URL } from '../data/release';
+import Logo from './Logo.astro';
+import { withBase } from '../utils/url';
+
+const year = new Date().getFullYear();
+---
+
+<footer class="footer">
+  <div class="container">
+    <div class="top">
+      <div class="about">
+        <a class="brand" href={withBase()} aria-label="LiteTerm, home">
+          <Logo size={26} />
+          <span>LiteTerm</span>
+        </a>
+        <p>A small SSH client for Windows, macOS and Linux.</p>
+      </div>
+
+      <nav class="col" aria-label="Product">
+        <h2>Product</h2>
+        <a href="#features">Features</a>
+        <a href="#platforms">Platforms</a>
+        <a href="#limits">Limits</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+
+      <nav class="col" aria-label="Project">
+        <h2>Project</h2>
+        <a href={RELEASES_URL}>Releases</a>
+        <a href={REPO_URL}>Source on GitHub</a>
+        <a href={`${REPO_URL}/issues`}>Report a bug</a>
+      </nav>
+    </div>
+
+    <div class="legal">
+      <p>© {year} LiteTerm.</p>
+      <p>
+        Termius, Windows, macOS and Linux are trademarks of their respective owners. LiteTerm is not affiliated with or endorsed by them.
+      </p>
+    </div>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    padding-block: var(--space-8) var(--space-6);
+    border-block-start: 1px solid var(--line);
+    font-size: 0.9375rem;
+  }
+
+  .top {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+    gap: var(--space-6);
+  }
+
+  .about {
+    display: grid;
+    align-content: start;
+    gap: var(--space-3);
+    max-width: 22rem;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    color: var(--text);
+    font-size: var(--step-1);
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    text-decoration: none;
+  }
+
+  .about p {
+    color: var(--text-3);
+  }
+
+  .col {
+    display: grid;
+    align-content: start;
+    gap: var(--space-3);
+  }
+
+  .col h2 {
+    color: var(--text);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .col a {
+    color: var(--text-2);
+    text-decoration: none;
+  }
+
+  .col a:hover {
+    color: var(--text);
+    text-decoration: underline;
+  }
+
+  .legal {
+    display: grid;
+    gap: var(--space-2);
+    margin-block-start: var(--space-7);
+    padding-block-start: var(--space-5);
+    border-block-start: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: 0.875rem;
+  }
+
+  .legal p {
+    max-width: 52rem;
+  }
+
+  @media (max-width: 44rem) {
+    .top {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .about {
+      grid-column: 1 / -1;
+    }
+  }
+</style>

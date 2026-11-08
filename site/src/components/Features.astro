@@ -1,0 +1,594 @@
+---
+import { ArrowRight, CheckCircle2, Lock, Play, Server, ShieldAlert, StickyNote } from 'lucide-react';
+
+const ICON = { size: 16, strokeWidth: 1.5, 'aria-hidden': true } as const;
+
+// What the quick-connect box turns a typed address into (src/utils/parseTarget.ts in the app)
+const targets = [
+  { typed: 'ops@203.0.113.7:2222', result: 'ops on 203.0.113.7, port 2222' },
+  { typed: '10.0.4.12', result: '10.0.4.12, your usual user' },
+  { typed: 'https://git.example.com/team', result: 'git.example.com' },
+];
+
+const also = [
+  'Auto-reconnect',
+  'Find in terminal, with regex',
+  'Snippets',
+  'SSH agent: 1Password, Bitwarden, KeePassXC',
+  'Import from ~/.ssh/config or a Termius export',
+  'Light and dark themes',
+  'Local terminal',
+];
+---
+
+<section class="section" id="features" aria-labelledby="features-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow"><b>01</b> · Features</p>
+      <h2 id="features-title">One window for the whole SSH day.</h2>
+      <p class="lede">Terminal, files, tunnels and the notes you keep about them. Nothing to sign in to.</p>
+    </div>
+
+    <div class="bento">
+      <article class="tile tile-quick">
+        <div class="copy">
+          <h3>Quick connect from the keyboard</h3>
+          <p>
+            Press <kbd class="key">Ctrl</kbd> <kbd class="key">K</kbd> (<kbd class="key">⌘</kbd> <kbd class="key">K</kbd> on a Mac), type a few letters of a
+            host name and press Enter. Or paste an address and LiteTerm connects to it.
+          </p>
+        </div>
+        <ul class="visual targets" aria-hidden="true">
+          {
+            targets.map((t) => (
+              <li>
+                <code>{t.typed}</code>
+                <ArrowRight size={14} strokeWidth={1.75} />
+                <span>{t.result}</span>
+              </li>
+            ))
+          }
+        </ul>
+      </article>
+
+      <article class="tile tile-jump">
+        <div class="copy">
+          <h3>Jump hosts, built in</h3>
+          <p>Route through one bastion or a chain of them. ProxyJump lines in your <code>~/.ssh/config</code> come along when you import.</p>
+        </div>
+        <div class="visual chain" aria-hidden="true">
+          <span class="node">Your computer</span>
+          <span class="link"></span>
+          <span class="node"><Server {...ICON} /> bastion</span>
+          <span class="link"></span>
+          <span class="node node-end"><Server {...ICON} /> db-primary</span>
+        </div>
+      </article>
+
+      <article class="tile tile-sftp">
+        <div class="copy">
+          <h3>SFTP in two panes</h3>
+          <p>Browse, rename, upload and download with progress and cancel. Move files between this computer and a host, or between two hosts.</p>
+        </div>
+        <div class="visual transfer" aria-hidden="true">
+          <div class="transfer-head">
+            <span class="file">app-1.9.0.tar.gz</span>
+            <span class="route">to prod-api:/var/www</span>
+          </div>
+          <div class="bar"><span class="fill"></span></div>
+          <div class="transfer-foot">
+            <span>68%</span>
+            <span class="cancel">Cancel</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="tile tile-fwd">
+        <div class="copy">
+          <h3>Port forwarding</h3>
+          <p>Start and stop local forwards (<code>-L</code>) from a list. A forward can start by itself when its host connects.</p>
+        </div>
+        <div class="visual route-card" aria-hidden="true">
+          <div class="route-row">
+            <code>localhost:5432</code>
+            <ArrowRight size={14} strokeWidth={1.75} />
+            <code>db.internal:5432</code>
+          </div>
+          <span class="running"><i></i> Running</span>
+        </div>
+      </article>
+
+      <article class="tile tile-notes">
+        <div class="copy">
+          <h3>Notes beside your servers</h3>
+          <p>Write runbooks with tags, link a note to a host, and press Run on a code block to send it to that host’s terminal.</p>
+        </div>
+        <div class="visual note" aria-hidden="true">
+          <div class="note-title"><StickyNote {...ICON} /> Reload nginx</div>
+          <div class="note-tags"><span>#prod</span><span>#runbook</span></div>
+          <div class="note-code">
+            <code>sudo nginx -s reload</code>
+            <span class="run"><Play size={12} strokeWidth={2} /> Run</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="tile tile-secrets">
+        <div class="copy">
+          <h3>Secrets and host keys stay in their place</h3>
+          <p>
+            Passwords and key passphrases go to the Windows Credential Manager, the macOS Keychain or the Linux Secret Service, never into LiteTerm’s
+            hosts database.
+          </p>
+          <p>
+            The first time you connect, you check the server’s fingerprint. If a saved key ever changes, LiteTerm refuses to connect.
+          </p>
+        </div>
+        <div class="visual secrets" aria-hidden="true">
+          <ul class="stores">
+            <li><Lock {...ICON} /> Windows Credential Manager</li>
+            <li><Lock {...ICON} /> macOS Keychain</li>
+            <li><Lock {...ICON} /> Linux Secret Service</li>
+          </ul>
+          <div class="hostkey">
+            <div class="hostkey-title"><ShieldAlert size={18} strokeWidth={1.5} /> Verify Host Key</div>
+            <p>First connection to <code>203.0.113.7:2222</code>. Verify the server’s key fingerprint before trusting it.</p>
+            <code class="fingerprint">SHA256:uK2c8mQ4…Hx9fQ</code>
+            <div class="hostkey-actions">
+              <span class="ghost">Reject</span>
+              <span class="primary">Trust &amp; connect</span>
+            </div>
+          </div>
+        </div>
+      </article>
+    </div>
+
+    <div class="also">
+      <h3 class="also-title"><CheckCircle2 size={16} strokeWidth={1.75} aria-hidden="true" /> Also in the box</h3>
+      <ul>
+        {also.map((a) => <li class="chip">{a}</li>)}
+      </ul>
+    </div>
+  </div>
+</section>
+
+<style>
+  .bento {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+
+  .tile {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+    min-width: 0;
+    padding: var(--space-5);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+  }
+
+  .tile-quick {
+    grid-column: span 4;
+  }
+
+  .tile-jump,
+  .tile-sftp,
+  .tile-fwd,
+  .tile-notes {
+    grid-column: span 2;
+  }
+
+  .tile-secrets {
+    grid-column: span 6;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    align-items: center;
+    gap: var(--space-6);
+  }
+
+  .copy {
+    display: grid;
+    gap: var(--space-2);
+    max-width: 34rem;
+  }
+
+  .copy p {
+    color: var(--text-2);
+    font-size: 0.9375rem;
+  }
+
+  .copy code {
+    padding: 0.05em 0.35em;
+    border-radius: 5px;
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .visual {
+    margin-block-start: auto;
+    min-width: 0;
+  }
+
+  /* ---- quick connect ---- */
+  .targets {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .targets li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    color: var(--text-3);
+    font-size: 0.875rem;
+  }
+
+  .targets code {
+    flex: none;
+    color: var(--text);
+  }
+
+  .targets svg {
+    flex: none;
+    color: var(--accent-text);
+  }
+
+  .targets span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- jump chain ---- */
+  /* A path top to bottom: the tile is narrow, and a row of three would wrap */
+  .chain {
+    display: grid;
+    justify-items: start;
+  }
+
+  .node {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.875rem;
+    white-space: nowrap;
+  }
+
+  .node svg {
+    color: var(--accent-text);
+  }
+
+  .node-end {
+    border-color: oklch(0.66 0.16 252 / 0.5);
+  }
+
+  .link {
+    width: 1px;
+    height: 0.9rem;
+    margin-inline-start: 1.25rem;
+    background: linear-gradient(180deg, var(--line-strong), var(--accent));
+  }
+
+  /* ---- sftp transfer ---- */
+  .transfer {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    font-size: 0.875rem;
+  }
+
+  .transfer-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: var(--space-1) var(--space-3);
+  }
+
+  .file {
+    color: var(--text);
+    font-family: var(--font-mono);
+  }
+
+  .route {
+    color: var(--text-3);
+  }
+
+  .bar {
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface-3);
+  }
+
+  .fill {
+    display: block;
+    width: 68%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+  }
+
+  .transfer-foot {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-2);
+  }
+
+  .cancel {
+    color: var(--text-3);
+  }
+
+  /* ---- port forward ---- */
+  .route-card {
+    display: grid;
+    justify-items: start;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    font-size: 0.875rem;
+  }
+
+  .route-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .route-row code {
+    color: var(--text);
+    font-size: 0.8125rem;
+  }
+
+  .route-row svg {
+    flex: none;
+    color: var(--accent-text);
+  }
+
+  .running {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    background: var(--success-soft);
+    color: var(--success);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .running i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+  }
+
+  /* ---- notes ---- */
+  .note {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+  }
+
+  .note-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .note-title svg {
+    color: var(--warn);
+  }
+
+  .note-tags {
+    display: flex;
+    gap: var(--space-2);
+    color: var(--accent-text);
+    font-size: 0.8125rem;
+  }
+
+  .note-code {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: oklch(0.13 0.012 260);
+    font-size: 0.8125rem;
+  }
+
+  .note-code code {
+    overflow: hidden;
+    color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  /* ---- secrets ---- */
+  .secrets {
+    display: grid;
+    gap: var(--space-4);
+    margin: 0;
+  }
+
+  .stores {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .stores li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 0.55rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    color: var(--text-2);
+    font-size: 0.875rem;
+  }
+
+  .stores svg {
+    color: var(--success);
+  }
+
+  .hostkey {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    font-size: 0.875rem;
+  }
+
+  .hostkey-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .hostkey-title svg {
+    color: var(--warn);
+  }
+
+  .hostkey p {
+    color: var(--text-2);
+  }
+
+  .hostkey code {
+    color: var(--text);
+  }
+
+  .fingerprint {
+    padding: 0.55rem 0.75rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    font-size: 0.8125rem;
+  }
+
+  .hostkey-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .ghost,
+  .primary {
+    padding: 0.4rem 0.85rem;
+    border-radius: var(--radius-sm);
+  }
+
+  .ghost {
+    color: var(--text-2);
+  }
+
+  .primary {
+    background: var(--accent-fill);
+    color: #fff;
+  }
+
+  /* ---- also ---- */
+  .also {
+    display: grid;
+    gap: var(--space-4);
+    margin-block-start: var(--space-7);
+  }
+
+  .also-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text-3);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .also ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  /* The longest chips are wider than a 320px phone: let them wrap inside */
+  .also .chip {
+    white-space: normal;
+  }
+
+  @media (max-width: 62rem) {
+    .tile-jump,
+    .tile-sftp,
+    .tile-fwd,
+    .tile-notes {
+      grid-column: span 3;
+    }
+
+    .tile-quick {
+      grid-column: span 6;
+    }
+
+    .tile-secrets {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 40rem) {
+    .bento {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .tile-quick,
+    .tile-jump,
+    .tile-sftp,
+    .tile-fwd,
+    .tile-notes,
+    .tile-secrets {
+      grid-column: auto;
+    }
+  }
+</style>

@@ -1,0 +1,343 @@
+---
+// The hero's backdrop: your servers, at the edges of the page, being reached
+// from the LiteTerm window one at a time. A packet leaves the window's top
+// edge, runs up a cable to a host, and the host goes live (green, like a
+// session tab's dot in the app) before settling back.
+//
+// Pure CSS: predetermined motion that has to stay smooth while the page is
+// still hydrating the hero demo, so it runs as keyframes on opacity, transform
+// and offset-distance only, off the main thread. Every connection shares one
+// 9.6s cycle and starts 1.2s after the last, with negative delays so the
+// scene is already alive on the first frame.
+//
+// Coordinates are a fixed 1440x720 field whose bottom edge sits on the top of
+// the product window (see Hero.astro); nodes keep to the margins, clear of
+// the centered copy. Narrow screens drop it: the margins are not there.
+
+interface Conn {
+  label: string;
+  x: number;
+  y: number;
+  /** where the cable leaves the window's top edge */
+  hub: number;
+  /** labels sit on the side away from the copy */
+  side: 'left' | 'right';
+  /** shown connected in the still (reduced motion) */
+  still?: boolean;
+}
+
+const W = 1440;
+const H = 720;
+const CYCLE = 9.6; // seconds
+const STEP = 1.2; // seconds between connections
+
+// Fired in this order: alternating sides, so the page never leans one way
+// Hubs sit inside the window's top edge even when the stage scales down to
+// a 1024px viewport (the window then spans about x 277..1163 here), and the
+// outermost host takes the outermost hub so the cables never cross.
+const conns: Conn[] = [
+  { label: 'prod-api', x: 120, y: 150, hub: 320, side: 'left', still: true },
+  { label: 'ci-runner', x: 1195, y: 320, hub: 1040, side: 'right' },
+  { label: 'bastion', x: 80, y: 445, hub: 290, side: 'left' },
+  { label: 'metrics', x: 1225, y: 565, hub: 1080, side: 'right' },
+  { label: 'db-primary', x: 250, y: 315, hub: 420, side: 'left' },
+  { label: 'edge-01', x: 1325, y: 160, hub: 1120, side: 'right', still: true },
+  { label: 'nas', x: 225, y: 570, hub: 370, side: 'left' },
+  { label: 'staging-web', x: 1365, y: 440, hub: 1150, side: 'right' },
+];
+
+// From the window up to the host: straight up out of the window, then
+// swinging over to the host, arriving from below
+const path = (c: Conn) => `M ${c.hub} ${H} C ${c.hub} ${H - 150}, ${c.x} ${c.y + (H - c.y) * 0.55}, ${c.x} ${c.y}`;
+---
+
+<div class="net" aria-hidden="true">
+  <svg class="cables" viewBox={`0 0 ${W} ${H}`} width={W} height={H}>
+    {conns.map((c) => <path d={path(c)} />)}
+  </svg>
+
+  {
+    conns.map((c, i) => (
+      <div
+        class:list={['conn', c.side, { still: c.still }]}
+        style={`--delay: ${(i * STEP - CYCLE).toFixed(2)}s; --x: ${c.x}px; --y: ${c.y}px;`}
+      >
+        <svg class="lit" viewBox={`0 0 ${W} ${H}`} width={W} height={H}>
+          <path d={path(c)} pathLength="1" />
+        </svg>
+        <span class="packet" style={`offset-path: path('${path(c)}');`} />
+        <span class="node">
+          <i class="dot" />
+          <i class="live" />
+          <i class="ring" />
+        </span>
+        <span class="label">{c.label}</span>
+      </div>
+    ))
+  }
+</div>
+
+<style>
+  .net {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% - 20px);
+    z-index: 0;
+    width: 1440px;
+    height: 720px;
+    margin-left: -720px;
+    pointer-events: none;
+    --cycle: 9.6s;
+  }
+
+  .cables,
+  .lit {
+    position: absolute;
+    inset: 0;
+    overflow: visible;
+    fill: none;
+  }
+
+  .cables path {
+    stroke: oklch(0.66 0.16 252 / 0.13);
+    stroke-width: 1;
+    stroke-dasharray: 3 5;
+  }
+
+  /* ---- one connection: five parts on one clock ---- */
+
+  .conn :is(.lit, .lit path, .packet, .live, .ring, .label) {
+    animation-duration: var(--cycle);
+    animation-delay: var(--delay);
+    animation-iteration-count: infinite;
+  }
+
+  .lit {
+    opacity: 0;
+    animation-name: net-lit;
+    animation-timing-function: linear;
+  }
+
+  /* The cable is drawn behind the packet, window to host: dash offset on a
+     path normalized to length 1. It repaints this one small SVG while it
+     draws; that trail is what ties the packet to its cable. */
+  .lit path {
+    stroke: oklch(0.72 0.14 252 / 0.55);
+    stroke-width: 1.25;
+    stroke-dasharray: 1 1;
+    stroke-dashoffset: 1;
+    animation-name: net-draw;
+  }
+
+  .packet {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: oklch(0.86 0.09 252);
+    box-shadow: 0 0 10px 2px oklch(0.66 0.16 252 / 0.8);
+    offset-rotate: 0deg;
+    offset-distance: 0%;
+    opacity: 0;
+    animation-name: net-packet;
+  }
+
+  .node {
+    position: absolute;
+    top: var(--y);
+    left: var(--x);
+    width: 0;
+    height: 0;
+  }
+
+  .node i {
+    position: absolute;
+    top: -3.5px;
+    left: -3.5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+
+  .dot {
+    background: oklch(0.42 0.015 260);
+    box-shadow: 0 0 0 3px oklch(0.155 0.012 260);
+  }
+
+  .live {
+    background: oklch(0.72 0.16 155);
+    box-shadow: 0 0 12px 1px oklch(0.72 0.16 155 / 0.7);
+    opacity: 0;
+    transform: scale(0.6);
+    animation-name: net-live;
+  }
+
+  .ring {
+    border: 1px solid oklch(0.72 0.16 155 / 0.8);
+    opacity: 0;
+    animation-name: net-ring;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .label {
+    position: absolute;
+    top: calc(var(--y) - 0.6em);
+    color: oklch(0.78 0.01 260);
+    font: 500 11px/1.2 var(--font-mono);
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    opacity: 0.32;
+    animation-name: net-label;
+    animation-timing-function: linear;
+  }
+
+  .left .label {
+    left: calc(var(--x) + 14px);
+  }
+
+  .right .label {
+    right: calc(1440px - var(--x) + 14px);
+  }
+
+  /* The packet runs window -> host in 1.15s, the host lights as it lands,
+     holds while the cable stays lit, then everything settles back */
+  @keyframes net-packet {
+    0% {
+      offset-distance: 0%;
+      opacity: 0;
+      animation-timing-function: cubic-bezier(0.77, 0, 0.175, 1);
+    }
+    1.5% {
+      opacity: 1;
+    }
+    12% {
+      offset-distance: 100%;
+      opacity: 1;
+    }
+    14%,
+    100% {
+      offset-distance: 100%;
+      opacity: 0;
+    }
+  }
+
+  @keyframes net-draw {
+    0% {
+      stroke-dashoffset: 1;
+      animation-timing-function: cubic-bezier(0.77, 0, 0.175, 1);
+    }
+    12%,
+    30% {
+      stroke-dashoffset: 0;
+    }
+    /* back to undrawn only once the cable has faded out */
+    31%,
+    100% {
+      stroke-dashoffset: 1;
+    }
+  }
+
+  @keyframes net-lit {
+    0% {
+      opacity: 0;
+    }
+    1%,
+    18% {
+      opacity: 1;
+    }
+    28%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes net-live {
+    0%,
+    11% {
+      opacity: 0;
+      transform: scale(0.6);
+      animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    14% {
+      opacity: 1;
+      transform: scale(1.3);
+    }
+    18%,
+    30% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    40%,
+    100% {
+      opacity: 0;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes net-ring {
+    0%,
+    12% {
+      opacity: 0;
+      transform: scale(1);
+    }
+    13% {
+      opacity: 0.8;
+      transform: scale(1);
+    }
+    26%,
+    100% {
+      opacity: 0;
+      transform: scale(3.4);
+    }
+  }
+
+  @keyframes net-label {
+    0%,
+    12% {
+      opacity: 0.32;
+    }
+    15%,
+    32% {
+      opacity: 0.9;
+    }
+    42%,
+    100% {
+      opacity: 0.32;
+    }
+  }
+
+  /* The hero's Pause button stops this too (WCAG 2.2.2) */
+  :global(:root[data-hero-paused]) .conn * {
+    animation-play-state: paused;
+  }
+
+  /* Reduced motion: a still picture of the same idea, two hosts connected */
+  @media (prefers-reduced-motion: reduce) {
+    .conn * {
+      animation: none !important;
+    }
+
+    .still .lit,
+    .still .live {
+      opacity: 1;
+      transform: none;
+    }
+
+    .still .lit path {
+      stroke-dashoffset: 0;
+    }
+
+    .still .label {
+      opacity: 0.9;
+    }
+  }
+
+  /* The margins it lives in only exist on wide screens */
+  @media (max-width: 60rem) {
+    .net {
+      display: none;
+    }
+  }
+</style>

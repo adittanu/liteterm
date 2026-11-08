@@ -1,0 +1,54 @@
+---
+import { Download } from 'lucide-react';
+import { links } from '../data/release';
+
+interface Props {
+  variant?: 'primary' | 'secondary';
+  size?: 'normal' | 'small';
+  /** Keep the label at "Download" (the nav, where "for Windows" would not fit a phone) */
+  short?: boolean;
+}
+
+const { variant = 'primary', size = 'normal', short = false } = Astro.props;
+const cls = `btn btn-${variant}${size === 'small' ? ' btn-small' : ''}`;
+---
+
+<!--
+  No script, no problem: the button is a link to the platform cards. With
+  script, it learns the visitor's OS and points straight at that installer.
+-->
+<a
+  class={cls}
+  href="#platforms"
+  data-download
+  data-windows={links.windows}
+  data-macos={links.macos}
+  data-linux={links.linux}
+  data-short={short || undefined}
+>
+  <Download size={size === 'small' ? 16 : 18} strokeWidth={2} aria-hidden="true" />
+  <span data-download-label>Download</span>
+</a>
+
+<script>
+  const ua = navigator.userAgent;
+  const os = /Windows/i.test(ua)
+    ? 'windows'
+    : /iPhone|iPad|Android/i.test(ua)
+      ? null
+      : /Mac OS X|Macintosh/i.test(ua)
+        ? 'macos'
+        : /Linux|X11/i.test(ua)
+          ? 'linux'
+          : null;
+  const names = { windows: 'Windows', macos: 'macOS', linux: 'Linux' } as const;
+
+  if (os) {
+    document.querySelectorAll<HTMLAnchorElement>('[data-download]').forEach((a) => {
+      const href = a.dataset[os];
+      if (href) a.href = href;
+      const label = a.querySelector('[data-download-label]');
+      if (label && a.dataset.short === undefined) label.textContent = `Download for ${names[os]}`;
+    });
+  }
+</script>

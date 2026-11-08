@@ -1,0 +1,118 @@
+---
+import { ArrowRight } from 'lucide-react';
+import { release, REPO_URL } from '../data/release';
+import DownloadButton from './DownloadButton.astro';
+import GithubMark from './GithubMark.astro';
+import HeroBackdrop from './HeroBackdrop.astro';
+import HeroDemo from './hero/HeroDemo';
+
+const installer = release.windows ? `${release.windows.size} MB installer` : 'Small installer';
+---
+
+<section class="hero" aria-labelledby="hero-title">
+  <div class="container copy">
+    <a class="news" href="#platforms">
+      Now on Windows, macOS and Linux
+      <ArrowRight size={14} strokeWidth={2} aria-hidden="true" />
+    </a>
+
+    <h1 id="hero-title">Your servers, one shortcut away.</h1>
+
+    <p class="lede">
+      LiteTerm is a small SSH client for Windows, macOS and Linux. The terminal, SFTP, port forwarding and your notes
+      share one window, and your passwords stay in the OS keychain.
+    </p>
+
+    <div class="cta">
+      <DownloadButton />
+      <a class="btn btn-secondary" href={REPO_URL}>
+        <GithubMark size={18} />
+        View on GitHub
+      </a>
+    </div>
+
+    <p class="facts">
+      {installer} <span aria-hidden="true">·</span> No account <span aria-hidden="true">·</span> Windows 10+, macOS 11+, Linux
+    </p>
+  </div>
+
+  <div class="container stage-wrap">
+    <!-- Behind the copy above and the window below: its bottom edge is the window's top -->
+    <HeroBackdrop />
+    <div class="stage">
+      <HeroDemo client:load />
+    </div>
+  </div>
+</section>
+
+<style>
+  .hero {
+    position: relative;
+    overflow: clip;
+    padding-block: clamp(3rem, 2rem + 5vw, 6rem) 0;
+    background:
+      radial-gradient(60rem 28rem at 50% 0%, oklch(0.55 0.19 255 / 0.2), transparent 70%),
+      var(--bg);
+  }
+
+  .copy {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    justify-items: center;
+    gap: var(--space-5);
+    text-align: center;
+  }
+
+  .news {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0.3rem 0.85rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    background: oklch(0.215 0.014 260 / 0.7);
+    color: var(--text-2);
+    font-size: 0.875rem;
+    line-height: 1.4;
+    text-decoration: none;
+  }
+
+  .news:hover {
+    border-color: oklch(0.66 0.16 252 / 0.6);
+    color: var(--text);
+  }
+
+  h1 {
+    max-width: 14ch;
+  }
+
+  .lede {
+    color: var(--text-2);
+  }
+
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--space-3);
+    margin-block-start: var(--space-2);
+  }
+
+  .facts {
+    color: var(--text-3);
+    font-size: var(--step--1);
+  }
+
+  .stage-wrap {
+    position: relative;
+    margin-block-start: clamp(2.5rem, 2rem + 3vw, 4.5rem);
+  }
+
+  .stage {
+    position: relative;
+    z-index: 1;
+    max-width: 1040px;
+    margin-inline: auto;
+  }
+</style>

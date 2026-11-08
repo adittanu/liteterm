@@ -1,0 +1,13 @@
+---
+// The app icon (src-tauri/icons/icon-source.png) as an inline SVG, so it stays sharp at any size.
+interface Props {
+  size?: number;
+}
+const { size = 28 } = Astro.props;
+---
+
+<svg width={size} height={size} viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
+  <rect width="1024" height="1024" rx="232" fill="#171a22"></rect>
+  <path d="M250 340 L450 512 L250 684" fill="none" stroke="#7d91ff" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"></path>
+  <path d="M540 684 H790" fill="none" stroke="#7d91ff" stroke-width="72" stroke-linecap="round"></path>
+</svg>

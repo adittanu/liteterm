@@ -1,0 +1,130 @@
+---
+import { ChevronDown } from 'lucide-react';
+import { REPO_URL } from '../data/release';
+
+// Each answer is checked against the app's code or README, not written from what sounds right.
+const faq = [
+  {
+    q: 'Is LiteTerm free?',
+    a: "Yes. There is no account, no subscription and no license key. The code is on GitHub.",
+  },
+  {
+    q: 'Where are my passwords stored?',
+    a: "In your operating system’s keychain: the Windows Credential Manager, the macOS Keychain or the Secret Service on Linux. LiteTerm’s own database holds addresses, user names and settings, never passwords.",
+  },
+  {
+    q: 'Does it sync between my computers?',
+    a: 'No. Hosts stay on the computer where you saved them. Export and import moves them from one machine to another.',
+  },
+  {
+    q: 'Can I bring my hosts from another app?',
+    a: 'Yes. Import them from ~/.ssh/config (ProxyJump lines included), from a Termius export file or from a LiteTerm export. Your known_hosts file can come along too.',
+  },
+  {
+    q: 'How does it check host keys?',
+    a: 'On trust-on-first-use. The first time you connect, LiteTerm shows the fingerprint and asks you to trust it, for every hop of a jump chain. If a saved key later changes, the connection is refused.',
+  },
+  {
+    q: 'Does it work with 1Password or an SSH agent?',
+    a: 'Yes. Choose Agent as the sign-in method. LiteTerm reads keys from the OpenSSH agent (the Windows "OpenSSH Authentication Agent" service, or the SSH_AUTH_SOCK socket on macOS and Linux), which 1Password, Bitwarden and KeePassXC can also serve.',
+  },
+  {
+    q: 'How do updates work?',
+    a: 'On Windows, LiteTerm checks GitHub Releases, downloads the new installer and restarts itself. On macOS and Linux it tells you a new version exists and opens the download page.',
+  },
+  {
+    q: 'Why does macOS say it cannot verify the app?',
+    a: 'LiteTerm is not signed or notarized with an Apple Developer ID yet. Open System Settings, Privacy & Security, and choose Open Anyway, or run xattr -dr com.apple.quarantine /Applications/LiteTerm.app in a terminal.',
+  },
+];
+---
+
+<section class="section band" id="faq" aria-labelledby="faq-title">
+  <div class="container narrow">
+    <div class="section-head">
+      <p class="eyebrow"><b>04</b> · FAQ</p>
+      <h2 id="faq-title">Questions before you install.</h2>
+    </div>
+
+    <div class="list">
+      {
+        faq.map((item) => (
+          <details name="faq">
+            <summary>
+              <span>{item.q}</span>
+              <ChevronDown size={18} strokeWidth={1.75} aria-hidden="true" />
+            </summary>
+            <p>{item.a}</p>
+          </details>
+        ))
+      }
+    </div>
+
+    <p class="more">
+      Something else?{' '}
+      <a href={`${REPO_URL}/issues`}>Open an issue on GitHub</a>.
+    </p>
+  </div>
+</section>
+
+<style>
+  .band {
+    border-block-start: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+
+  .narrow {
+    max-width: 52rem;
+  }
+
+  .list {
+    border-block-start: 1px solid var(--line-strong);
+  }
+
+  details {
+    border-block-end: 1px solid var(--line-strong);
+  }
+
+  summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding-block: var(--space-4);
+    color: var(--text);
+    font-size: var(--step-1);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    list-style: none;
+    cursor: pointer;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  summary svg {
+    flex: none;
+    color: var(--text-3);
+    transition: transform 200ms var(--ease-out);
+  }
+
+  summary:hover svg {
+    color: var(--text);
+  }
+
+  details[open] summary svg {
+    transform: rotate(180deg);
+  }
+
+  details p {
+    max-width: 44rem;
+    padding-block-end: var(--space-5);
+    color: var(--text-2);
+  }
+
+  .more {
+    margin-block-start: var(--space-6);
+    color: var(--text-3);
+  }
+</style>

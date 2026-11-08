@@ -1,0 +1,202 @@
+---
+import { Download } from 'lucide-react';
+import { release } from '../data/release';
+
+const { windows, macos, appimage, deb, rpm } = release;
+
+const cards = [
+  {
+    id: 'windows',
+    name: 'Windows',
+    beta: false,
+    requires: 'Windows 10 or later, 64-bit',
+    primary: windows,
+    primaryLabel: 'Installer (.exe)',
+    others: [],
+    points: [
+      'Updates itself from inside the app.',
+      'Passwords go to the Windows Credential Manager.',
+      'Signs in with the OpenSSH agent, 1Password, Bitwarden or KeePassXC.',
+    ],
+  },
+  {
+    id: 'macos',
+    name: 'macOS',
+    beta: true,
+    requires: 'macOS 11 or later, Apple Silicon and Intel',
+    primary: macos,
+    primaryLabel: 'Disk image (.dmg)',
+    others: [],
+    points: [
+      'Not signed or notarized yet. On first launch choose Open Anyway in System Settings, Privacy & Security.',
+      'Passwords go to the macOS Keychain.',
+      'The update button opens the download page.',
+    ],
+  },
+  {
+    id: 'linux',
+    name: 'Linux',
+    beta: true,
+    requires: 'x86_64 with WebKitGTK 4.1, such as Ubuntu 22.04 or later',
+    primary: appimage,
+    primaryLabel: 'AppImage',
+    others: [
+      { label: '.deb', asset: deb },
+      { label: '.rpm', asset: rpm },
+    ],
+    points: [
+      'Saving passwords needs a running Secret Service, such as GNOME Keyring or KWallet.',
+      'Copy and paste in the terminal with Ctrl+Shift+C and Ctrl+Shift+V.',
+      'The update button opens the download page.',
+    ],
+  },
+];
+---
+
+<section class="section band" id="platforms" aria-labelledby="platforms-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow"><b>02</b> · Platforms</p>
+      <h2 id="platforms-title">Small installers for three systems.</h2>
+      <p class="lede">
+        LiteTerm uses the web view your system already has, so there is no browser to bundle and nothing large to download.
+      </p>
+    </div>
+
+    <div class="cards">
+      {
+        cards.map((c) => (
+          <article class="card" id={c.id}>
+            <header class="card-head">
+              <h3>{c.name}</h3>
+              {c.beta && <span class="beta">Beta</span>}
+            </header>
+            <p class="requires">{c.requires}</p>
+
+            <div class="downloads">
+              <a class="btn btn-primary" href={c.primary?.url ?? release.url}>
+                <Download size={18} strokeWidth={2} aria-hidden="true" />
+                {c.primaryLabel}
+                {c.primary && <span class="size">{c.primary.size} MB</span>}
+              </a>
+              {c.others.map((o) => (
+                <a class="btn btn-secondary" href={o.asset?.url ?? release.url}>
+                  {o.label}
+                  {o.asset && <span class="size">{o.asset.size} MB</span>}
+                </a>
+              ))}
+            </div>
+
+            <ul class="points">
+              {c.points.map((p) => (
+                <li>{p}</li>
+              ))}
+            </ul>
+          </article>
+        ))
+      }
+    </div>
+
+    <p class="note">
+      The macOS and Linux builds are new and have had less testing than Windows. If one misbehaves,{' '}
+      <a href="https://github.com/adittanu/liteterm/issues">tell us on GitHub</a>.
+    </p>
+  </div>
+</section>
+
+<style>
+  .band {
+    border-block: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-5);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+  }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .beta {
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .requires {
+    color: var(--text-3);
+    font-size: 0.875rem;
+  }
+
+  .downloads {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  /* Lighter weight, not lower opacity: white on the blue fill has to stay at 4.5:1 */
+  .size {
+    color: inherit;
+    font-weight: 500;
+  }
+
+  .points {
+    display: grid;
+    gap: var(--space-3);
+    margin-block-start: var(--space-2);
+    padding-block-start: var(--space-4);
+    border-block-start: 1px solid var(--line);
+  }
+
+  .points li {
+    position: relative;
+    padding-inline-start: var(--space-5);
+    color: var(--text-2);
+    font-size: 0.9375rem;
+  }
+
+  .points li::before {
+    content: '';
+    position: absolute;
+    inset-inline-start: 0.25rem;
+    inset-block-start: 0.62em;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .note {
+    margin-block-start: var(--space-5);
+    color: var(--text-3);
+    font-size: 0.9375rem;
+    max-width: 44rem;
+  }
+
+  @media (max-width: 62rem) {
+    .cards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

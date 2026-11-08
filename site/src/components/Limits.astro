@@ -1,0 +1,89 @@
+---
+// Straight from the project's own list of limits (README "Batasan") and the app's behavior.
+const limits = [
+  {
+    title: 'SFTP moves files, not folders',
+    text: 'Folder transfers and resuming an interrupted transfer are not built yet.',
+  },
+  {
+    title: 'Local port forwards only',
+    text: 'Forwarding supports <code>-L</code>. There is no remote (<code>-R</code>) or dynamic (<code>-D</code>) forwarding.',
+  },
+  {
+    title: 'No agent forwarding, no Pageant',
+    text: 'The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work.',
+  },
+  {
+    title: 'No cloud sync',
+    text: 'Hosts live on the computer where you added them. Export and import moves them.',
+  },
+  {
+    title: 'macOS and Linux are new',
+    text: 'Those builds come from CI and have had far less testing than the Windows one.',
+  },
+  {
+    title: 'Updates install themselves on Windows only',
+    text: 'On macOS and Linux the update button opens the download page.',
+  },
+];
+---
+
+<section class="section" id="limits" aria-labelledby="limits-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow"><b>03</b> · Limits</p>
+      <h2 id="limits-title">What LiteTerm doesn’t do yet.</h2>
+      <p class="lede">Better to read this before you install than to find out after.</p>
+    </div>
+
+    <ul class="limits">
+      {
+        limits.map((l) => (
+          <li>
+            <h3>{l.title}</h3>
+            <p set:html={l.text} />
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<style>
+  .limits {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-5) var(--space-7);
+  }
+
+  .limits li {
+    display: grid;
+    align-content: start;
+    gap: var(--space-1);
+    padding-block-start: var(--space-4);
+    border-block-start: 1px solid var(--line-strong);
+  }
+
+  .limits :global(code) {
+    padding: 0.05em 0.35em;
+    border-radius: 5px;
+    background: var(--surface-2);
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .limits h3 {
+    font-size: var(--step-0);
+  }
+
+  .limits p {
+    color: var(--text-2);
+    font-size: 0.9375rem;
+  }
+
+  @media (max-width: 44rem) {
+    .limits {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
