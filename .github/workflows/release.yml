@@ -136,6 +136,9 @@ jobs:
         with:
           releaseId: ${{ needs.draft.outputs.release_id }}
           args: ${{ matrix.args }}
+          # Bundling downloads its tools (NSIS, AppRun) from GitHub, which now
+          # and then answers 504; a retry only redoes the bundling step
+          retryAttempts: 2
 
       - name: Keep the installers (manual runs)
         if: github.ref_type != 'tag'

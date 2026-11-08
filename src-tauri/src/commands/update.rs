@@ -268,6 +268,9 @@ fn strip_verbatim_prefix(p: &std::path::Path) -> PathBuf {
     }
 }
 
+// Off Windows the body below ends in an early error return; what follows it,
+// and the `app` it uses, are Windows-only.
+#[cfg_attr(not(windows), allow(unreachable_code, unused_variables))]
 #[tauri::command]
 pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> {
     let installer = PathBuf::from(path);
