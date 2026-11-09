@@ -224,4 +224,10 @@ docs/readme/             the images in this README
 
 Built on [Tauri](https://tauri.app), [russh](https://github.com/Eugeny/russh), [xterm.js](https://xtermjs.org), [TipTap](https://tiptap.dev) and [Lucide](https://lucide.dev). The animated illustrations on the website and in this README were built with the Stageshow kit (MIT).
 
+<br>
+
+## License
+
+LiteTerm is released under the [MIT License](LICENSE). The vendored `portable-pty` fork in `src-tauri/vendor/` keeps its own license.
+
 <sub>Termius, Windows, macOS and Linux are trademarks of their respective owners. LiteTerm is not affiliated with or endorsed by them.</sub>

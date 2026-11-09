@@ -2,7 +2,9 @@
 name = "liteterm"
 version = "1.9.0"
 description = "A fast, lightweight SSH client"
-authors = ["you"]
+authors = ["Adit Tanu"]
+license = "MIT"
+repository = "https://github.com/adittanu/liteterm"
 edition = "2021"
 default-run = "liteterm"
 
