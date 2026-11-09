@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 use super::models::*;
+use super::sync;
 
 pub fn open_db(app_data_dir: &Path) -> Result<Connection, rusqlite::Error> {
     std::fs::create_dir_all(app_data_dir).ok();
@@ -12,7 +13,15 @@ pub fn open_db(app_data_dir: &Path) -> Result<Connection, rusqlite::Error> {
     Ok(conn)
 }
 
-fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+    migrate_v2(conn)?;
+    // v3: sync identities, change tracking
+    sync::migrate(conn)
+}
+
+/// Everything up to schema v2. Kept separate so tests can build a database
+/// as it was before sync existed.
+pub(super) fn migrate_v2(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS groups (
@@ -290,18 +299,25 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
     };
 
     // Credentials live in the OS credential manager, never in SQLite
+    let mut secret_saved = false;
     if let Some(pw) = &input.password {
         if save_pw && !pw.is_empty() {
             keyring_set(&password_entry(id), pw);
+            secret_saved = true;
         }
     }
     if let Some(pp) = &input.key_passphrase {
         if !pp.is_empty() {
             keyring_set(&keypass_entry(id), pp);
+            secret_saved = true;
         }
     }
     if !save_pw {
         keyring_delete(&password_entry(id));
+    }
+    // A new secret leaves the row as it was; sync still has to send it
+    if secret_saved {
+        sync::mark_changed(conn, &sync::HOSTS, id)?;
     }
 
     get_host(conn, id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
@@ -439,18 +455,24 @@ pub fn upsert_credential(
         }
     };
 
+    let mut secret_saved = false;
     if let Some(pw) = &input.password {
         if save_pw && !pw.is_empty() {
             keyring_set(&cred_password_entry(id), pw);
+            secret_saved = true;
         }
     }
     if let Some(pp) = &input.key_passphrase {
         if !pp.is_empty() {
             keyring_set(&cred_keypass_entry(id), pp);
+            secret_saved = true;
         }
     }
     if !save_pw {
         keyring_delete(&cred_password_entry(id));
+    }
+    if secret_saved {
+        sync::mark_changed(conn, &sync::CREDENTIALS, id)?;
     }
 
     get_credential(conn, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
