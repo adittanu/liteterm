@@ -1,4 +1,5 @@
 mod applog;
+mod cloud;
 mod commands;
 mod import;
 mod local;

@@ -30,6 +30,14 @@ portable-pty = "0.8"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
+# Cloud sync vault (end-to-end encryption, see src/cloud/vault.rs)
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+unicode-normalization = "0.1"
+zeroize = "1"
+
 # Secrets live in the OS keyring. A platform whose backend feature is missing
 # gets keyring's in-memory mock store: saving "works", and the next read finds
 # nothing. So every target names its own backend.
@@ -64,3 +72,10 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+
+# Argon2 is meant to be slow, but unoptimized it is slow enough that unlocking
+# the vault in `tauri dev` (or a test) takes many seconds instead of one.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
