@@ -7,6 +7,7 @@ mod menu;
 mod paths;
 mod ssh;
 mod store;
+mod trace;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

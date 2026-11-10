@@ -260,6 +260,7 @@ fn emit_pending_stdout(app: &AppHandle, session_id: u32, pending: &mut Vec<u8>) 
     if pending.is_empty() {
         return;
     }
+    crate::trace::note(session_id, "EMIT", || pending.len().to_string());
     // A dropped chunk corrupts the screen, and the release build has no
     // console to say so — leave a (throttled) line in the app log instead
     if let Err(e) = app.emit(
@@ -502,6 +503,7 @@ fn reconnect_delay(attempt: u32) -> Duration {
 }
 
 /// How a connected session ended
+#[derive(Debug)]
 enum StreamEnd {
     /// disconnect_session() cancelled it
     UserClosed,
@@ -1044,6 +1046,7 @@ async fn stream_session(
             msg = channel.wait() => {
                 match msg {
                     Some(russh::ChannelMsg::Data { data }) => {
+                        crate::trace::record(session.id, "OUT", &data);
                         if auto_sudo && sudo_fills < MAX_SUDO_FILLS {
                             append_tail(&mut output_tail, &data);
                             if let Some(prompt_user) = detect_sudo_prompt(&output_tail) {
@@ -1066,6 +1069,7 @@ async fn stream_session(
                         queue_stdout(&state.app, session.id, &mut pending_out, &mut flush_at, &data);
                     }
                     Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
+                        crate::trace::record(session.id, "ERR", &data);
                         queue_stdout(&state.app, session.id, &mut pending_out, &mut flush_at, &data);
                     }
                     Some(russh::ChannelMsg::ExitStatus { .. } | russh::ChannelMsg::ExitSignal { .. }) => {
@@ -1082,11 +1086,13 @@ async fn stream_session(
                 }
             }
             Some((cols, rows, pix_w, pix_h)) = resize_rx.recv() => {
+                crate::trace::note(session.id, "RESIZE", || format!("{cols}x{rows} {pix_w}x{pix_h}px"));
                 let _ = channel.window_change(cols, rows, pix_w, pix_h).await;
             }
         }
     };
     emit_pending_stdout(&state.app, session.id, &mut pending_out);
+    crate::trace::note(session.id, "END", || format!("{end:?}"));
 
     // Wipe the in-memory password when the session ends
     *session.sudo_password.lock().unwrap() = None;

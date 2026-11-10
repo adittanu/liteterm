@@ -286,12 +286,18 @@ pub async fn session_write(
     }
 
     let session = registered_session(state.inner(), session_id)?;
+    crate::trace::record(session_id, "IN?", data.as_bytes());
     let mut guard = session.writer.lock().await;
     let writer = guard.as_mut().ok_or("Not connected")?;
-    writer
+    let result = writer
         .write_all(data.as_bytes())
         .await
-        .map_err(|e| format!("Write failed: {e}"))
+        .map_err(|e| format!("Write failed: {e}"));
+    match &result {
+        Ok(()) => crate::trace::record(session_id, "IN", data.as_bytes()),
+        Err(e) => crate::trace::note(session_id, "IN!", || e.clone()),
+    }
+    result
 }
 
 #[tauri::command]
