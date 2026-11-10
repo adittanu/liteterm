@@ -33,7 +33,7 @@ interface GhAsset {
 }
 
 const FALLBACK: Release = {
-  version: '1.10.0',
+  version: '1.10.1',
   url: RELEASES_URL,
   windows: null,
   macos: null,
