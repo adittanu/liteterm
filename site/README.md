@@ -23,7 +23,7 @@ pnpm preview
 
 `.github/workflows/site.yml` builds and publishes to GitHub Pages on pushes to `main` that touch `site/`, on every published release (so the download links follow it), and by hand.
 
-One-time: **Settings > Pages > Build and deployment > Source: GitHub Actions**. The site is then at `https://adittanu.github.io/liteterm/`. For a custom domain set the repository variables `SITE_URL` (for example `https://liteterm.app`) and `BASE_PATH` (`/`).
+One-time: **Settings > Pages > Build and deployment > Source: GitHub Actions**. The site is live at `https://liteterm.kreat.id/`: a CNAME record `liteterm.kreat.id → adittanu.github.io`, that domain under Settings > Pages, and the repository variables `SITE_URL=https://liteterm.kreat.id` and `BASE_PATH=/`. Without those variables the build targets `https://adittanu.github.io/liteterm/`.
 
 ## Copy rules
 

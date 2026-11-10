@@ -12,7 +12,7 @@
 ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?style=for-the-badge&logo=vuedotjs&logoColor=white)
 ![xterm.js](https://img.shields.io/badge/xterm.js-151a22?style=for-the-badge)
 
-### [Download](https://github.com/adittanu/liteterm/releases/latest) · [Website](https://adittanu.github.io/liteterm/) · [Features](#features) · [Limits](#what-it-doesnt-do-yet) · [Development](#development)
+### [Download](https://github.com/adittanu/liteterm/releases/latest) · [Website](https://liteterm.kreat.id/) · [Features](#features) · [Limits](#what-it-doesnt-do-yet) · [Development](#development)
 
 </div>
 
