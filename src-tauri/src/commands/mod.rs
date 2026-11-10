@@ -1,3 +1,4 @@
+pub mod cloud;
 pub mod credentials;
 pub mod forwards;
 pub mod hosts;

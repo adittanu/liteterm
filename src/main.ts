@@ -31,6 +31,7 @@ import { useUiStore } from './stores/ui'
 import { useHostsStore } from './stores/hosts'
 import { useCredentialsStore } from './stores/credentials'
 import { useSnippetsStore, useForwardsStore } from './stores/extras'
+import { useCloudStore } from './stores/cloud'
 
 const ui = useUiStore()
 const sessions = useSessionsStore()
@@ -45,3 +46,5 @@ void useSnippetsStore().load()
 const forwardsStore = useForwardsStore()
 void forwardsStore.load()
 void forwardsStore.initEvents()
+// Optional account: follow the backend's sync status and reload what it changes
+void useCloudStore().init()

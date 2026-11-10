@@ -9,9 +9,11 @@ import {
   Palette,
   TerminalSquare,
   Keyboard,
+  Cloud,
 } from 'lucide-vue-next'
 import { getVersion } from '@tauri-apps/api/app'
 import BaseModal from './BaseModal.vue'
+import AccountSection from './AccountSection.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import { THEMES } from '../services/terminalThemes'
@@ -40,6 +42,7 @@ const SECTIONS = [
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'terminal', label: 'Terminal', icon: TerminalSquare },
   { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
+  { id: 'account', label: 'Account & sync', icon: Cloud },
 ] as const
 type SectionId = (typeof SECTIONS)[number]['id']
 const section = ref<SectionId>('general')
@@ -373,6 +376,11 @@ watch(
                 <span class="track"><span class="thumb"></span></span>
               </label>
             </div>
+          </div>
+
+          <!-- ============ Account & sync ============ -->
+          <div v-else-if="section === 'account'" key="account" class="pane-page">
+            <AccountSection />
           </div>
 
           <!-- ============ Shortcuts ============ -->

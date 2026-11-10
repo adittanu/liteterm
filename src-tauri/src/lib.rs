@@ -32,6 +32,8 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let conn = store::db::open_db(&data_dir)
                 .map_err(|e| format!("Could not open database: {e}"))?;
+            // Optional account: picks up a session this device kept
+            let cloud = cloud::engine::Cloud::new(&conn);
 
             let state = AppState {
                 app: app.handle().clone(),
@@ -46,6 +48,8 @@ pub fn run() {
 
             app.manage(Db(Mutex::new(conn)));
             app.manage(Arc::new(state));
+            app.manage(cloud.clone());
+            cloud.start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -111,6 +115,16 @@ pub fn run() {
             commands::forwards::delete_forward,
             commands::forwards::forward_start,
             commands::forwards::forward_stop,
+            commands::cloud::cloud_status,
+            commands::cloud::cloud_send_code,
+            commands::cloud::cloud_verify_code,
+            commands::cloud::cloud_create_vault,
+            commands::cloud::cloud_unlock,
+            commands::cloud::cloud_recover,
+            commands::cloud::cloud_change_password,
+            commands::cloud::cloud_reset_vault,
+            commands::cloud::cloud_sign_out,
+            commands::cloud::cloud_sync_now,
             commands::settings::get_settings,
             commands::settings::set_settings,
             commands::update::check_update,

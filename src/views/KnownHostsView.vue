@@ -4,6 +4,7 @@ import { Copy, FileDown, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import { api } from '../services/api'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
+import { useCloudStore } from '../stores/cloud'
 import { errorText } from '../stores/sessions'
 import SearchField from '../components/SearchField.vue'
 import { copyText, matchesQuery, parseSqlDate, plural, relativeAge, useDelayedFlag } from '../utils/pageHelpers'
@@ -122,6 +123,9 @@ watch(
     if (was && !open) void load()
   },
 )
+
+// ... and so can a sync from another device
+watch(() => useCloudStore().dataVersion, () => void load())
 
 onMounted(load)
 </script>

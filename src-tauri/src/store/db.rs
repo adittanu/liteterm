@@ -13,7 +13,7 @@ pub fn open_db(app_data_dir: &Path) -> Result<Connection, rusqlite::Error> {
     Ok(conn)
 }
 
-pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub(crate) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     migrate_v2(conn)?;
     // v3: sync identities, change tracking
     sync::migrate(conn)

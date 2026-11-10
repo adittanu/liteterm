@@ -163,6 +163,21 @@ impl VaultKey {
         Ok(Self(key))
     }
 
+    /// The raw key as base64, for this device's OS keyring: an unlocked
+    /// device stays unlocked across restarts, like its saved SSH passwords.
+    pub fn export(&self) -> Zeroizing<String> {
+        // Sized up front: a growing String would leave unzeroed copies behind
+        let mut out = Zeroizing::new(String::with_capacity(KEY_LEN.div_ceil(3) * 4));
+        B64.encode_string(self.0.as_ref(), &mut out);
+        out
+    }
+
+    /// Reads back what [`VaultKey::export`] wrote
+    pub fn import(text: &str) -> Result<Self, VaultError> {
+        let bytes = Zeroizing::new(B64.decode(text.trim()).map_err(|_| VaultError::Corrupt)?);
+        Self::from_unwrapped(&bytes)
+    }
+
     /// `data` for vault_items, bound to the item's sync_id
     pub fn encrypt_item(&self, sync_id: &str, plaintext: &[u8]) -> String {
         seal(&self.0, &item_aad(sync_id), plaintext)
@@ -562,6 +577,18 @@ mod tests {
                 "{wrapped}"
             );
         }
+    }
+
+    #[test]
+    fn an_exported_key_imports_as_the_same_key() {
+        let vault = quick_vault(PASSWORD);
+        let sealed = vault.key.encrypt_item(ITEM, b"x");
+        let text = vault.key.export();
+        assert_eq!(text.len(), 44);
+        let back = VaultKey::import(&text).unwrap();
+        assert!(opens(&back, &sealed));
+        assert_eq!(VaultKey::import("AAAA").unwrap_err(), VaultError::Corrupt);
+        assert_eq!(VaultKey::import("not base64!").unwrap_err(), VaultError::Corrupt);
     }
 
     #[test]

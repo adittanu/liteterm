@@ -20,6 +20,7 @@ import type {
   KnownHostRow,
   UpdateAsset,
   UpdateInfo,
+  CloudStatus,
 } from '../types'
 
 export const api = {
@@ -151,6 +152,23 @@ export const api = {
   // ---- settings ----
   getSettings: (): Promise<AppSettings> => invoke('get_settings'),
   setSettings: (settings: AppSettings): Promise<void> => invoke('set_settings', { settings }),
+
+  // ---- account / cloud sync ----
+  cloudStatus: (): Promise<CloudStatus> => invoke('cloud_status'),
+  cloudSendCode: (email: string): Promise<void> => invoke('cloud_send_code', { email }),
+  cloudVerifyCode: (email: string, code: string): Promise<CloudStatus> =>
+    invoke('cloud_verify_code', { email, code }),
+  /** Resolves to the recovery key, to show once */
+  cloudCreateVault: (password: string): Promise<string> => invoke('cloud_create_vault', { password }),
+  cloudUnlock: (password: string): Promise<CloudStatus> => invoke('cloud_unlock', { password }),
+  /** Resolves to the new recovery key, to show once */
+  cloudRecover: (recoveryKey: string, newPassword: string): Promise<string> =>
+    invoke('cloud_recover', { recoveryKey, newPassword }),
+  cloudChangePassword: (current: string, newPassword: string): Promise<void> =>
+    invoke('cloud_change_password', { current, newPassword }),
+  cloudResetVault: (): Promise<CloudStatus> => invoke('cloud_reset_vault'),
+  cloudSignOut: (): Promise<CloudStatus> => invoke('cloud_sign_out'),
+  cloudSyncNow: (): Promise<CloudStatus> => invoke('cloud_sync_now'),
 
   // ---- self-update ----
   checkUpdate: (): Promise<UpdateInfo> => invoke('check_update'),

@@ -229,3 +229,17 @@ export interface UpdateInfo {
    *  elsewhere an update means opening the release page. */
   autoInstall: boolean
 }
+
+// ---- account / cloud sync ----
+
+/** signedOut → noVault (set a master password) | locked (enter it) → ready */
+export type CloudState = 'signedOut' | 'noVault' | 'locked' | 'ready'
+
+export interface CloudStatus {
+  state: CloudState
+  email: string | null
+  syncing: boolean
+  lastSyncAt: number | null // ms since epoch
+  error: string | null
+  pending: number // local changes not on the server yet
+}

@@ -256,10 +256,18 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
+  /** A sync brought edits from another device. Whatever is still waiting
+   *  out its debounce is saved first, so the reload can't show it reverted. */
+  async function reloadFromSync() {
+    await flushPending()
+    await load()
+  }
+
   return {
     notes,
     loaded,
     load,
+    reloadFromSync,
     create,
     edit,
     flushPending,
