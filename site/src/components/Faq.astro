@@ -6,15 +6,19 @@ import { REPO_URL } from '../data/release';
 const faq = [
   {
     q: 'Is LiteTerm free?',
-    a: "Yes. There is no account, no subscription and no license key. The code is on GitHub.",
+    a: "Yes. There is no subscription and no license key, and you don’t need an account: signing in is only for sync, which is optional. The code is on GitHub.",
   },
   {
     q: 'Where are my passwords stored?',
-    a: "In your operating system’s keychain: the Windows Credential Manager, the macOS Keychain or the Secret Service on Linux. LiteTerm’s own database holds addresses, user names and settings, never passwords.",
+    a: "In your operating system’s keychain: the Windows Credential Manager, the macOS Keychain or the Secret Service on Linux. LiteTerm’s own database holds addresses, user names and settings, never passwords. With sync on, a copy also goes to your cloud vault, encrypted on your computer first.",
   },
   {
     q: 'Does it sync between my computers?',
-    a: 'No. Hosts stay on the computer where you saved them. Export and import moves them from one machine to another.',
+    a: 'If you want it to. Sign in with your email under Settings, Account & sync, and set a master password. Hosts, groups, credentials with their saved passwords, snippets, notes, port forwards and known hosts are encrypted on your computer before they are uploaded, so the server keeps only data it cannot read. A computer that already has hosts of its own adds them to the vault next to the synced ones.',
+  },
+  {
+    q: 'What if I forget my master password?',
+    a: 'Use the recovery key LiteTerm showed you when you set it, then choose a new password. Nobody can reset it for you: the password never leaves your computer. If you lose both, you can reset the cloud vault; what is on your computers stays, and is uploaded again under a new password.',
   },
   {
     q: 'Can I bring my hosts from another app?',

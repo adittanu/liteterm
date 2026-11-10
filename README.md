@@ -110,6 +110,7 @@
 
 - **Notes** with `#tags`, linked to a host. A code block's **Run** sends it to that host's terminal.
 - **Passwords** in the OS keychain, never in LiteTerm's database.
+- **Sync** between your computers, if you sign in: end-to-end encrypted with a master password the server never sees.
 - **Import** from `~/.ssh/config` and `known_hosts`, or a Termius export. Export and import LiteTerm's own file.
 - **Shortcuts** you can rebind.
 - **Light and dark** themes.
@@ -132,12 +133,14 @@ flowchart LR
     DB[("SQLite, WAL<br/>hosts · notes · snippets")]
     Keys[("OS keyring<br/>Credential Manager · Keychain<br/>Secret Service")]
     Servers(["Your servers"])
+    Vault[("Sync vault, optional<br/>Supabase · encrypted items")]
 
     UI <-->|commands and events| Core
     Core --> SSH
     Core --> DB
     Core --> Keys
     SSH <-->|SSH| Servers
+    Core <-->|end-to-end encrypted| Vault
 ```
 
 <br>
@@ -152,7 +155,7 @@ Better to read this before you install than to find out after.
 | **Local port forwards only** | Forwarding supports `-L`, not remote (`-R`) or dynamic (`-D`). |
 | **No agent forwarding, no Pageant** | The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work. |
 | **Jump hosts need a saved login** | A password with Remember, a key or an agent. |
-| **No cloud sync** | Hosts live on the computer where you added them. Export and import moves them. |
+| **Sync carries key paths, not key files** | A synced host remembers where its private key is: copy the key to the same place, or use an SSH agent. Images in notes don't sync yet. |
 | **macOS and Linux are new** | Those builds come from CI and have had far less testing than Windows. |
 
 <br>
@@ -212,6 +215,8 @@ To get DevTools (<kbd>F12</kbd>) in a release build, build the diagnostic instal
 src/                     Vue 3 frontend: views, components, stores, design tokens
 src-tauri/src/ssh/       russh client, session pool, SFTP, port forwarding
 src-tauri/src/store/     SQLite (migrations and queries) and keyring helpers
+src-tauri/src/cloud/     optional sync: vault encryption, Supabase client, sync loop
+supabase/migrations/     the sync server's schema and access rules
 src-tauri/src/commands/  Tauri commands
 src-tauri/vendor/        portable-pty fork (ConPTY passthrough)
 site/                    the landing page (Astro), deployed to GitHub Pages
