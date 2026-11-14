@@ -4,6 +4,7 @@ import { KeyRound, Fingerprint } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import { useCredentialsStore } from '../stores/credentials'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import { api } from '../services/api'
 import { errorText } from '../stores/sessions'
 import { secretStore, sshAgentName } from '../utils/platform'
@@ -14,6 +15,7 @@ const emit = defineEmits<{ close: [] }>()
 
 const credentials = useCredentialsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const form = reactive({
   name: '',
@@ -94,10 +96,10 @@ async function save() {
         <input
           id="cf-name"
           v-model="form.name"
-          class="field-input"
+          class="field-input pv-field"
           :class="{ invalid: errors.name }"
           type="text"
-          placeholder="e.g. admindqli"
+          :placeholder="pv.t('e.g. admindqli')"
           spellcheck="false"
         />
         <span v-if="errors.name" class="field-error">{{ errors.name }}</span>
@@ -108,7 +110,7 @@ async function save() {
         <input
           id="cf-user"
           v-model="form.username"
-          class="field-input mono"
+          class="field-input mono pv-field"
           :class="{ invalid: errors.username }"
           type="text"
           placeholder="root"

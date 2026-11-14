@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
 import { thisComputerLower } from '../utils/platform'
 import { useHostsStore } from './hosts'
 import { useUiStore } from './ui'
 import { useDialogsStore } from './dialogs'
+import { usePrivacyStore } from './privacy'
 import type { SessionKind, SessionTab, SessionStatus, HostKeyEvent, Transfer } from '../types'
 
 function sessionView(id: number) {
@@ -71,6 +72,76 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
   function detachSink(sessionId: number) {
     sinks.delete(sessionId)
+    inputObservers.delete(sessionId)
+  }
+
+  // Everything sent to a session — typed keys, pastes, snippets, a note's
+  // Run — passes write(); TerminalPane watches it for Enter at a prompt
+  const inputObservers = new Map<number, (data: string) => void>()
+  function observeInput(sessionId: number, fn: (data: string) => void) {
+    inputObservers.set(sessionId, fn)
+  }
+
+  // ---- title, busy, background notices ----
+
+  function setTitle(sessionId: number, raw: string) {
+    const tab = tabs.value.find((t) => t.id === sessionId)
+    if (!tab) return
+    let title = raw.trim()
+    // A shell's own path ("C:\…\pwsh.exe") says nothing the tab doesn't
+    if (/\.exe$/i.test(title)) title = ''
+    // Debian/Ubuntu bash sets "user@host: ~/dir"; the tab already names the host
+    title = title.replace(/^[^@\s]+@[^:\s]+:\s*/, '')
+    tab.title = title.slice(0, 120) || undefined
+  }
+
+  function setBusy(sessionId: number, busy: boolean) {
+    const tab = tabs.value.find((t) => t.id === sessionId)
+    if (tab && !!tab.busy !== busy) tab.busy = busy
+  }
+
+  const lastBell = new Map<number, number>()
+  const BELL_EVERY_MS = 30_000
+
+  function took(ms: number): string {
+    const s = Math.round(ms / 1000)
+    if (s < 60) return `${s}s`
+    const m = Math.floor(s / 60)
+    if (m < 60) return `${m}m ${s % 60}s`
+    return `${Math.floor(m / 60)}h ${m % 60}m`
+  }
+
+  /**
+   * A long command finished, or a program rang the bell (agent CLIs do when
+   * they're done or need an answer), in a tab you aren't looking at: a toast
+   * that jumps to it, plus a desktop notice when LiteTerm isn't in front.
+   */
+  function notifyActivity(sessionId: number, kind: 'done' | 'bell', ms = 0) {
+    const ui = useUiStore()
+    if (!ui.settings.notifyCommandDone) return
+    const tab = tabs.value.find((t) => t.id === sessionId)
+    if (!tab) return
+    const focused = document.hasFocus()
+    if (focused && ui.activeView === sessionView(sessionId)) return
+    if (kind === 'bell') {
+      const now = Date.now()
+      if (now - (lastBell.get(sessionId) ?? 0) < BELL_EVERY_MS) return
+      lastBell.set(sessionId, now)
+    }
+    const what = kind === 'done' ? `finished a command after ${took(ms)}` : 'needs your attention'
+    ui.toast('info', `${tab.label} ${what}`, {
+      actionLabel: 'Show',
+      action: () => {
+        activeId.value = sessionId
+        ui.openView(sessionView(sessionId))
+      },
+      duration: 8000,
+    })
+    if (!focused) {
+      // The desktop notice sits outside the window: honour privacy mode there too
+      const name = usePrivacyStore().t(tab.label)
+      void api.notify(name, kind === 'done' ? `Command finished after ${took(ms)}` : 'Needs your attention').catch(() => {})
+    }
   }
 
   async function connect(hostId: number, pendingPassword?: string, opts?: { silent?: boolean }) {
@@ -231,6 +302,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function write(sessionId: number, data: string) {
+    inputObservers.get(sessionId)?.(data)
     void api.write(sessionId, data).catch(() => {
       // session died; status event will update the tab
     })
@@ -293,6 +365,13 @@ export const useSessionsStore = defineStore('sessions', () => {
 
   // ---- backend event wiring (called once from main.ts) ----
   async function initEvents() {
+    // Keep the computer awake while any live tab runs a command
+    watch(
+      () => useUiStore().settings.keepAwake && tabs.value.some((t) => t.busy && t.status === 'connected'),
+      (on) => void api.setKeepAwake(on).catch(() => {}),
+      { immediate: true },
+    )
+
     await listen<{ sessionId: number; data: string }>('ssh:stdout', (e) => {
       const { sessionId, data } = e.payload
       const sink = sinks.get(sessionId)
@@ -402,6 +481,10 @@ export const useSessionsStore = defineStore('sessions', () => {
     resize,
     attachSink,
     detachSink,
+    observeInput,
+    setTitle,
+    setBusy,
+    notifyActivity,
     trackTransfer,
     updateTransfer,
     removeTransfer,

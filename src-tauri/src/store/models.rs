@@ -20,6 +20,8 @@ pub struct Host {
     pub last_used_at: Option<i64>, // ms since epoch, bumped on connect
     /// Saved host to hop through (ProxyJump); None = direct
     pub jump_host_id: Option<i64>,
+    /// Typed into the shell after every login, reconnects included
+    pub startup_command: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +41,8 @@ pub struct HostInput {
     pub create_credential: Option<CredentialInput>,
     #[serde(default)]
     pub jump_host_id: Option<i64>,
+    #[serde(default)]
+    pub startup_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,6 +133,18 @@ pub struct AppSettings {
     /// Re-establish SSH sessions that drop (network change, sleep) with backoff
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
+    /// Desktop notice when a long command finishes in a tab you're not looking at
+    #[serde(default = "default_true")]
+    pub notify_command_done: bool,
+    /// Hold off idle sleep while a terminal tab runs a command
+    #[serde(default = "default_true")]
+    pub keep_awake: bool,
+    /// Grey suggestions from this host's history while typing at a prompt
+    #[serde(default = "default_true")]
+    pub autosuggest: bool,
+    /// Seed a host's suggestions from its own shell history on first connect
+    #[serde(default = "default_true")]
+    pub autosuggest_import: bool,
 }
 
 fn default_hosts_layout() -> String {
@@ -149,6 +165,10 @@ impl Default for AppSettings {
             keybindings: HashMap::new(),
             hosts_layout: default_hosts_layout(),
             auto_reconnect: true,
+            notify_command_done: true,
+            keep_awake: true,
+            autosuggest: true,
+            autosuggest_import: true,
         }
     }
 }

@@ -161,6 +161,7 @@ fn apply_parsed_hosts(
             credential_id: None,
             create_credential: None,
             jump_host_id: None,
+            startup_command: h.startup_command.clone(),
         };
         let host = db::upsert_host(conn, &input).map_err(|e| e.to_string())?;
         host_ids.push(host.id);
@@ -349,6 +350,9 @@ pub fn export_hosts(
         }
         if let Some(os) = &h.os {
             obj["os"] = serde_json::json!(os);
+        }
+        if let Some(cmd) = &h.startup_command {
+            obj["startupCommand"] = serde_json::json!(cmd);
         }
         out_hosts.push(obj);
     }

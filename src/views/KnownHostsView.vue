@@ -5,6 +5,7 @@ import { api } from '../services/api'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import { useCloudStore } from '../stores/cloud'
+import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
 import SearchField from '../components/SearchField.vue'
 import { copyText, matchesQuery, parseSqlDate, plural, relativeAge, useDelayedFlag } from '../utils/pageHelpers'
@@ -12,6 +13,7 @@ import type { KnownHostRow } from '../types'
 
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const entries = ref<KnownHostRow[]>([])
 const loaded = ref(false)
@@ -189,7 +191,7 @@ onMounted(load)
 
             <div class="row-main">
               <span class="kh-head">
-                <span class="row-title mono kh-host text-ellipsis" :title="g.host">{{ g.host }}</span>
+                <span class="row-title mono kh-host text-ellipsis pv" :title="pv.blur ? undefined : pv.hostText(g.host)">{{ pv.hostText(g.host) }}</span>
                 <span v-if="g.addedAt" class="kh-age" :title="g.addedAt.toLocaleString()">
                   Trusted {{ relativeAge(g.addedAt) }}
                 </span>
@@ -198,12 +200,12 @@ onMounted(load)
               <div class="kh-keys">
                 <div v-for="k in g.keys" :key="k.key_type" class="kh-key">
                   <span class="chip kh-type" :title="k.key_type">{{ keyLabel(k.key_type) }}</span>
-                  <code class="kh-fp mono text-ellipsis" :title="k.fingerprint">{{ k.fingerprint || 'No fingerprint' }}</code>
+                  <code class="kh-fp mono text-ellipsis" :class="{ pv: k.fingerprint }" :title="pv.blur ? undefined : pv.fingerprint(k.fingerprint)">{{ k.fingerprint ? pv.fingerprint(k.fingerprint) : 'No fingerprint' }}</code>
                   <span class="kh-key-actions">
                     <button
                       v-if="k.fingerprint"
                       class="btn-icon"
-                      :aria-label="`Copy ${keyLabel(k.key_type)} fingerprint for ${g.host}`"
+                      :aria-label="`Copy ${keyLabel(k.key_type)} fingerprint for ${pv.hostText(g.host)}`"
                       title="Copy fingerprint"
                       @click="copyText(k.fingerprint, 'Fingerprint copied')"
                     >
@@ -212,7 +214,7 @@ onMounted(load)
                     <button
                       v-if="g.keys.length > 1"
                       class="btn-icon danger"
-                      :aria-label="`Forget ${keyLabel(k.key_type)} key for ${g.host}`"
+                      :aria-label="`Forget ${keyLabel(k.key_type)} key for ${pv.hostText(g.host)}`"
                       title="Forget this key"
                       @click="forgetKey(k)"
                     >
@@ -226,7 +228,7 @@ onMounted(load)
             <span class="row-actions kh-row-actions">
               <button
                 class="btn btn-ghost kh-forget"
-                :aria-label="`Forget ${g.host}`"
+                :aria-label="`Forget ${pv.hostText(g.host)}`"
                 @click="forgetHost(g)"
               >
                 Forget

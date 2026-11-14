@@ -3,11 +3,13 @@ import { computed, reactive, ref, watch } from 'vue'
 import { KeyRound, IdCard, ChevronDown, Fingerprint } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
+import PvText from './PvText.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useHostsStore } from '../stores/hosts'
 import { useCredentialsStore } from '../stores/credentials'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import { api } from '../services/api'
 import { isIpv4 } from '../utils/parseTarget'
 import { jumpCandidates } from '../utils/jumpHosts'
@@ -19,6 +21,7 @@ const hosts = useHostsStore()
 const credentials = useCredentialsStore()
 const sessions = useSessionsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const open = computed(() => dialogs.hostDialog.open)
 const editing = computed(() => dialogs.hostDialog.host)
@@ -40,6 +43,7 @@ const form = reactive({
   port: '22',
   group_id: null as number | null,
   jump_host_id: null as number | null,
+  startup_command: '',
   // inline (legacy / no credential)
   username: '',
   auth_method: 'password' as AuthMethod,
@@ -123,6 +127,7 @@ watch(open, (o) => {
     form.port = String(host.port)
     form.group_id = host.group_id
     form.jump_host_id = host.jump_host_id ?? null
+    form.startup_command = host.startup_command ?? ''
     form.username = host.username
     form.auth_method = host.auth_method
     form.password = ''
@@ -142,12 +147,13 @@ watch(open, (o) => {
     form.address = prefill?.ips?.[0] ?? typed
     form.port = prefill ? String(prefill.port) : '22'
     form.group_id = dialogs.hostDialog.groupId
-    form.jump_host_id = null
+    form.jump_host_id = prefill?.jumpHostId ?? null
+    form.startup_command = ''
     form.username = prefill?.username ?? ''
-    form.auth_method = 'password'
+    form.auth_method = prefill?.keyPath ? 'key' : 'password'
     form.password = ''
     form.save_password = true
-    form.key_path = ''
+    form.key_path = prefill?.keyPath ?? ''
     form.key_passphrase = ''
     form.cred_name = ''
     credentialChoice.value = ''
@@ -189,6 +195,7 @@ async function save() {
         id: editing.value?.id,
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
+        startup_command: form.startup_command.trim() || null,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -201,6 +208,7 @@ async function save() {
         id: editing.value?.id,
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
+        startup_command: form.startup_command.trim() || null,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -221,6 +229,7 @@ async function save() {
         id: editing.value?.id,
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
+        startup_command: form.startup_command.trim() || null,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -277,7 +286,7 @@ async function save() {
         <input
           id="hf-label"
           v-model="form.label"
-          class="field-input"
+          class="field-input pv-field"
           :class="{ invalid: errors.label }"
           type="text"
           placeholder="My server"
@@ -293,7 +302,7 @@ async function save() {
           <input
             id="hf-address"
             v-model="form.address"
-            class="field-input mono"
+            class="field-input mono pv-field"
             :class="{ invalid: errors.address }"
             type="text"
             placeholder="example.com or 192.168.1.10"
@@ -302,7 +311,7 @@ async function save() {
           />
           <span v-if="errors.address" class="field-error">{{ errors.address }}</span>
           <span v-if="!errors.address && resolveHint.length" class="field-hint mono">
-            Resolves to {{ resolveHint.join(', ') }}
+            Resolves to <PvText :text="resolveHint.join(', ')" />
           </span>
         </div>
         <div class="field port">
@@ -334,6 +343,23 @@ async function save() {
         </span>
       </div>
 
+      <div class="field">
+        <label class="field-label" for="hf-startup">Startup command</label>
+        <input
+          id="hf-startup"
+          v-model="form.startup_command"
+          class="field-input mono"
+          type="text"
+          placeholder="cd /var/www && tmux new -A -s main"
+          spellcheck="false"
+          autocapitalize="off"
+        />
+        <span class="field-hint">
+          Typed into the shell after every login, reconnects too. With tmux, work keeps
+          running while the connection is down.
+        </span>
+      </div>
+
       <div class="divider"></div>
 
       <!-- Credentials -->
@@ -346,8 +372,8 @@ async function save() {
       <div v-if="selectedCred" class="cred-chip">
         <IdCard :size="14" :stroke-width="1.5" class="cred-chip-icon" aria-hidden="true" />
         <div class="cred-chip-text">
-          <span class="cred-chip-name">{{ selectedCred.name }}</span>
-          <span class="cred-chip-user mono">{{ selectedCred.username }}</span>
+          <span class="cred-chip-name"><PvText :text="selectedCred.name" /></span>
+          <span class="cred-chip-user mono"><PvText :text="selectedCred.username" /></span>
         </div>
         <button
           type="button"
@@ -362,7 +388,7 @@ async function save() {
       <dl v-if="selectedCred && showCredDetails" class="cred-details">
         <div class="cred-detail-row">
           <dt>Username</dt>
-          <dd class="mono">{{ selectedCred.username }}</dd>
+          <dd class="mono"><PvText :text="selectedCred.username" /></dd>
         </div>
         <div class="cred-detail-row">
           <dt>Auth</dt>
@@ -381,10 +407,10 @@ async function save() {
           <input
             id="hf-credname"
             v-model="form.cred_name"
-            class="field-input"
+            class="field-input pv-field"
             :class="{ invalid: errors.cred_name }"
             type="text"
-            placeholder="e.g. admindqli"
+            :placeholder="pv.t('e.g. admindqli')"
             spellcheck="false"
           />
           <span v-if="errors.cred_name" class="field-error">{{ errors.cred_name }}</span>
@@ -399,7 +425,7 @@ async function save() {
           <input
             id="hf-user"
             v-model="form.username"
-            class="field-input mono"
+            class="field-input mono pv-field"
             :class="{ invalid: errors.username }"
             type="text"
             placeholder="root"

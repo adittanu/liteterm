@@ -26,10 +26,9 @@ fn resolve_auth(
         let auth = match cred.auth_method.as_str() {
             "agent" => AuthSpec::Agent,
             "key" => {
-                let key_path = cred
-                    .key_path
-                    .clone()
-                    .ok_or("Credential has no key file configured")?;
+                let key_path = crate::paths::expand_home(
+                    cred.key_path.as_deref().ok_or("Credential has no key file configured")?,
+                );
                 let passphrase = password
                     .clone()
                     .or_else(|| db::keyring_get(&db::cred_keypass_entry(cred_id)));
@@ -58,7 +57,7 @@ fn resolve_auth(
     let auth = match host.auth_method.as_str() {
         "agent" => AuthSpec::Agent,
         "key" => {
-            let key_path = host.key_path.clone().ok_or("No key file configured")?;
+            let key_path = crate::paths::expand_home(host.key_path.as_deref().ok_or("No key file configured")?);
             let passphrase = password
                 .clone()
                 .or_else(|| db::keyring_get(&db::keypass_entry(host_id)));

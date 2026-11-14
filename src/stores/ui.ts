@@ -54,6 +54,16 @@ export const useUiStore = defineStore('ui', () => {
   // matches opens its find bar; `n` bumps so repeats re-trigger the watch
   const terminalFindRequest = ref<{ sessionId: number; n: number } | null>(null)
 
+  // Bumped when the command history is cleared, so open terminals reload theirs
+  const historyEpoch = ref(0)
+
+  // Same idea for handing the keyboard back to a terminal (after a dialog)
+  const terminalFocusRequest = ref<{ sessionId: number; n: number } | null>(null)
+
+  function requestTerminalFocus(sessionId: number) {
+    terminalFocusRequest.value = { sessionId, n: (terminalFocusRequest.value?.n ?? 0) + 1 }
+  }
+
   function requestTerminalFind(sessionId: number) {
     terminalFindRequest.value = { sessionId, n: (terminalFindRequest.value?.n ?? 0) + 1 }
   }
@@ -79,6 +89,10 @@ export const useUiStore = defineStore('ui', () => {
     confirmDeleteFile: true,
     autoSudoPassword: true,
     autoReconnect: true,
+    notifyCommandDone: true,
+    keepAwake: true,
+    autosuggest: true,
+    autosuggestImport: true,
     keybindings: {},
     hostsLayout: 'modern',
   })
@@ -176,6 +190,9 @@ export const useUiStore = defineStore('ui', () => {
     openNote,
     terminalFindRequest,
     requestTerminalFind,
+    terminalFocusRequest,
+    historyEpoch,
+    requestTerminalFocus,
     settings,
     resolvedThemeId,
     systemDark,

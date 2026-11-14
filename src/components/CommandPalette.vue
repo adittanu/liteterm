@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import {
   ArrowLeftRight,
+  ClipboardPaste,
   Clock,
   Download,
   FolderTree,
@@ -19,17 +20,20 @@ import {
 } from 'lucide-vue-next'
 import HerdrLogo from './HerdrLogo.vue'
 import PlanetAvatar from './PlanetAvatar.vue'
+import PvText from './PvText.vue'
 import { useHostsStore } from '../stores/hosts'
 import { useSessionsStore } from '../stores/sessions'
 import { useSnippetsStore } from '../stores/extras'
 import { useUiStore, type ViewId } from '../stores/ui'
 import { useDialogsStore } from '../stores/dialogs'
-import { useSmartConnect } from '../utils/smartConnect'
-import { targetDisplay } from '../utils/parseTarget'
+import { usePrivacyStore } from '../stores/privacy'
+import { suggestHosts, useSmartConnect } from '../utils/smartConnect'
+import { targetDisplay, type SmartTarget } from '../utils/parseTarget'
+import { api } from '../services/api'
 import { fuzzy, highlight } from '../utils/fuzzy'
 import { comboFor, keyLabel, viewShortcutId } from '../services/shortcuts'
 import { localShellName, thisComputerLower } from '../utils/platform'
-import type { Host } from '../types'
+import type { Host, Snippet } from '../types'
 
 // Opened 100+ times a day (Ctrl+K, the + tab button): no open/close
 // animation, input focused on the first frame, everything keyboard-first.
@@ -39,6 +43,7 @@ const sessions = useSessionsStore()
 const snippets = useSnippetsStore()
 const ui = useUiStore()
 const dialogs = useDialogsStore()
+const pv = usePrivacyStore()
 
 const query = ref('')
 const activeIndex = ref(0)
@@ -48,13 +53,33 @@ let returnFocus: HTMLElement | null = null
 
 const smart = useSmartConnect(query)
 
+// An address or ssh command sitting on the clipboard (copied from chat, a
+// ticket, terminal output) is offered before anything is typed. Not looked
+// up in DNS: the user didn't ask for that.
+const clip = ref('')
+const clipSmart = useSmartConnect(clip, { resolve: false })
+const clipTarget = computed(() => {
+  const t = clipSmart.target.value
+  if (!t) return null
+  // A bare `notes.txt` could be any copied word; offer it only as a saved host
+  const deliberate = t.kind === 'ip' || t.from !== 'plain' || t.username !== null
+  return deliberate || clipSmart.matches.value.length ? t : null
+})
+
 watch(
   () => dialogs.showPalette,
   (open) => {
     if (open) {
       returnFocus = document.activeElement as HTMLElement | null
       query.value = ''
+      clip.value = ''
       activeIndex.value = 0
+      void api
+        .clipboardText()
+        .then((text) => {
+          if (dialogs.showPalette) clip.value = text ?? ''
+        })
+        .catch(() => {})
       void nextTick(() => inputEl.value?.focus())
     } else {
       // Hand focus back (e.g. to the terminal) unless an action moved it
@@ -69,7 +94,7 @@ watch(
 
 // ---- items ----
 
-type Section = 'Quick connect' | 'Open sessions' | 'Hosts' | 'Snippets' | 'Actions' | 'Go to'
+type Section = 'Quick connect' | 'From clipboard' | 'Did you mean' | 'Open sessions' | 'Hosts' | 'Snippets' | 'Actions' | 'Go to'
 
 interface Item {
   key: string
@@ -101,6 +126,15 @@ function tabStatus(hostId: number): Item['status'] {
 function openTab(id: number) {
   sessions.activeId = id
   ui.openView(`session:${id}`)
+}
+
+/** Run (or type without Enter) a snippet, asking for its {{placeholders}} first. */
+async function sendSnippet(tabId: number, s: Snippet, execute: boolean) {
+  const command = await dialogs.fillSnippet(s, execute ? 'Run' : 'Insert')
+  if (command === null) return
+  sessions.write(tabId, execute ? command + '\n' : command)
+  openTab(tabId)
+  ui.requestTerminalFocus(tabId)
 }
 
 const runTarget = computed(() => {
@@ -139,6 +173,10 @@ const views: { id: ViewId; label: string; icon: Component }[] = [
   { id: 'logs', label: 'Logs', icon: Clock },
 ]
 
+function hostSub(h: Host): string {
+  return `${h.username}@${h.address}${h.port !== 22 ? `:${h.port}` : ''}`
+}
+
 function hostItem(h: Host, section: Section, score: number, hits: number[], sub?: string): Item {
   const status = tabStatus(h.id)
   const tab = sessions.tabs.find((t) => t.hostId === h.id && t.status !== 'closed' && t.status !== 'error')
@@ -147,7 +185,7 @@ function hostItem(h: Host, section: Section, score: number, hits: number[], sub?
     section,
     label: h.label,
     hits,
-    sub: sub ?? `${h.username}@${h.address}${h.port !== 22 ? `:${h.port}` : ''}`,
+    sub: sub ?? hostSub(h),
     score,
     host: h,
     status,
@@ -157,46 +195,49 @@ function hostItem(h: Host, section: Section, score: number, hits: number[], sub?
   }
 }
 
+/**
+ * Rows for a parsed target: the saved hosts it matches, else one "Connect
+ * to …" row that opens the host dialog filled in (key and jump host too,
+ * for a pasted ssh command). Matched host ids go into `ids`.
+ */
+function targetItems(s: ReturnType<typeof useSmartConnect>, t: SmartTarget, section: Section, ids: Set<number>): Item[] {
+  const out: Item[] = []
+  for (const m of s.matches.value) {
+    ids.add(m.host.id)
+    out.push(hostItem(m.host, section, 1e6, [], m.reason === 'ip' ? `${hostSub(m.host)} · via ${m.ip}` : undefined))
+  }
+  if (out.length) return out
+
+  const jump = s.jump.value
+  const notes = [
+    s.resolving.value ? 'Resolving…' : s.resolveFailed.value ? 'Address didn’t resolve — try anyway' : 'Not saved yet · adds it to Hosts',
+    t.keyPath ? `key ${t.keyPath.split(/[\\/]/).pop()}` : null,
+    jump ? (jump.host ? `via ${jump.host.label}` : `jump host ${jump.spec} isn’t saved`) : null,
+  ]
+  out.push({
+    key: `${section}:new`,
+    section,
+    label: `Connect to ${targetDisplay(t)}`,
+    hits: [],
+    sub: notes.filter(Boolean).join(' · '),
+    score: 1e6,
+    icon: section === 'From clipboard' ? ClipboardPaste : PlugZap,
+    verb: 'Add & connect',
+    run: () => dialogs.openHostDialog(null, null, s.prefill(), true),
+  })
+  return out
+}
+
 const items = computed<Item[]>(() => {
   const q = query.value.trim()
   const out: Item[] = []
 
-  // 1. Quick connect target parsed from the query
+  // 1. Quick connect target parsed from the query, or found on the clipboard
   const t = smart.target.value
   const smartIds = new Set<number>()
-  if (t) {
-    for (const m of smart.matches.value) {
-      smartIds.add(m.host.id)
-      out.push(
-        hostItem(
-          m.host,
-          'Quick connect',
-          1e6,
-          [],
-          m.reason === 'ip' ? `${m.host.username}@${m.host.address} · via ${m.ip}` : undefined,
-        ),
-      )
-    }
-    if (!smartIds.size) {
-      out.push({
-        key: 'smart-new',
-        section: 'Quick connect',
-        label: `Connect to ${targetDisplay(t)}`,
-        hits: [],
-        sub: smart.resolving.value ? 'Resolving…' : smart.resolveFailed.value ? 'Address didn’t resolve — try anyway' : 'Not saved yet · adds it to Hosts',
-        score: 1e6,
-        icon: PlugZap,
-        verb: 'Add & connect',
-        run: () =>
-          dialogs.openHostDialog(
-            null,
-            null,
-            { address: t.host, port: t.port ?? 22, username: t.username, ips: t.kind === 'domain' ? smart.ips.value : [] },
-            true,
-          ),
-      })
-    }
-  }
+  if (t) out.push(...targetItems(smart, t, 'Quick connect', smartIds))
+  const ct = clipTarget.value
+  if (!q && ct) out.push(...targetItems(clipSmart, ct, 'From clipboard', smartIds))
 
   // 2. Open sessions (switch to) — local terminals included
   const openTabs = sessions.tabs.filter((x) => x.status !== 'closed')
@@ -239,6 +280,16 @@ const items = computed<Item[]>(() => {
   hostRows.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))
   out.push(...hostRows)
 
+  // 3b. Nothing matched: a saved host a typo or two away ("prdo" → prod)
+  let typo: string | null = null
+  if (t && !smart.matches.value.length && smart.resolveFailed.value) typo = t.host
+  else if (q && !t && !out.some((i) => i.section === 'Hosts' || i.section === 'Open sessions')) {
+    typo = smart.parsed.value?.alias ? smart.parsed.value.host : q
+  }
+  if (typo) {
+    for (const h of suggestHosts(hosts.hosts, typo, smartIds)) out.push(hostItem(h, 'Did you mean', 0, []))
+  }
+
   // 4. Snippets — only while searching, run in the current terminal
   if (q && runTarget.value) {
     const target = runTarget.value
@@ -257,11 +308,8 @@ const items = computed<Item[]>(() => {
         score: f!.score,
         icon: Play,
         verb: `Run in ${target.label}`,
-        run: () => {
-          sessions.write(target.id, s.command + '\n')
-          openTab(target.id)
-        },
-        alt: { verb: 'Insert without running', run: () => (sessions.write(target.id, s.command), openTab(target.id)) },
+        run: () => void sendSnippet(target.id, s, true),
+        alt: { verb: 'Insert without running', run: () => void sendSnippet(target.id, s, false) },
       })
     }
   }
@@ -303,10 +351,11 @@ const items = computed<Item[]>(() => {
   }
 
   // Sections stay in a fixed order; rank inside a section only
-  const order: Section[] = ['Quick connect', 'Open sessions', 'Actions', 'Hosts', 'Snippets', 'Go to']
+  const order: Section[] = ['Quick connect', 'From clipboard', 'Did you mean', 'Open sessions', 'Actions', 'Hosts', 'Snippets', 'Go to']
   const bySection = order.map((s) => out.filter((i) => i.section === s))
-  // Hosts keep their pre-sorted order (recent first when not searching)
-  if (q) bySection.forEach((list, i) => order[i] !== 'Hosts' && list.sort((a, b) => b.score - a.score))
+  // Hosts keep their pre-sorted order (recent first when not searching),
+  // suggestions their closest-first order
+  if (q) bySection.forEach((list, i) => order[i] !== 'Hosts' && order[i] !== 'Did you mean' && list.sort((a, b) => b.score - a.score))
   return bySection.flat()
 })
 
@@ -423,16 +472,18 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
                   <span v-if="item.status && item.status !== 'idle'" class="pal-presence" :class="item.status" aria-hidden="true"></span>
                 </template>
                 <span v-else-if="item.herdr" class="pal-tile"><HerdrLogo :size="15" /></span>
-                <span v-else class="pal-tile" :class="{ accent: item.section === 'Quick connect' }">
+                <span v-else class="pal-tile" :class="{ accent: item.section === 'Quick connect' || item.section === 'From clipboard' }">
                   <component :is="item.icon" :size="15" :stroke-width="1.6" aria-hidden="true" />
                 </span>
               </span>
 
               <span class="pal-text">
                 <span class="pal-label text-ellipsis">
-                  <template v-for="(seg, k) in highlight(item.label, item.hits)" :key="k"><mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
+                  <!-- Highlighted letters would trace the real name -->
+                  <PvText v-if="pv.enabled" :text="item.label" />
+                  <template v-for="(seg, k) in highlight(item.label, item.hits)" v-else :key="k"><mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
                 </span>
-                <span v-if="item.sub" class="pal-sub text-ellipsis" :class="{ mono: !!item.host || item.section === 'Snippets' || item.section === 'Open sessions' }">{{ item.sub }}</span>
+                <span v-if="item.sub" class="pal-sub text-ellipsis" :class="{ mono: !!item.host || item.section === 'Snippets' || item.section === 'Open sessions' }"><PvText :text="item.sub" /></span>
               </span>
 
               <span class="pal-trail">
@@ -440,7 +491,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
                 <span v-if="item.keys && i !== activeIndex" class="pal-keys" aria-hidden="true">
                   <kbd v-for="k in kbdParts(item.keys)" :key="k">{{ k }}</kbd>
                 </span>
-                <span v-if="i === activeIndex" class="pal-verb" aria-hidden="true">{{ item.verb }} <kbd>↵</kbd></span>
+                <span v-if="i === activeIndex" class="pal-verb" aria-hidden="true"><span><PvText :text="item.verb" /></span> <kbd>↵</kbd></span>
               </span>
             </div>
           </template>
@@ -448,7 +499,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
 
         <footer class="pal-foot" aria-hidden="true">
           <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
-          <span v-if="active"><kbd>↵</kbd> {{ active.verb }}</span>
+          <span v-if="active"><kbd>↵</kbd> {{ pv.t(active.verb) }}</span>
           <span v-if="active?.alt"><kbd>Shift</kbd><kbd>↵</kbd> {{ active.alt.verb }}</span>
           <span class="pal-foot-spacer"></span>
           <span><kbd>Esc</kbd> {{ query ? 'Clear' : 'Close' }}</span>

@@ -355,3 +355,18 @@ ol {
   text-transform: uppercase;
   color: var(--text-3);
 }
+
+/* ---- Privacy mode (stores/privacy.ts) ----
+   .pv       — a secret span; blurred in the blur style
+   .pv-field — an input holding a real value (can't show a stand-in without
+               saving it); blurred in either style until focused for editing */
+html[data-privacy='blur'] .pv {
+  filter: blur(5px);
+  user-select: none;
+}
+
+/* Blur the text only, not the input's own border and background */
+html[data-privacy] .pv-field:not(:focus) {
+  color: transparent;
+  text-shadow: 0 0 7px var(--text-2);
+}

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-vue-next'
 import { useUiStore } from '../stores/ui'
+import PvText from './PvText.vue'
 
 const ui = useUiStore()
 
@@ -23,7 +24,7 @@ const icons = {
           role="status"
         >
           <component :is="icons[t.kind]" :size="15" :stroke-width="1.5" class="toast-icon" aria-hidden="true" />
-          <span class="toast-message">{{ t.message }}</span>
+          <span class="toast-message"><PvText :text="t.message" /></span>
           <button
             v-if="t.action"
             class="btn btn-ghost toast-action"

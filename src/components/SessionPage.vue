@@ -6,6 +6,7 @@ import { useUiStore } from '../stores/ui'
 import { terminalThemeFor } from '../services/terminalThemes'
 import type { SessionTab } from '../types'
 import TerminalPane from './TerminalPane.vue'
+import PvText from './PvText.vue'
 
 const props = defineProps<{ sessionId: number }>()
 
@@ -90,12 +91,12 @@ async function resetHostKey(t: SessionTab) {
 
       <div v-if="tab.status === 'connecting'" class="pane-overlay">
         <span class="spinner" aria-hidden="true"></span>
-        <p>Connecting to <strong>{{ tab.address }}</strong>…</p>
+        <p>Connecting to <strong><PvText :text="tab.address" /></strong>…</p>
       </div>
 
       <div v-else-if="tab.status === 'error' || tab.status === 'closed'" class="pane-overlay">
         <p class="pane-error">
-          {{ tab.status === 'error' ? (tab.error || 'Connection failed') : (tab.error || 'Session closed') }}
+          <PvText :text="tab.status === 'error' ? (tab.error || 'Connection failed') : (tab.error || 'Session closed')" />
         </p>
         <div class="overlay-actions">
           <button

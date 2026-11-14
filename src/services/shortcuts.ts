@@ -37,6 +37,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'openSettings', label: 'Open settings', group: 'General', defaultKeys: 'Ctrl+,' },
   { id: 'fontSizeUp', label: 'Increase terminal font', group: 'General', defaultKeys: 'Ctrl+Plus' },
   { id: 'fontSizeDown', label: 'Decrease terminal font', group: 'General', defaultKeys: 'Ctrl+-' },
+  { id: 'privacyMode', label: 'Toggle privacy mode', group: 'General', defaultKeys: 'Ctrl+Shift+B' },
   // Windows Terminal's binding; Go to Port Forwarding moved to Ctrl+Shift+U
   { id: 'terminalFind', label: 'Find in terminal', group: 'Terminal', defaultKeys: 'Ctrl+Shift+F' },
   view('hosts', 'Go to Hosts', 'Ctrl+Shift+H'),

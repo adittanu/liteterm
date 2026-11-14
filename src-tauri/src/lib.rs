@@ -1,6 +1,7 @@
 mod applog;
 mod cloud;
 mod commands;
+mod history_import;
 mod import;
 mod local;
 mod menu;
@@ -23,7 +24,10 @@ pub fn run() {
     // otherwise leave nothing behind (see applog.rs)
     applog::install_panic_hook();
 
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init());
     // Tauri's default macOS menu would claim Cmd+W (see menu.rs)
     #[cfg(target_os = "macos")]
     let builder = builder.menu(menu::macos);
@@ -71,6 +75,14 @@ pub fn run() {
             commands::local_fs::local_mkdir,
             commands::local_fs::local_rename,
             commands::net::resolve_host,
+            commands::clipboard::clipboard_text,
+            commands::paste::paste_image,
+            commands::notify::notify,
+            commands::power::set_keep_awake,
+            commands::history::history_list,
+            commands::history::history_add,
+            commands::history::history_clear,
+            commands::history::history_import,
             commands::credentials::list_credentials,
             commands::credentials::upsert_credential,
             commands::credentials::delete_credential,

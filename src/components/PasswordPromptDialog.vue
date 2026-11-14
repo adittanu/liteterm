@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { KeyRound } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
+import PvText from './PvText.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useSessionsStore } from '../stores/sessions'
 import { useHostsStore } from '../stores/hosts'
@@ -60,6 +61,7 @@ async function rememberSecret(hostId: number, kind: 'password' | 'passphrase', s
       key_passphrase: kind === 'passphrase' ? secret : null,
       credential_id: null,
       jump_host_id: host.jump_host_id,
+      startup_command: host.startup_command,
     })
   }
 }
@@ -104,7 +106,7 @@ function cancel() {
       <p class="prompt-lead">
         <KeyRound :size="14" :stroke-width="1.5" aria-hidden="true" />
         {{ prompt.kind === 'password' ? 'Enter the password for' : 'Enter the passphrase for' }}
-        <strong>{{ prompt.label }}</strong>
+        <strong><PvText :text="prompt.label" /></strong>
       </p>
       <input
         v-model="value"

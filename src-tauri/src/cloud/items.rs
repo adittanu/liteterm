@@ -92,6 +92,10 @@ pub struct HostData {
     /// sync_id of the host it jumps through
     #[serde(default)]
     pub jump_host: Option<String>,
+    /// Left out when unset, so hosts without one push the same payload as
+    /// before; an older LiteTerm ignores the field
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_command: Option<String>,
     #[serde(default)]
     pub sort: i64,
     #[serde(default)]
@@ -288,7 +292,7 @@ fn read_payload(
             let row = conn
                 .query_row(
                     "SELECT h.id, h.label, h.address, h.port, h.username, h.auth_method, h.key_path, \
-                     g.sync_id, c.sync_id, j.sync_id, h.sort, h.password_saved, h.modified_at \
+                     g.sync_id, c.sync_id, j.sync_id, h.sort, h.password_saved, h.modified_at, h.startup_command \
                      FROM hosts h \
                      LEFT JOIN groups g ON g.id = h.group_id \
                      LEFT JOIN credentials c ON c.id = h.credential_id \
@@ -306,6 +310,7 @@ fn read_payload(
                             group: r.get(7)?,
                             credential: r.get(8)?,
                             jump_host: r.get(9)?,
+                            startup_command: r.get(13)?,
                             sort: r.get(10)?,
                             password_saved: r.get::<_, i64>(11)? != 0,
                             password: None,
@@ -605,6 +610,7 @@ fn apply_upsert(
                     ("group_id", &group_id),
                     ("credential_id", &credential_id),
                     ("jump_host_id", &jump_id),
+                    ("startup_command", &d.startup_command),
                     ("sort", &d.sort),
                     ("password_saved", &d.password_saved),
                 ],
@@ -1032,6 +1038,34 @@ mod tests {
         // Fields a later version adds are ignored, ones it drops default
         let p: Payload = serde_json::from_str(r#"{"kind":"snippet","name":"a","command":"b","new":1}"#).unwrap();
         assert_eq!(p, Payload::Snippet(SnippetData { name: "a".into(), command: "b".into(), sort: 0 }));
+    }
+
+    #[test]
+    fn a_startup_command_syncs_and_its_edits_follow() {
+        let (a, b, mut server) = (Device::new(), Device::new(), Server::default());
+        let host = a.add_host("app");
+        // Older payloads never carried the field: a host without one keeps
+        // pushing exactly what it pushed before
+        let first = queued(&a.conn, &a.secrets).unwrap();
+        let json = serde_json::to_string(&first[0].payload).unwrap();
+        assert!(!json.contains("startup_command"), "{json}");
+        a.sync_with(&mut server);
+        assert!(a.outbox().is_empty());
+
+        a.conn
+            .execute("UPDATE hosts SET startup_command = 'tmux new -A -s main' WHERE id = ?1", [host])
+            .unwrap();
+        assert_eq!(a.outbox().len(), 1, "editing the command queues the host");
+        a.sync_with(&mut server);
+        b.sync_with(&mut server);
+        assert_eq!(
+            b.val::<Option<String>>("SELECT startup_command FROM hosts WHERE label = 'app'").as_deref(),
+            Some("tmux new -A -s main")
+        );
+        assert_eq!(
+            db::host_startup_command(&b.conn, b.val("SELECT id FROM hosts WHERE label = 'app'")).unwrap().as_deref(),
+            Some("tmux new -A -s main")
+        );
     }
 
     #[test]

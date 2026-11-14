@@ -5,10 +5,12 @@ import { useCredentialsStore } from '../stores/credentials'
 import { useHostsStore } from '../stores/hosts'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
 import CredentialDialog from '../components/CredentialDialog.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
+import PvText from '../components/PvText.vue'
 import { matchesQuery, plural } from '../utils/pageHelpers'
 import { secretStore } from '../utils/platform'
 import type { Credential } from '../types'
@@ -17,6 +19,7 @@ const credentials = useCredentialsStore()
 const hosts = useHostsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const query = ref('')
 const editorOpen = ref(false)
@@ -141,7 +144,7 @@ async function remove(cred: Credential) {
           class="cred-card"
           role="button"
           tabindex="0"
-          :aria-label="`Edit credential ${cred.name}`"
+          :aria-label="pv.t(`Edit credential ${cred.name}`)"
           @click="openEdit(cred)"
           @keydown.enter.self="openEdit(cred)"
           @keydown.space.self.prevent="openEdit(cred)"
@@ -154,12 +157,12 @@ async function remove(cred: Credential) {
               <LockKeyhole v-else :size="17" :stroke-width="1.5" aria-hidden="true" />
             </span>
             <span class="cred-text">
-              <span class="cred-name text-ellipsis">{{ cred.name }}</span>
-              <span class="cred-user mono text-ellipsis">{{ cred.username }}</span>
+              <span class="cred-name text-ellipsis"><PvText :text="cred.name" /></span>
+              <span class="cred-user mono text-ellipsis"><PvText :text="cred.username" /></span>
             </span>
             <button
               class="btn-icon cred-more"
-              :aria-label="`Options for ${cred.name}`"
+              :aria-label="pv.t(`Options for ${cred.name}`)"
               @click.stop="openMenu(cred, $event)"
             >
               <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
@@ -170,9 +173,9 @@ async function remove(cred: Credential) {
             <span
               class="chip text-ellipsis"
               :class="secretState(cred).tone"
-              :title="cred.auth_method === 'key' ? cred.key_path ?? '' : undefined"
+              :title="cred.auth_method === 'key' && !pv.blur ? pv.t(cred.key_path ?? '') : undefined"
             >
-              <span v-if="cred.auth_method === 'key'" class="mono">{{ secretState(cred).label }}</span>
+              <span v-if="cred.auth_method === 'key'" class="mono pv">{{ secretState(cred).label }}</span>
               <template v-else>{{ secretState(cred).label }}</template>
             </span>
             <span class="cred-usage" :class="{ unused: !usedBy(cred) }">

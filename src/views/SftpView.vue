@@ -8,6 +8,7 @@ import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import FilePane from '../components/sftp/FilePane.vue'
 import TransferTray from '../components/sftp/TransferTray.vue'
+import PvText from '../components/PvText.vue'
 import {
   bindHost,
   bindLocal,
@@ -511,7 +512,7 @@ function setPaneRef(i: 0 | 1, el: unknown) {
     >
       <Files v-if="ghost.count > 1" :size="13" :stroke-width="1.6" />
       <FileIcon v-else :size="13" :stroke-width="1.6" />
-      <span class="text-ellipsis">{{ ghost.label }}</span>
+      <span class="text-ellipsis"><PvText :text="ghost.label" /></span>
     </div>
   </div>
 </template>

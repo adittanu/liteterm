@@ -3,9 +3,11 @@ import { computed, reactive, ref } from 'vue'
 import { ArrowRight, Laptop, Server, Globe } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
+import PvText from './PvText.vue'
 import { useForwardsStore } from '../stores/extras'
 import { useHostsStore } from '../stores/hosts'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
 import { thisComputer } from '../utils/platform'
 import type { PortForward } from '../types'
@@ -16,6 +18,7 @@ const emit = defineEmits<{ close: [] }>()
 const forwards = useForwardsStore()
 const hosts = useHostsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const f = props.forward
 const form = reactive({
@@ -102,13 +105,13 @@ async function save() {
         <span class="route-node via">
           <Server :size="14" :stroke-width="1.5" />
           <span class="route-label">via SSH</span>
-          <span class="route-value text-ellipsis">{{ hostLabel }}</span>
+          <span class="route-value text-ellipsis"><PvText :text="hostLabel" /></span>
         </span>
         <ArrowRight :size="14" :stroke-width="1.5" class="route-arrow" />
         <span class="route-node">
           <Globe :size="14" :stroke-width="1.5" />
           <span class="route-label">Destination</span>
-          <span class="route-value mono text-ellipsis">{{ form.remote_host.trim() || '…' }}:{{ form.remote_port.trim() || '…' }}</span>
+          <span class="route-value mono text-ellipsis"><span class="pv">{{ pv.hostText(form.remote_host.trim()) || '…' }}</span>:{{ form.remote_port.trim() || '…' }}</span>
         </span>
       </div>
 
@@ -124,7 +127,7 @@ async function save() {
           <input
             id="fw-rhost"
             v-model="form.remote_host"
-            class="field-input mono"
+            class="field-input mono pv-field"
             :class="{ invalid: show('remote_host') }"
             type="text"
             placeholder="localhost"
@@ -157,9 +160,9 @@ async function save() {
           <input
             id="fw-name"
             v-model="form.name"
-            class="field-input"
+            class="field-input pv-field"
             type="text"
-            :placeholder="effectiveName"
+            :placeholder="pv.t(effectiveName)"
             spellcheck="false"
           />
         </div>
@@ -184,7 +187,7 @@ async function save() {
         <input v-model="form.auto_start" type="checkbox" />
         <span>
           Start automatically
-          <span class="check-hint">whenever {{ hostLabel }} connects</span>
+          <span class="check-hint">whenever <PvText :text="hostLabel" /> connects</span>
         </span>
       </label>
 

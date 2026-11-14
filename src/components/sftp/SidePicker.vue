@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { Laptop, Search } from 'lucide-vue-next'
 import PlanetAvatar from '../PlanetAvatar.vue'
+import PvText from '../PvText.vue'
 import { useHostsStore } from '../../stores/hosts'
 import { useSessionsStore } from '../../stores/sessions'
 import { matchesQuery } from '../../utils/pageHelpers'
@@ -142,8 +143,8 @@ onMounted(() => {
       >
         <PlanetAvatar :host="h" :size="30" />
         <span class="sp-text">
-          <span class="sp-name text-ellipsis">{{ h.label }}</span>
-          <span class="sp-sub mono text-ellipsis">{{ h.username }}@{{ h.address }}</span>
+          <span class="sp-name text-ellipsis"><PvText :text="h.label" /></span>
+          <span class="sp-sub mono text-ellipsis"><PvText :text="`${h.username}@${h.address}`" /></span>
         </span>
         <span v-if="connected.has(h.id)" class="sp-live" title="Connected — opens instantly">
           <span class="status-dot connected" aria-hidden="true"></span>
@@ -152,7 +153,7 @@ onMounted(() => {
       </button>
 
       <p v-if="!items.length" class="sp-empty">
-        {{ hosts.hosts.length ? `No hosts match “${query.trim()}”` : 'No saved hosts yet — add one in Hosts.' }}
+        <PvText :text="hosts.hosts.length ? `No hosts match “${query.trim()}”` : 'No saved hosts yet — add one in Hosts.'" />
       </p>
     </div>
   </div>

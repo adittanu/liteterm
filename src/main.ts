@@ -32,8 +32,11 @@ import { useHostsStore } from './stores/hosts'
 import { useCredentialsStore } from './stores/credentials'
 import { useSnippetsStore, useForwardsStore } from './stores/extras'
 import { useCloudStore } from './stores/cloud'
+import { usePrivacyStore } from './stores/privacy'
 
 const ui = useUiStore()
+// Restores the remembered privacy mode (html[data-privacy]) at startup
+usePrivacyStore()
 const sessions = useSessionsStore()
 
 void ui.loadSettings()

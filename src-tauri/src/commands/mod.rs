@@ -1,11 +1,16 @@
+pub mod clipboard;
 pub mod cloud;
 pub mod credentials;
 pub mod forwards;
+pub mod history;
 pub mod hosts;
 pub mod import;
 pub mod local_fs;
 pub mod net;
 pub mod notes;
+pub mod notify;
+pub mod paste;
+pub mod power;
 pub mod session;
 pub mod settings;
 pub mod sftp;

@@ -25,6 +25,7 @@ export interface Host {
   sort: number
   last_used_at: number | null // ms since epoch, bumped on connect
   jump_host_id: number | null // saved host to hop through (ProxyJump)
+  startup_command: string | null // typed into the shell after every login
 }
 
 export interface HostInput {
@@ -44,6 +45,8 @@ export interface HostInput {
   // Required on purpose: the backend reads a missing value as "no jump
   // host", so every save must carry the current one forward
   jump_host_id: number | null
+  // Required for the same reason: missing reads as "no startup command"
+  startup_command: string | null
 }
 
 export interface Credential {
@@ -118,6 +121,10 @@ export interface SessionTab {
   // present while status === 'reconnecting'
   reconnect?: { attempt: number; maxAttempts: number; retryAt: number /* epoch ms; 0 = dialing */ }
   sftpOpen: boolean
+  /** Window title the shell or program set (OSC 0/2), shown after the label */
+  title?: string
+  /** A command typed at the prompt is still running (TerminalPane decides) */
+  busy?: boolean
 }
 
 export interface FileEntry {
@@ -145,6 +152,10 @@ export interface AppSettings {
   confirmDeleteFile: boolean
   autoSudoPassword: boolean
   autoReconnect: boolean // redial dropped SSH sessions with backoff
+  notifyCommandDone: boolean // notice when a long command ends in a tab you're not looking at
+  keepAwake: boolean // hold off idle sleep while a tab runs a command
+  autosuggest: boolean // grey suggestions from the host's history while typing
+  autosuggestImport: boolean // seed them from the server's own shell history once
   keybindings: Record<string, string> // action id -> combo ("Ctrl+K"); absent = default
   hostsLayout: 'modern' | 'classic' // Hosts page: chips + quick actions, or Termius-style folders
 }

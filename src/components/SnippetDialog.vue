@@ -63,7 +63,10 @@ onMounted(() => nextTick(() => commandEl.value?.focus()))
           @keydown.meta.enter.prevent="save"
         ></textarea>
         <span v-if="submitted && commandError" class="field-error">{{ commandError }}</span>
-        <span v-else class="field-hint">Multiple lines run one after another. {{ modKey }}Enter to save.</span>
+        <span v-else class="field-hint">
+          Multiple lines run one after another. <span class="mono" v-pre>{{name}}</span> or
+          <span class="mono" v-pre>{{name:default}}</span> asks for a value each run. {{ modKey }}Enter to save.
+        </span>
       </div>
 
       <div class="field">

@@ -1,15 +1,19 @@
 // Quick-connect matcher: parses the search box, resolves the target via DNS
-// (debounced + cached), and matches it against saved hosts — by exact address
-// or by resolved IP, so typing a domain finds a host saved by its IP.
+// (debounced + cached), and matches it against saved hosts — by exact address,
+// by resolved IP (so typing a domain finds a host saved by its IP), or by
+// label for a bare name from an ssh command (`ssh prod`).
 import { computed, onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import type { Host } from '../types'
+import type { HostPrefill } from '../stores/dialogs'
 import { api } from '../services/api'
 import { useHostsStore } from '../stores/hosts'
+import { editDistance } from './fuzzy'
+import { findSavedHost } from './jumpHosts'
 import { isIpv4, parseTarget } from './parseTarget'
 
 export interface SmartMatch {
   host: Host
-  reason: 'address' | 'ip'
+  reason: 'address' | 'ip' | 'label'
   ip?: string
 }
 
@@ -24,10 +28,19 @@ async function resolveCached(domain: string): Promise<string[]> {
   return ips
 }
 
-export function useSmartConnect(query: Ref<string>) {
-  const hosts = useHostsStore()
+export interface SmartOptions {
+  /**
+   * Look the target up in DNS. Off for text the user didn't type (the
+   * clipboard): a copied file name like `notes.txt` shouldn't reach a resolver.
+   */
+  resolve?: boolean
+}
 
-  const target = computed(() => parseTarget(query.value))
+export function useSmartConnect(query: Readonly<Ref<string>>, opts: SmartOptions = {}) {
+  const hosts = useHostsStore()
+  const resolve = opts.resolve ?? true
+
+  const parsed = computed(() => parseTarget(query.value))
   const ips = ref<string[]>([])
   const resolving = ref(false)
   const resolveFailed = ref(false)
@@ -44,7 +57,7 @@ export function useSmartConnect(query: Ref<string>) {
     resolveFailed.value = false
     domainIps.value = {}
 
-    if (!t) {
+    if (!t || !resolve || t.alias) {
       resolving.value = false
       return
     }
@@ -101,9 +114,10 @@ export function useSmartConnect(query: Ref<string>) {
   onBeforeUnmount(() => clearTimeout(timer))
 
   const matches = computed<SmartMatch[]>(() => {
-    const t = target.value
+    const t = parsed.value
     if (!t) return []
     const portOk = (h: Host) => t.port === null || t.port === h.port
+    const bareName = t.kind === 'domain' && !t.host.includes('.')
     const out: SmartMatch[] = []
     for (const h of hosts.hosts) {
       const addr = h.address.toLowerCase()
@@ -115,9 +129,11 @@ export function useSmartConnect(query: Ref<string>) {
         if (domainIps.value[addr]?.includes(t.host)) {
           out.push({ host: h, reason: 'ip', ip: t.host })
         }
+      } else if (bareName && h.label.trim().toLowerCase() === t.host && portOk(h)) {
+        out.push({ host: h, reason: 'label' })
       }
     }
-    const rank = (m: SmartMatch) => (m.reason === 'address' ? 0 : 1)
+    const rank = (m: SmartMatch) => (m.reason === 'address' ? 0 : m.reason === 'label' ? 1 : 2)
     return out.sort(
       (a, b) =>
         rank(a) - rank(b) ||
@@ -126,5 +142,57 @@ export function useSmartConnect(query: Ref<string>) {
     )
   })
 
-  return { target, ips, resolving, resolveFailed, matches }
+  // `ssh prod` only counts as a target when "prod" is a saved host
+  const target = computed(() => {
+    const t = parsed.value
+    return t?.alias && !matches.value.length ? null : t
+  })
+
+  /** The saved host an ssh command's `-J` names, if any. */
+  const jump = computed(() => {
+    const spec = target.value?.jump
+    return spec ? { spec, host: findSavedHost(hosts.hosts, spec) } : null
+  })
+
+  /** Fields for "Add & connect" from the current target. */
+  function prefill(): HostPrefill | null {
+    const t = target.value
+    if (!t) return null
+    return {
+      address: t.host,
+      port: t.port ?? 22,
+      username: t.username,
+      ips: t.kind === 'domain' ? ips.value : [],
+      keyPath: t.keyPath ?? null,
+      jumpHostId: jump.value?.host?.id ?? null,
+    }
+  }
+
+  return { target, parsed, ips, resolving, resolveFailed, matches, jump, prefill }
+}
+
+/**
+ * Saved hosts one or two typos away from what was typed ("prdo-api" →
+ * prod-api), for a search that found nothing or an address that didn't
+ * resolve. Compares the whole label and address and each longer word in them.
+ */
+export function suggestHosts(hosts: Host[], typed: string, exclude: Set<number> = new Set(), limit = 3): Host[] {
+  const q = typed.trim().toLowerCase()
+  if (q.length < 3) return []
+  const max = q.length < 5 ? 1 : q.length < 9 ? 2 : 3
+  const scored: { host: Host; d: number }[] = []
+  for (const h of hosts) {
+    if (exclude.has(h.id)) continue
+    const label = h.label.trim().toLowerCase()
+    const addr = h.address.toLowerCase()
+    const fields = new Set([label, addr, `${h.username.toLowerCase()}@${addr}`])
+    for (const w of `${label} ${addr}`.split(/[\s._\-@:/]+/)) if (w.length >= 3) fields.add(w)
+    let d = max + 1
+    for (const f of fields) d = Math.min(d, editDistance(q, f, max))
+    if (d <= max) scored.push({ host: h, d })
+  }
+  return scored
+    .sort((a, b) => a.d - b.d || (b.host.last_used_at ?? 0) - (a.host.last_used_at ?? 0))
+    .slice(0, limit)
+    .map((s) => s.host)
 }

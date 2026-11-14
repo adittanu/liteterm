@@ -23,6 +23,8 @@ pub struct ParsedHost {
     /// every other source). Only "agent" changes anything: it has no secret
     /// or key file to carry, so without this it came back as a password host.
     pub auth_method: Option<String>,
+    /// From a LiteTerm export
+    pub startup_command: Option<String>,
 }
 
 impl Default for ParsedHost {
@@ -40,6 +42,7 @@ impl Default for ParsedHost {
             key_passphrase: None,
             proxy_jump: None,
             auth_method: None,
+            startup_command: None,
         }
     }
 }
@@ -478,6 +481,7 @@ fn host_from_json(host: &serde_json::Value, idx: &JsonIndex) -> Option<ParsedHos
         proxy_jump: None,
         auth_method: first_str(host, &["authMethod", "auth_method"])
             .filter(|m| matches!(m.as_str(), "agent" | "key" | "password")),
+        startup_command: first_str(host, &["startupCommand", "startup_command"]),
     })
 }
 

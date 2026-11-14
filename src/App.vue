@@ -22,17 +22,20 @@ import ExportDialog from './components/ExportDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import QuickNoteDialog from './components/QuickNoteDialog.vue'
+import SnippetVarsDialog from './components/SnippetVarsDialog.vue'
 import Toasts from './components/Toasts.vue'
 import { useSessionsStore } from './stores/sessions'
 import { useDialogsStore } from './stores/dialogs'
 import { useUiStore, type ViewId } from './stores/ui'
 import { useUpdaterStore } from './stores/updater'
+import { usePrivacyStore } from './stores/privacy'
 import { actionFor, captureActive, FONT_SIZE_MAX, FONT_SIZE_MIN } from './services/shortcuts'
 
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
 const updater = useUpdaterStore()
+const privacy = usePrivacyStore()
 
 // Shortcut id -> view it opens ('viewNotes' -> 'notes', …)
 const VIEW_TARGETS: Record<string, ViewId> = {
@@ -92,6 +95,9 @@ function runAction(id: string) {
       break
     case 'fontSizeDown':
       bumpFontSize(-1)
+      break
+    case 'privacyMode':
+      privacy.toggle()
       break
     case 'closeTab': {
       const view = ui.activeView
@@ -178,6 +184,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown, true))
     <SettingsDialog />
     <CommandPalette />
     <QuickNoteDialog />
+    <SnippetVarsDialog />
     <Toasts />
   </div>
 </template>

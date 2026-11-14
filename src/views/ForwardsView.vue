@@ -6,9 +6,11 @@ import { useHostsStore } from '../stores/hosts'
 import { useSessionsStore, errorText } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import ForwardDialog from '../components/ForwardDialog.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
+import PvText from '../components/PvText.vue'
 import { copyText, matchesQuery } from '../utils/pageHelpers'
 import { waitForConnection } from '../utils/sessionWait'
 import { thisComputerLower } from '../utils/platform'
@@ -19,6 +21,7 @@ const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const query = ref('')
 const editorOpen = ref(false)
@@ -227,20 +230,20 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
             <ArrowLeftRight :size="15" :stroke-width="1.75" />
           </span>
 
-          <button class="row-main fwd-main" :aria-label="`Edit ${f.name}`" @click="openEdit(f)">
+          <button class="row-main fwd-main" :aria-label="pv.t(`Edit ${f.name}`)" @click="openEdit(f)">
             <span class="row-title">
-              <span class="text-ellipsis">{{ f.name }}</span>
+              <span class="text-ellipsis"><PvText :text="f.name" /></span>
               <span v-if="f.auto_start" class="chip" title="Starts whenever the host connects">Auto</span>
             </span>
             <span class="fwd-route mono">
               <span class="fwd-local">localhost:{{ f.local_port }}</span>
               <ArrowRight :size="11" :stroke-width="1.75" class="fwd-arrow" aria-hidden="true" />
-              <span class="text-ellipsis">{{ f.remote_host }}:{{ f.remote_port }}</span>
+              <span class="text-ellipsis"><span class="pv">{{ pv.hostText(f.remote_host) }}</span>:{{ f.remote_port }}</span>
             </span>
             <span class="row-sub fwd-via">
               <span class="status-dot" :class="hostStatus(f.host_id)" aria-hidden="true"></span>
-              <span class="text-ellipsis">via {{ hostLabel(f.host_id) }}</span>
-              <span class="fwd-state" :class="{ live: isActive(f.id) && !pending.has(f.id) }">· {{ statusText(f) }}</span>
+              <span class="text-ellipsis">via <PvText :text="hostLabel(f.host_id)" /></span>
+              <span class="fwd-state" :class="{ live: isActive(f.id) && !pending.has(f.id) }">· <PvText :text="statusText(f)" /></span>
             </span>
           </button>
 
@@ -253,7 +256,7 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
             >
               <Copy :size="14" :stroke-width="1.5" aria-hidden="true" />
             </button>
-            <button class="btn-icon" :aria-label="`Options for ${f.name}`" @click.stop="openMenu(f, $event)">
+            <button class="btn-icon" :aria-label="pv.t(`Options for ${f.name}`)" @click.stop="openMenu(f, $event)">
               <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
             </button>
           </span>
@@ -263,7 +266,7 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
             role="switch"
             :aria-checked="isActive(f.id) || pending.get(f.id) === 'connecting' || pending.get(f.id) === 'starting'"
             :aria-busy="pending.has(f.id)"
-            :aria-label="`${isActive(f.id) ? 'Stop' : 'Start'} ${f.name}`"
+            :aria-label="pv.t(`${isActive(f.id) ? 'Stop' : 'Start'} ${f.name}`)"
             :title="isActive(f.id) ? 'Stop tunnel' : hostStatus(f.host_id) === 'connected' ? 'Start tunnel' : 'Connect and start'"
             @click="toggle(f)"
           ></button>

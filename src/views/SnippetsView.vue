@@ -14,16 +14,21 @@ import {
 import { useSnippetsStore } from '../stores/extras'
 import { useSessionsStore, errorText } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
+import { useDialogsStore } from '../stores/dialogs'
+import { usePrivacyStore } from '../stores/privacy'
 import SnippetDialog from '../components/SnippetDialog.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
 import SearchSelect, { type ComboOption } from '../components/SearchSelect.vue'
+import PvText from '../components/PvText.vue'
 import { copyText, matchesQuery } from '../utils/pageHelpers'
 import type { Snippet } from '../types'
 
 const snippets = useSnippetsStore()
 const sessions = useSessionsStore()
 const ui = useUiStore()
+const dialogs = useDialogsStore()
+const pv = usePrivacyStore()
 
 const query = ref('')
 const editorOpen = ref(false)
@@ -55,13 +60,15 @@ const targetOptions = computed<ComboOption[]>(() =>
   connectedTabs.value.map((t) => ({ value: t.id, label: t.label, hint: t.address })),
 )
 
-function run(s: Snippet, execute: boolean) {
+async function run(s: Snippet, execute: boolean) {
   const tab = target.value
   if (!tab) {
     ui.toast('info', 'Connect to a host or open a local terminal first')
     return
   }
-  sessions.write(tab.id, execute ? s.command + '\n' : s.command)
+  const command = await dialogs.fillSnippet(s, execute ? 'Run' : 'Insert')
+  if (command === null) return
+  sessions.write(tab.id, execute ? command + '\n' : command)
   ui.toast('success', `${execute ? 'Ran' : 'Inserted'} “${s.name}” in ${tab.label}`, {
     actionLabel: 'Show',
     action: () => {
@@ -145,9 +152,9 @@ function lineCount(cmd: string): number {
           @update:model-value="chosenId = $event as number"
         />
       </div>
-      <span v-else-if="target" class="target-fixed" :title="target.address">
+      <span v-else-if="target" class="target-fixed" :title="pv.t(target.address)">
         <span class="status-dot connected" aria-hidden="true"></span>
-        <span class="text-ellipsis">{{ target.label }}</span>
+        <span class="text-ellipsis"><PvText :text="target.label" /></span>
       </span>
       <button v-else class="target-fixed none" title="Open a local terminal" @click="sessions.connectLocal()">
         <SquareTerminal :size="13" :stroke-width="1.5" aria-hidden="true" />
@@ -207,8 +214,8 @@ function lineCount(cmd: string): number {
           <button
             class="btn btn-secondary run-btn"
             :disabled="!target"
-            :aria-label="target ? `Run ${s.name} in ${target.label}` : `Run ${s.name}`"
-            :title="target ? `Run in ${target.label}` : 'No connected terminal'"
+            :aria-label="target ? pv.t(`Run ${s.name} in ${target.label}`) : `Run ${s.name}`"
+            :title="target ? pv.t(`Run in ${target.label}`) : 'No connected terminal'"
             @click="run(s, true)"
           >
             <Play :size="12" :stroke-width="2" aria-hidden="true" />

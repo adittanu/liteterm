@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { usePrivacyStore } from '../stores/privacy'
 import {
   siUbuntu,
   siDebian,
@@ -42,6 +43,10 @@ const ICONS: Record<string, { path: string }> = {
 
 const AVATAR_HUES = 8
 
+// Initials and hue come from the label: in privacy mode, from its stand-in
+const pv = usePrivacyStore()
+const shownLabel = computed(() => pv.t(props.label))
+
 const icon = computed(() => {
   if (!props.os) return null
   const key = props.os.toLowerCase().replace(/\s+/g, '')
@@ -76,11 +81,11 @@ function avatarClass(label: string): string {
   <span
     v-else
     class="os-avatar initials"
-    :class="avatarClass(label)"
+    :class="avatarClass(shownLabel)"
     :style="{ width: `${size}px`, height: `${size}px`, fontSize: `${Math.round(size * 0.34)}px` }"
-    :title="os ?? label"
+    :title="os ?? shownLabel"
   >
-    {{ initials(label) }}
+    {{ initials(shownLabel) }}
   </span>
 </template>
 

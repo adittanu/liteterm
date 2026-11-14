@@ -27,6 +27,7 @@ import {
 } from 'lucide-vue-next'
 import PathBar from '../PathBar.vue'
 import PlanetAvatar from '../PlanetAvatar.vue'
+import PvText from '../PvText.vue'
 import SearchField from '../SearchField.vue'
 import ContextMenu, { type MenuItem } from '../ContextMenu.vue'
 import SidePicker from './SidePicker.vue'
@@ -35,6 +36,7 @@ import { useHostsStore } from '../../stores/hosts'
 import { useSessionsStore } from '../../stores/sessions'
 import { useDialogsStore } from '../../stores/dialogs'
 import { useUiStore } from '../../stores/ui'
+import { usePrivacyStore } from '../../stores/privacy'
 import { copyText, plural } from '../../utils/pageHelpers'
 import { isWindows, modShiftKey, thisComputer } from '../../utils/platform'
 import {
@@ -97,6 +99,7 @@ const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const p = props.pane
 const listEl = ref<HTMLElement | null>(null)
@@ -507,7 +510,7 @@ function rowMenu(e: MouseEvent, entry: FileEntry) {
   }
   if (send.value.files.length) {
     items.push({
-      label: send.value.files.length > 1 ? `${send.value.label} (${send.value.files.length})` : send.value.label,
+      label: pv.t(send.value.files.length > 1 ? `${send.value.label} (${send.value.files.length})` : send.value.label),
       icon: p.kind === 'ssh' && props.other.kind === 'local' ? ArrowDownToLine : ArrowUpFromLine,
       disabled: !!send.value.reason,
       action: sendSelection,
@@ -530,7 +533,7 @@ function rowMenu(e: MouseEvent, entry: FileEntry) {
 }
 
 async function pickUpload() {
-  const paths = await api.pickFiles(`Upload to ${p.hostLabel}`)
+  const paths = await api.pickFiles(pv.t(`Upload to ${p.hostLabel}`))
   if (paths.length) emit('upload', paths)
 }
 
@@ -559,7 +562,7 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
   <section
     class="pane"
     :class="{ active, chooser: showChooser }"
-    :aria-label="`${paneLabel(pane)} files`"
+    :aria-label="pv.t(`${paneLabel(pane)} files`)"
     @pointerdown.capture="emit('activate')"
     @mouseup="onMouseUp"
   >
@@ -571,12 +574,12 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
           :class="{ open: pickerOpen }"
           :aria-expanded="pickerOpen"
           aria-haspopup="listbox"
-          :title="pane.kind === 'ssh' && host ? `${host.username}@${host.address}` : 'Choose what this side shows'"
+          :title="pane.kind === 'ssh' && host ? pv.t(`${host.username}@${host.address}`) : 'Choose what this side shows'"
           @click="pickerOpen = !pickerOpen"
         >
           <span v-if="pane.kind === 'local'" class="sw-tile"><Laptop :size="14" :stroke-width="1.6" aria-hidden="true" /></span>
           <PlanetAvatar v-else-if="host" :host="host" :size="22" />
-          <span class="sw-label text-ellipsis">{{ showChooser ? 'Choose a server' : paneLabel(pane) }}</span>
+          <span class="sw-label text-ellipsis"><PvText :text="showChooser ? 'Choose a server' : paneLabel(pane)" /></span>
           <span
             v-if="pane.kind === 'ssh' && pane.hostId !== null"
             class="status-dot"
@@ -605,10 +608,10 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
         v-if="ready && pane.entries.length"
         v-model="pane.filter"
         class="pane-filter"
-        :label="`Filter ${paneLabel(pane)}`"
+        :label="pv.t(`Filter ${paneLabel(pane)}`)"
         placeholder="Filter"
       />
-      <button class="tool" :aria-label="`More actions for ${paneLabel(pane)}`" title="More" @click="moreMenu">
+      <button class="tool" :aria-label="pv.t(`More actions for ${paneLabel(pane)}`)" title="More" @click="moreMenu">
         <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
       </button>
     </header>
@@ -625,14 +628,14 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
     <!-- ===== Connecting / failed ===== -->
     <div v-else-if="pane.kind === 'ssh' && pane.connecting" class="pane-state">
       <span class="spinner" aria-hidden="true"></span>
-      <p class="state-title">Connecting to {{ pane.hostLabel }}…</p>
+      <p class="state-title"><PvText :text="`Connecting to ${pane.hostLabel}…`" /></p>
       <p class="state-sub">Answer any password or host-key prompt to continue.</p>
       <button class="btn btn-ghost" @click="unbind(pane)">Cancel</button>
     </div>
 
     <div v-else-if="pane.kind === 'ssh' && pane.connectError" class="pane-state">
       <span class="state-icon warn"><Unplug :size="20" :stroke-width="1.5" aria-hidden="true" /></span>
-      <p class="state-title">{{ pane.connectError }}</p>
+      <p class="state-title"><PvText :text="pane.connectError" /></p>
       <div class="state-actions">
         <button class="btn btn-primary" @click="retryConnect">Reconnect</button>
         <button class="btn btn-secondary" @click="pickerOpen = true">Choose another</button>
@@ -713,7 +716,7 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
         role="listbox"
         aria-multiselectable="true"
         tabindex="0"
-        :aria-label="`${paneLabel(pane)} — ${pane.path}`"
+        :aria-label="pv.t(`${paneLabel(pane)} — ${pane.path}`)"
         :aria-activedescendant="cursorIndex >= 0 ? `p${pane.idx}-r${cursorIndex}` : undefined"
         :data-drop-pane="pane.idx"
         @keydown="onListKey"
@@ -741,7 +744,7 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
 
         <div v-else-if="pane.error" class="pane-state">
           <p class="state-title">Couldn’t open this folder</p>
-          <p class="state-error mono">{{ pane.error }}</p>
+          <p class="state-error mono"><PvText :text="pane.error" /></p>
           <div class="state-actions">
             <button class="btn btn-secondary" @click.stop="refresh(pane)">Try again</button>
             <button v-if="parentOf(pane.kind, pane.path)" class="btn btn-ghost" @click.stop="goUp">Go up</button>
@@ -815,7 +818,7 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
       <Transition name="drop-cue">
         <div v-if="dropZone && dropZone.folder === null" class="drop-cue" :class="{ invalid: !dropZone.ok }">
           <component :is="dropZone.ok ? ArrowDownToLine : Unplug" :size="15" :stroke-width="1.6" aria-hidden="true" />
-          <span class="text-ellipsis">{{ dropZone.label }}</span>
+          <span class="text-ellipsis"><PvText :text="dropZone.label" /></span>
         </div>
       </Transition>
 
@@ -837,11 +840,11 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
             v-else-if="send.files.length"
             key="send"
             class="btn btn-primary send-btn"
-            :title="`${send.label} — you can also drag, or double-click a file`"
+            :title="pv.t(`${send.label} — you can also drag, or double-click a file`)"
             @click="sendSelection"
           >
             <ArrowLeft v-if="!towardRight" :size="13" :stroke-width="2" aria-hidden="true" />
-            <span class="text-ellipsis">{{ send.files.length > 1 ? `${send.label} · ${send.files.length}` : send.label }}</span>
+            <span class="text-ellipsis"><PvText :text="send.files.length > 1 ? `${send.label} · ${send.files.length}` : send.label" /></span>
             <ArrowRight v-if="towardRight" :size="13" :stroke-width="2" aria-hidden="true" />
           </button>
         </Transition>

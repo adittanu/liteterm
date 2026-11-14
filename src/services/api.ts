@@ -34,6 +34,19 @@ export const api = {
   deleteGroup: (id: number): Promise<void> => invoke('delete_group', { id }),
   forgetHostKey: (hostId: number): Promise<void> => invoke('forget_host_key', { hostId }),
   resolveHost: (address: string): Promise<string[]> => invoke('resolve_host', { address }),
+  /** Short single-line clipboard text, or null (see commands/clipboard.rs) */
+  clipboardText: (): Promise<string | null> => invoke('clipboard_text'),
+  /** Saves a pasted image where the tab's programs can open it; returns its path */
+  pasteImage: (sessionId: number, dataBase64: string, ext: string): Promise<string> =>
+    invoke('paste_image', { sessionId, dataBase64, ext }),
+  notify: (title: string, body: string): Promise<void> => invoke('notify', { title, body }),
+  setKeepAwake: (on: boolean): Promise<void> => invoke('set_keep_awake', { on }),
+  /** Commands typed on a host (null = local terminals), newest first */
+  historyList: (hostId: number | null): Promise<string[]> => invoke('history_list', { hostId }),
+  historyAdd: (hostId: number | null, command: string): Promise<void> => invoke('history_add', { hostId, command }),
+  historyClear: (): Promise<void> => invoke('history_clear'),
+  /** Reads the server's own shell history once per host; how many came in */
+  historyImport: (sessionId: number): Promise<number> => invoke('history_import', { sessionId }),
 
   // ---- known hosts / session logs ----
   listKnownHosts: (): Promise<KnownHostRow[]> => invoke('list_known_hosts'),

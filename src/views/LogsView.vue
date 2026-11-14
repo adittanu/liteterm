@@ -6,6 +6,7 @@ import { useDialogsStore } from '../stores/dialogs'
 import { useHostsStore } from '../stores/hosts'
 import { useSessionsStore, errorText } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import PlanetAvatar from '../components/PlanetAvatar.vue'
 import SearchField from '../components/SearchField.vue'
 import { dayLabel, matchesQuery, parseSqlDate, plural, useDelayedFlag } from '../utils/pageHelpers'
@@ -17,6 +18,7 @@ const dialogs = useDialogsStore()
 const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const logs = ref<SessionLog[]>([])
 const loaded = ref(false)
@@ -192,13 +194,13 @@ onBeforeUnmount(() => clearTimeout(reloadTimer))
 
                 <span class="row-main">
                   <span class="row-title">
-                    <span class="text-ellipsis">{{ r.log.label }}</span>
+                    <span class="text-ellipsis pv">{{ pv.hostText(r.log.label) }}</span>
                   </span>
-                  <span class="row-sub mono text-ellipsis">{{ r.log.username }}@{{ r.log.address }}</span>
+                  <span class="row-sub mono text-ellipsis"><span class="pv">{{ pv.t(r.log.username) }}</span>@<span class="pv">{{ pv.hostText(r.log.address) }}</span></span>
                 </span>
 
                 <span v-if="hostFor(r.log) && !r.live" class="row-actions">
-                  <button class="btn btn-ghost log-connect" :aria-label="`Connect to ${r.log.label}`" @click="reconnect(r.log)">
+                  <button class="btn btn-ghost log-connect" :aria-label="`Connect to ${pv.hostText(r.log.label)}`" @click="reconnect(r.log)">
                     <Plug :size="13" :stroke-width="1.5" aria-hidden="true" />
                     Connect
                   </button>

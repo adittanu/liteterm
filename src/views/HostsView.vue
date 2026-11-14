@@ -25,7 +25,9 @@ import {
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import HostDetailsPanel from '../components/HostDetailsPanel.vue'
 import PlanetAvatar from '../components/PlanetAvatar.vue'
+import PvText from '../components/PvText.vue'
 import { useHostsStore } from '../stores/hosts'
+import { usePrivacyStore } from '../stores/privacy'
 import { useSessionsStore, errorText } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
@@ -40,6 +42,7 @@ const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 type GroupFilter = 'all' | 'ungrouped' | number
 type Layout = 'grid' | 'list'
@@ -79,10 +82,10 @@ const searching = computed(() => query.value.trim().length > 0)
 // against saved hosts (by exact address or resolved IP)
 const {
   target: smartTarget,
-  ips: smartIps,
   resolving: smartResolving,
   resolveFailed: smartResolveFailed,
   matches: smartMatches,
+  prefill: smartPrefill,
 } = useSmartConnect(query)
 const smartDisplay = computed(() => (smartTarget.value ? targetDisplay(smartTarget.value) : ''))
 
@@ -203,6 +206,7 @@ async function duplicate(h: Host) {
       key_path: h.key_path,
       credential_id: h.credential_id,
       jump_host_id: h.jump_host_id,
+      startup_command: h.startup_command,
       save_password: false,
     })
     selectedId.value = copy.id
@@ -238,12 +242,12 @@ function connectFirst() {
 }
 
 function openQuickAdd() {
-  const t = smartTarget.value
-  if (!t) return
+  const prefill = smartPrefill()
+  if (!prefill) return
   dialogs.openHostDialog(
     null,
     typeof groupFilter.value === 'number' ? groupFilter.value : null,
-    { address: t.host, port: t.port ?? 22, username: t.username, ips: t.kind === 'domain' ? smartIps.value : [] },
+    prefill,
     true,
   )
 }
@@ -429,7 +433,8 @@ function pickGroup(g: GroupFilter) {
           </button>
           <button class="btn btn-primary" @click="newHost">
             <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-            {{ currentGroup ? `New host in ${currentGroup.name}` : 'New host' }}
+            <span v-if="currentGroup">New host in <PvText :text="currentGroup.name" /></span>
+            <template v-else>New host</template>
           </button>
           <button class="btn-icon hv-more" aria-label="More host actions" title="Groups, import & export" @click="moreMenu">
             <MoreHorizontal :size="16" :stroke-width="1.5" aria-hidden="true" />
@@ -484,7 +489,7 @@ function pickGroup(g: GroupFilter) {
           @contextmenu.prevent="groupMenu(g, $event)"
         >
           <Folder :size="12" :stroke-width="1.75" aria-hidden="true" />
-          {{ g.name }}
+          <PvText :text="g.name" />
           <span class="chip-n">{{ groupCounts.get(g.id) ?? 0 }}</span>
         </button>
         <button
@@ -509,11 +514,11 @@ function pickGroup(g: GroupFilter) {
           <div class="smart-text">
             <span class="smart-title">
               {{ smartMatches.length ? 'Connect to' : 'New connection to' }}
-              <span class="mono">{{ smartDisplay }}</span>
+              <span class="mono"><PvText :text="smartDisplay" /></span>
             </span>
             <span class="smart-sub">
               <template v-if="smartMatches.length">
-                Saved as “{{ smartMatches[0].host.label }}”<template v-if="smartMatches[0].reason === 'ip'"> · resolves to {{ smartMatches[0].ip }}</template><template v-if="smartMatches.length > 1"> · +{{ smartMatches.length - 1 }} more</template>
+                Saved as “<PvText :text="smartMatches[0].host.label" />”<template v-if="smartMatches[0].reason === 'ip'"> · resolves to <PvText :text="smartMatches[0].ip" /></template><template v-if="smartMatches.length > 1"> · +{{ smartMatches.length - 1 }} more</template>
               </template>
               <template v-else-if="smartResolving">Resolving address…</template>
               <template v-else-if="smartResolveFailed">Address didn’t resolve — you can still try</template>
@@ -548,10 +553,13 @@ function pickGroup(g: GroupFilter) {
 
         <!-- ===== Empty: group / search ===== -->
         <div v-else-if="!ordered.length && !searching" class="hero small">
-          <p class="hero-title">No hosts in {{ currentGroup ? `“${currentGroup.name}”` : 'this view' }}</p>
+          <p class="hero-title">
+            No hosts in <template v-if="currentGroup">“<PvText :text="currentGroup.name" />”</template><template v-else>this view</template>
+          </p>
           <button class="btn btn-secondary" @click="newHost">
             <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-            {{ currentGroup ? `New host in ${currentGroup.name}` : 'New host' }}
+            <span v-if="currentGroup">New host in <PvText :text="currentGroup.name" /></span>
+            <template v-else>New host</template>
           </button>
         </div>
         <p v-else-if="!ordered.length && !smartTarget" class="no-match">
@@ -562,7 +570,7 @@ function pickGroup(g: GroupFilter) {
         <template v-else>
           <section v-for="sec in (showActiveSection ? [{ key: 'active', title: 'Active', rows: activeRows }, { key: 'rest', title: sectionTitle, rows: restRows }] : [{ key: 'rest', title: sectionTitle, rows: restRows }])" :key="sec.key" class="sec">
             <h3 v-if="sec.rows.length" class="sec-title">
-              {{ sec.title }}
+              <PvText :text="sec.title" />
               <span class="sec-n">{{ sec.rows.length }}</span>
             </h3>
 
@@ -575,7 +583,7 @@ function pickGroup(g: GroupFilter) {
                 role="button"
                 :tabindex="tabIndexFor(r.host.id, sec.key === 'rest' && activeRows.length ? i + activeRows.length : i)"
                 :data-host-id="r.host.id"
-                :aria-label="`${r.host.label}, ${r.host.username}@${r.host.address}${r.status !== 'idle' ? ', ' + statusLabel[r.status] : ''}. Enter to connect`"
+                :aria-label="`${pv.t(r.host.label)}, ${pv.t(r.host.username)}@${pv.t(r.host.address)}${r.status !== 'idle' ? ', ' + statusLabel[r.status] : ''}. Enter to connect`"
                 @click="selectedId = r.host.id; focusKey = r.host.id"
                 @dblclick="connect(r.host)"
                 @keydown.self="onCardKey($event, r.host)"
@@ -588,15 +596,17 @@ function pickGroup(g: GroupFilter) {
 
                 <span class="host-text">
                   <span class="host-name text-ellipsis">
-                    <template v-for="(seg, k) in r.label" :key="k"><mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
+                    <!-- Search highlights would trace the real name; privacy mode shows it whole -->
+                    <PvText v-if="pv.enabled" :text="r.host.label" />
+                    <template v-for="(seg, k) in r.label" v-else :key="k"><mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
                   </span>
-                  <span class="host-sub mono text-ellipsis">{{ r.host.username }}@{{ r.host.address }}<template v-if="r.host.port !== 22">:{{ r.host.port }}</template></span>
+                  <span class="host-sub mono text-ellipsis"><PvText :text="r.host.username" />@<PvText :text="r.host.address" /><template v-if="r.host.port !== 22">:{{ r.host.port }}</template></span>
                 </span>
 
                 <span v-if="layout === 'list'" class="host-col group-col text-ellipsis">
                   <template v-if="r.host.group_id">
                     <Folder :size="12" :stroke-width="1.75" aria-hidden="true" />
-                    {{ groupName(r.host.group_id) }}
+                    <PvText :text="groupName(r.host.group_id)" />
                   </template>
                 </span>
                 <span v-if="layout === 'list'" class="host-col used-col">
@@ -606,12 +616,12 @@ function pickGroup(g: GroupFilter) {
                 <span class="host-trail">
                   <span v-if="layout === 'grid'" class="trail-meta">
                     <template v-if="r.status !== 'idle'">{{ statusLabel[r.status] }}</template>
-                    <template v-else-if="groupFilter === 'all' && r.host.group_id">{{ groupName(r.host.group_id) }}</template>
+                    <template v-else-if="groupFilter === 'all' && r.host.group_id"><PvText :text="groupName(r.host.group_id)" /></template>
                   </span>
                   <span class="trail-actions">
                     <button
                       class="act"
-                      :aria-label="`Browse files on ${r.host.label}`"
+                      :aria-label="`Browse files on ${pv.t(r.host.label)}`"
                       title="Browse files (SFTP)"
                       tabindex="-1"
                       @click.stop="openSftp(r.host)"
@@ -620,7 +630,7 @@ function pickGroup(g: GroupFilter) {
                     </button>
                     <button
                       class="act"
-                      :aria-label="`More for ${r.host.label}`"
+                      :aria-label="`More for ${pv.t(r.host.label)}`"
                       title="More"
                       tabindex="-1"
                       @click.stop="hostMenu(r.host, $event)"
@@ -629,7 +639,7 @@ function pickGroup(g: GroupFilter) {
                     </button>
                     <button
                       class="act go"
-                      :aria-label="r.status === 'connected' ? `Open terminal for ${r.host.label}` : `Connect to ${r.host.label}`"
+                      :aria-label="r.status === 'connected' ? `Open terminal for ${pv.t(r.host.label)}` : `Connect to ${pv.t(r.host.label)}`"
                       :title="r.status === 'connected' ? 'Open terminal' : 'Connect (Enter)'"
                       tabindex="-1"
                       @click.stop="connect(r.host)"

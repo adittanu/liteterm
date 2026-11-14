@@ -7,12 +7,14 @@ import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
 import { useNotesStore } from '../stores/notes'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
 import { api } from '../services/api'
 import { jumpCandidates } from '../utils/jumpHosts'
 import { secretStore, sshAgentName } from '../utils/platform'
 import { previewOf } from '../utils/notePreview'
 import PlanetAvatar from './PlanetAvatar.vue'
+import PvText from './PvText.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import type { Host } from '../types'
 
@@ -25,6 +27,7 @@ const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const notes = useNotesStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const form = reactive({
   label: props.host.label,
@@ -32,6 +35,7 @@ const form = reactive({
   port: String(props.host.port),
   group_id: props.host.group_id,
   jump_host_id: props.host.jump_host_id ?? null,
+  startup_command: props.host.startup_command ?? '',
   credential_id: props.host.credential_id,
   // inline auth (used when credential_id is null)
   username: props.host.username,
@@ -147,6 +151,7 @@ function snapshot(h: Host) {
     port: String(h.port),
     group_id: h.group_id,
     jump_host_id: h.jump_host_id ?? null,
+    startup_command: h.startup_command ?? '',
     credential_id: h.credential_id,
     username: h.username,
     auth_method: h.auth_method,
@@ -205,6 +210,7 @@ async function saveFieldUnsafe() {
     form.port === String(props.host.port) &&
     form.group_id === props.host.group_id &&
     form.jump_host_id === (props.host.jump_host_id ?? null) &&
+    form.startup_command.trim() === (props.host.startup_command ?? '') &&
     form.credential_id === props.host.credential_id &&
     (form.credential_id !== null ||
       (form.username === props.host.username &&
@@ -227,6 +233,7 @@ function buildInput() {
     id: props.host.id,
     group_id: form.group_id,
     jump_host_id: form.jump_host_id,
+    startup_command: form.startup_command.trim() || null,
     label: form.label.trim() || props.host.label,
     address: form.address.trim() || props.host.address,
     port: parsePort(),
@@ -272,7 +279,7 @@ function connect() {
 <template>
   <aside class="details-panel">
     <header class="panel-header">
-      <h3 class="panel-title text-ellipsis" :title="host.label">{{ host.label }}</h3>
+      <h3 class="panel-title text-ellipsis" :title="pv.t(host.label)"><PvText :text="host.label" /></h3>
       <div class="panel-header-actions">
         <slot name="actions" />
         <button class="btn-icon" aria-label="Close details" @click="emit('close')">
@@ -286,9 +293,9 @@ function connect() {
       <div class="identity">
         <PlanetAvatar :host="host" :size="48" />
         <div class="identity-text">
-          <code class="address mono">{{ host.address }}</code>
+          <code class="address mono"><PvText :text="host.address" /></code>
           <span class="identity-meta">
-            {{ metaLine }} · {{ lastUsedText(host.last_used_at) }}
+            <PvText :text="metaLine" /> · {{ lastUsedText(host.last_used_at) }}
           </span>
         </div>
       </div>
@@ -298,12 +305,12 @@ function connect() {
         <div class="panel-card-title">General</div>
         <div class="field">
           <label class="field-label" for="hp-label">Name</label>
-          <input id="hp-label" v-model="form.label" class="field-input" type="text" spellcheck="false" @blur="saveField" @keydown.enter="saveField" />
+          <input id="hp-label" v-model="form.label" class="field-input pv-field" type="text" spellcheck="false" @blur="saveField" @keydown.enter="saveField" />
         </div>
         <div class="gen-row">
           <div class="field grow">
             <label class="field-label" for="hp-address">Host</label>
-            <input id="hp-address" v-model="form.address" class="field-input mono" type="text" placeholder="example.com or 192.168.1.10" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
+            <input id="hp-address" v-model="form.address" class="field-input mono pv-field" type="text" placeholder="example.com or 192.168.1.10" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
           </div>
           <div class="field port-field">
             <label class="field-label" for="hp-port">Port</label>
@@ -319,6 +326,11 @@ function connect() {
           <SearchSelect id="hp-jump" v-model="form.jump_host_id" :options="jumpOptions" aria-label="Jump host" @change="saveField" />
         </div>
         <div class="field">
+          <label class="field-label" for="hp-startup">Startup command</label>
+          <input id="hp-startup" v-model="form.startup_command" class="field-input mono" type="text" placeholder="cd /var/www && tmux new -A -s main" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
+          <span class="field-hint">Typed into the shell after every login, reconnects too.</span>
+        </div>
+        <div class="field">
           <label class="field-label" for="hp-cred">Credentials</label>
           <SearchSelect id="hp-cred" v-model="form.credential_id" :options="credOptions" aria-label="Credentials" @change="saveField" />
           <span v-if="!credentials.credentials.length" class="field-hint">
@@ -332,7 +344,7 @@ function connect() {
         <div class="panel-card-title">Login</div>
         <div class="field">
           <label class="field-label" for="hp-user">Username</label>
-          <input id="hp-user" v-model="form.username" class="field-input mono" type="text" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
+          <input id="hp-user" v-model="form.username" class="field-input mono pv-field" type="text" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
         </div>
 
         <div class="field">
@@ -390,7 +402,7 @@ function connect() {
           <span class="panel-card-title">Notes</span>
           <button
             class="btn-icon card-add"
-            :aria-label="`New note for ${host.label}`"
+            :aria-label="pv.t(`New note for ${host.label}`)"
             title="New note for this host"
             @click="newHostNote"
           >
@@ -405,7 +417,7 @@ function connect() {
         >
           <StickyNote :size="13" :stroke-width="1.5" class="host-note-icon" aria-hidden="true" />
           <span class="host-note-text">
-            <span class="host-note-title text-ellipsis">{{ n.title || 'New Note' }}</span>
+            <span class="host-note-title text-ellipsis"><PvText :text="n.title || 'New Note'" /></span>
             <span class="host-note-sub text-ellipsis">{{ previewOf(n) || 'No additional text' }}</span>
           </span>
         </button>
@@ -421,7 +433,7 @@ function connect() {
       <button class="btn btn-primary connect-btn" @click="connect">Connect</button>
       <button
         class="btn btn-secondary sftp-btn"
-        :aria-label="`Browse files on ${host.label}`"
+        :aria-label="pv.t(`Browse files on ${host.label}`)"
         title="Browse files (SFTP)"
         @click="saveField().then((saved) => saved && ui.openSftpFor(host.id))"
       >

@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight, Check, ChevronDown, CircleAlert, X } from 'lucide-vue-next'
 import { useSessionsStore } from '../../stores/sessions'
+import { usePrivacyStore } from '../../stores/privacy'
+import PvText from '../PvText.vue'
 import type { Transfer } from '../../types'
 import { fmtBytes } from './fsUtils'
 
@@ -11,6 +13,7 @@ import { fmtBytes } from './fsUtils'
 const props = defineProps<{ destinations: Record<string, string> }>()
 
 const sessions = useSessionsStore()
+const pv = usePrivacyStore()
 const collapsed = ref(false)
 const hovering = ref(false)
 
@@ -147,14 +150,14 @@ onBeforeUnmount(() => timers.forEach(clearTimeout))
           </span>
           <div class="xfer-main">
             <div class="xfer-top">
-              <span class="xfer-name text-ellipsis" :title="t.fileName">{{ t.fileName }}</span>
+              <span class="xfer-name text-ellipsis" :title="pv.t(t.fileName)"><PvText :text="t.fileName" /></span>
               <span v-if="!t.done && !t.error && t.size" class="xfer-pct">{{ Math.round(pct(t)) }}%</span>
             </div>
             <div
               v-if="!t.error"
               class="bar"
               role="progressbar"
-              :aria-label="`${t.fileName} progress`"
+              :aria-label="pv.t(`${t.fileName} progress`)"
               aria-valuemin="0"
               aria-valuemax="100"
               :aria-valuenow="Math.round(t.done ? 100 : pct(t))"
@@ -165,13 +168,13 @@ onBeforeUnmount(() => timers.forEach(clearTimeout))
                 :style="t.size || t.done ? { transform: `scaleX(${t.done ? 1 : pct(t) / 100})` } : undefined"
               ></div>
             </div>
-            <span class="xfer-meta text-ellipsis" :title="detail(t)">
-              {{ detail(t) }}<template v-if="props.destinations[key(t)] && !t.error"> · {{ props.destinations[key(t)] }}</template>
+            <span class="xfer-meta text-ellipsis" :title="pv.t(detail(t))">
+              <PvText :text="detail(t)" /><template v-if="props.destinations[key(t)] && !t.error"> · <PvText :text="props.destinations[key(t)]" /></template>
             </span>
           </div>
           <button
             class="btn-icon xfer-x"
-            :aria-label="t.done || t.error ? `Dismiss ${t.fileName}` : `Cancel ${t.fileName}`"
+            :aria-label="pv.t(t.done || t.error ? `Dismiss ${t.fileName}` : `Cancel ${t.fileName}`)"
             :title="t.done || t.error ? 'Dismiss' : 'Cancel'"
             @click="t.done || t.error ? dismiss(t) : sessions.cancelTransfer(t.id)"
           >

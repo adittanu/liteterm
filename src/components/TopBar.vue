@@ -2,11 +2,13 @@
 import { computed } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { onMounted, onUnmounted, ref } from 'vue'
-import { Menu, Plus, X, FolderTree } from 'lucide-vue-next'
+import { Menu, Plus, X, FolderTree, Eye, EyeOff } from 'lucide-vue-next'
+import PvText from './PvText.vue'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
 import { useNotesStore } from '../stores/notes'
+import { usePrivacyStore } from '../stores/privacy'
 import { comboFor, comboText } from '../services/shortcuts'
 import { isMac } from '../utils/platform'
 
@@ -14,6 +16,7 @@ const ui = useUiStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const notes = useNotesStore()
+const privacy = usePrivacyStore()
 const appWindow = getCurrentWindow()
 
 // A note edit waits 500 ms before it is written; closing the window inside
@@ -115,6 +118,7 @@ const tabItems = computed(() => {
     id: `session:${t.id}`,
     sessionId: t.id,
     label: t.label,
+    title: t.title,
     status: t.status,
   }))
   return [sftp, ...sessionTabs]
@@ -156,7 +160,8 @@ function closeSession(sessionId: number) {
         v-for="tab in tabItems"
         :key="tab.id"
         class="top-tab"
-        :class="{ active: isActive(tab.id) }"
+        :class="{ active: isActive(tab.id), 'has-title': tab.kind === 'session' && !!tab.title }"
+        :title="tab.kind === 'session' && tab.title ? privacy.t(` · `) : undefined"
         role="tab"
         :aria-selected="isActive(tab.id)"
         @click="openTab(tab.id)"
@@ -167,11 +172,11 @@ function closeSession(sessionId: number) {
         </template>
         <template v-else>
           <span class="top-tab-dot" :class="dotState(tab.status)" aria-hidden="true"></span>
-          <span class="top-tab-label text-ellipsis">{{ tab.label }}</span>
+          <span class="top-tab-label text-ellipsis"><PvText :text="tab.label" /><span v-if="tab.title" class="top-tab-title"> · <PvText :text="tab.title" /></span></span>
           <span
             class="top-tab-close"
             role="button"
-            :aria-label="`Close ${tab.label}`"
+            :aria-label="`Close ${privacy.t(tab.label)}`"
             @click.stop="closeSession(tab.sessionId)"
           >
             <X :size="11" :stroke-width="2" aria-hidden="true" />
@@ -190,6 +195,19 @@ function closeSession(sessionId: number) {
     </div>
 
     <div class="topbar-spacer"></div>
+
+    <!-- Privacy mode: hide names and addresses for screenshots -->
+    <button
+      class="topbar-btn privacy-btn"
+      :class="{ on: privacy.enabled }"
+      :aria-pressed="privacy.enabled"
+      aria-label="Privacy mode"
+      :title="`${privacy.enabled ? 'Privacy mode on — names are hidden' : 'Hide names and addresses for screenshots'} (${comboText(comboFor('privacyMode', ui.settings))})`"
+      @click="privacy.toggle()"
+    >
+      <EyeOff v-if="privacy.enabled" :size="15" :stroke-width="1.75" aria-hidden="true" />
+      <Eye v-else :size="15" :stroke-width="1.5" aria-hidden="true" />
+    </button>
 
     <!-- A Mac draws its own traffic lights (titleBarStyle Overlay), top left -->
     <div v-if="!isMac" class="window-controls">
@@ -350,6 +368,20 @@ function closeSession(sessionId: number) {
   font-weight: 500;
 }
 
+/* What the shell or program calls itself (opencode, ~/app), after the host */
+.top-tab.has-title {
+  max-width: 240px;
+}
+
+.top-tab-title {
+  font-weight: 400;
+  color: var(--text-4);
+}
+
+.top-tab.active .top-tab-title {
+  color: var(--text-3);
+}
+
 .top-tab-close {
   position: absolute;
   top: 50%;
@@ -382,6 +414,25 @@ function closeSession(sessionId: number) {
 
 .topbar-spacer {
   flex: 1;
+}
+
+.privacy-btn {
+  margin-right: 6px;
+}
+
+.privacy-btn.on {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.privacy-btn.on:hover {
+  color: var(--accent);
+  background: var(--accent-bg-hover);
+}
+
+/* A Mac has no window controls on the right */
+.topbar.mac .privacy-btn {
+  margin-right: 10px;
 }
 
 .window-controls {

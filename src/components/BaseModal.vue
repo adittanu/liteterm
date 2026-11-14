@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { X } from 'lucide-vue-next'
+import PvText from './PvText.vue'
+import { usePrivacyStore } from '../stores/privacy'
+
+const pv = usePrivacyStore()
 
 withDefaults(
   defineProps<{
@@ -36,11 +40,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             class="modal surface"
             role="dialog"
             aria-modal="true"
-            :aria-label="title"
+            :aria-label="pv.t(title)"
             :style="{ maxWidth: `${width}px` }"
           >
             <header class="modal-header">
-              <h3 class="modal-title">{{ title }}</h3>
+              <h3 class="modal-title"><PvText :text="title" /></h3>
               <button class="btn-icon" aria-label="Close dialog" @click="emit('close')">
                 <X :size="15" :stroke-width="1.5" aria-hidden="true" />
               </button>

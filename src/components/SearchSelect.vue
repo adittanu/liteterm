@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { Check, ChevronDown, Search } from 'lucide-vue-next'
+import PvText from './PvText.vue'
 
 export interface ComboOption {
   value: string | number | null
@@ -178,7 +179,7 @@ onBeforeUnmount(() => {
     @click="open ? closePop(true) : openPop()"
     @keydown="onTriggerKey"
   >
-    <span class="combo-value" :class="{ muted: selected?.muted }">{{ selected?.label ?? 'Select…' }}</span>
+    <span class="combo-value" :class="{ muted: selected?.muted }"><PvText :text="selected?.label ?? 'Select…'" /></span>
     <ChevronDown :size="14" :stroke-width="1.5" class="combo-chev" :class="{ open }" aria-hidden="true" />
   </button>
 
@@ -215,8 +216,8 @@ onBeforeUnmount(() => {
           @mouseenter="active = i"
           @click="choose(i)"
         >
-          <span class="combo-item-label" :class="{ muted: o.muted }">{{ o.label }}</span>
-          <span v-if="o.hint" class="combo-item-hint mono">{{ o.hint }}</span>
+          <span class="combo-item-label" :class="{ muted: o.muted }"><PvText :text="o.label" /></span>
+          <span v-if="o.hint" class="combo-item-hint mono"><PvText :text="o.hint" /></span>
           <Check :size="13" :stroke-width="2" class="combo-check" aria-hidden="true" />
         </button>
         <div v-if="!filtered.length" class="combo-empty">No matches for “{{ query.trim() }}”</div>

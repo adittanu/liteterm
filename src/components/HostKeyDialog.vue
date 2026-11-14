@@ -3,9 +3,11 @@ import { computed, ref } from 'vue'
 import { ShieldAlert } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import { useSessionsStore } from '../stores/sessions'
+import { usePrivacyStore } from '../stores/privacy'
 import type { SessionTab } from '../types'
 
 const sessions = useSessionsStore()
+const pv = usePrivacyStore()
 
 const pending = computed(() =>
   sessions.tabs.find((t) => t.status === 'hostkey') as SessionTab | undefined,
@@ -39,10 +41,10 @@ async function answer(accept: boolean) {
         <ShieldAlert :size="26" :stroke-width="1.5" />
       </div>
       <p class="hostkey-lead">
-        First connection to <strong class="mono">{{ pending.hostKeyAddress || pending.address }}</strong>.
+        First connection to <strong class="mono pv">{{ pv.hostText(pending.hostKeyAddress || pending.address) }}</strong>.
         Verify the server's key fingerprint before trusting it.
       </p>
-      <code class="fingerprint">{{ pending.hostKeyFingerprint }}</code>
+      <code class="fingerprint pv">{{ pv.fingerprint(pending.hostKeyFingerprint) }}</code>
       <label class="check">
         <input v-model="remember" type="checkbox" />
         Remember this host

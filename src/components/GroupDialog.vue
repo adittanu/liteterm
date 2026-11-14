@@ -60,7 +60,7 @@ async function save() {
           id="gd-name"
           ref="nameEl"
           v-model="name"
-          class="field-input"
+          class="field-input pv-field"
           :class="{ invalid: error }"
           type="text"
           placeholder="e.g. Production"

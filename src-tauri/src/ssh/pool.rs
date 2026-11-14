@@ -970,6 +970,25 @@ async fn stream_session(
     let writer = channel.make_writer();
     *session.writer.lock().await = Some(Box::new(writer));
 
+    // The host's startup command (cd somewhere, tmux attach), typed as if by
+    // hand. The PTY holds it until the shell reads input, so sending it
+    // before the prompt shows is fine. Read on every login: a reconnect runs
+    // it again (tmux attach keeps the work), and picks up an edit.
+    let startup = session.host_id.and_then(|id| {
+        Connection::open(&state.db_path)
+            .ok()
+            .and_then(|conn| db::host_startup_command(&conn, id).ok().flatten())
+    });
+    if let Some(cmd) = startup {
+        use tokio::io::AsyncWriteExt;
+        // Each line is one Enter, the way a terminal sends it
+        let typed: String = cmd.lines().map(|l| format!("{l}\r")).collect();
+        if let Some(w) = session.writer.lock().await.as_mut() {
+            let _ = w.write_all(typed.as_bytes()).await;
+            let _ = w.flush().await;
+        }
+    }
+
     // Keep the password in memory for sudo auto-fill (password auth only)
     if let AuthSpec::Password(pw) = &params.auth {
         *session.sudo_password.lock().unwrap() = Some(pw.clone());
@@ -1254,6 +1273,42 @@ pub async fn sftp_home(session: &SshSession) -> Result<String, String> {
     sftp.canonicalize(".")
         .await
         .map_err(|e| format!("Could not resolve home folder: {e}"))
+}
+
+/// The last `max` bytes of a file (relative paths start at the login
+/// folder), and whether the start was cut off. None when it can't be read.
+pub async fn sftp_read_tail(session: &SshSession, path: &str, max: u64) -> Option<(Vec<u8>, bool)> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let guard = session.sftp.lock().await;
+    let sftp = guard.as_ref()?;
+    let mut file = sftp.open(path).await.ok()?;
+    let len = file.metadata().await.ok()?.len();
+    let cut = len > max;
+    if cut {
+        file.seek(std::io::SeekFrom::Start(len - max)).await.ok()?;
+    }
+    let mut buf = Vec::with_capacity(len.min(max) as usize);
+    file.take(max).read_to_end(&mut buf).await.ok()?;
+    Some((buf, cut))
+}
+
+/// Write `bytes` to a new file only the login user can read (0600). Refuses
+/// to replace an existing file. For screenshots pasted into the terminal.
+pub async fn sftp_put_private(session: &SshSession, path: &str, bytes: &[u8]) -> Result<(), String> {
+    use russh_sftp::protocol::{FileAttributes, OpenFlags};
+    use tokio::io::AsyncWriteExt;
+
+    let guard = session.sftp.lock().await;
+    let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
+    let attrs = FileAttributes { permissions: Some(0o600), ..FileAttributes::empty() };
+    let mut file = sftp
+        .open_with_flags_and_attributes(path, OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE, attrs)
+        .await
+        .map_err(|e| format!("Could not create {path}: {e}"))?;
+    file.write_all(bytes).await.map_err(|e| format!("Write failed: {e}"))?;
+    // Queued write errors (disk full, quota) only surface here
+    file.shutdown().await.map_err(|e| format!("Write failed: {e}"))
 }
 
 /// Delete a file, or a folder with everything inside it. SFTP's rmdir only

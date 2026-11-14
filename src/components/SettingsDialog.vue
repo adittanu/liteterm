@@ -16,6 +16,7 @@ import BaseModal from './BaseModal.vue'
 import AccountSection from './AccountSection.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
 import { THEMES } from '../services/terminalThemes'
 import {
   SHORTCUTS,
@@ -32,9 +33,34 @@ import {
   type ShortcutDef,
 } from '../services/shortcuts'
 import { isMac } from '../utils/platform'
+import { api } from '../services/api'
+import { errorText } from '../stores/sessions'
 
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const privacy = usePrivacyStore()
+
+async function clearHistory() {
+  const ok = await dialogs.confirm({
+    title: 'Clear command history?',
+    message: 'Suggestions start over on every host. History already read from servers is not read again.',
+    confirmLabel: 'Clear history',
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await api.historyClear()
+    ui.historyEpoch++
+    ui.toast('success', 'Command history cleared')
+  } catch (e) {
+    ui.toast('error', `Could not clear history: ${errorText(e)}`)
+  }
+}
+
+const PRIVACY_STYLES = [
+  { id: 'dummy', name: 'Dummy names', sample: 'deploy@server-01', desc: 'Swap in stand-ins that keep the screenshot readable' },
+  { id: 'blur', name: 'Blur', sample: 'admin@prod-db-01', desc: 'Keep the real text, blurred where it sits' },
+] as const
 
 // ---- section navigation ----
 const SECTIONS = [
@@ -247,6 +273,39 @@ watch(
                 <span class="track"><span class="thumb"></span></span>
               </label>
             </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Privacy mode</span>
+                <span class="row-desc">
+                  Hide host names, addresses, logins and group names so a screenshot is safe to
+                  share. Only the screen changes; your hosts stay as they are. Toggle it from the
+                  eye in the title bar or with {{ comboText(comboFor('privacyMode', ui.settings)) }}.
+                </span>
+              </div>
+              <label class="switch">
+                <input v-model="privacy.enabled" type="checkbox" />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="privacy-styles" role="radiogroup" aria-label="Privacy mode style">
+              <button
+                v-for="s in PRIVACY_STYLES"
+                :key="s.id"
+                class="privacy-style"
+                role="radio"
+                :aria-checked="privacy.style === s.id"
+                :class="{ on: privacy.style === s.id }"
+                @click="privacy.style = s.id"
+              >
+                <span class="privacy-style-name">{{ s.name }}</span>
+                <span class="privacy-style-sample mono">
+                  <span :class="{ 'sample-blur': s.id === 'blur' }">{{ s.sample }}</span>
+                </span>
+                <span class="privacy-style-desc">{{ s.desc }}</span>
+              </button>
+            </div>
           </div>
 
           <!-- ============ Appearance ============ -->
@@ -340,6 +399,92 @@ watch(
             </div>
             <div class="font-preview" :style="{ fontSize: `${fontSize}px` }">
               user@web-01:~$ systemctl status nginx
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Notify when a command finishes</span>
+                <span class="row-desc">
+                  When a command that ran for 10 seconds or more ends in a tab you aren't looking
+                  at, or a program there rings the bell, say so. Outside LiteTerm this is a
+                  desktop notification.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :checked="ui.settings.notifyCommandDone"
+                  aria-label="Notify when a command finishes"
+                  @change="ui.updateSettings({ notifyCommandDone: ($event.target as HTMLInputElement).checked })"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Stay awake while a command runs</span>
+                <span class="row-desc">
+                  Keep the computer from going to sleep on its own while a tab runs a command, so
+                  a long build or an agent isn't cut off. Closing the lid still puts it to sleep.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :checked="ui.settings.keepAwake"
+                  aria-label="Stay awake while a command runs"
+                  @change="ui.updateSettings({ keepAwake: ($event.target as HTMLInputElement).checked })"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Suggest commands as you type</span>
+                <span class="row-desc">
+                  Show the rest of a command you ran on this host before, in grey, the way fish
+                  does. → or End takes it, Alt+→ one word. Kept on this computer only.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :checked="ui.settings.autosuggest"
+                  aria-label="Suggest commands as you type"
+                  @change="ui.updateSettings({ autosuggest: ($event.target as HTMLInputElement).checked })"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="row" :class="{ muted: !ui.settings.autosuggest }">
+              <div class="row-text">
+                <span class="row-label">Learn from the server's history</span>
+                <span class="row-desc">
+                  On the first connect to a host, read its bash, zsh and fish history so
+                  suggestions work from the start.
+                </span>
+              </div>
+              <label class="switch">
+                <input
+                  type="checkbox"
+                  :checked="ui.settings.autosuggestImport"
+                  :disabled="!ui.settings.autosuggest"
+                  aria-label="Learn from the server's history"
+                  @change="ui.updateSettings({ autosuggestImport: ($event.target as HTMLInputElement).checked })"
+                />
+                <span class="track"><span class="thumb"></span></span>
+              </label>
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <span class="row-label">Command history</span>
+                <span class="row-desc">What suggestions come from, for every host.</span>
+              </div>
+              <button class="btn btn-secondary" type="button" @click="clearHistory">Clear history</button>
             </div>
 
             <div class="row">
@@ -508,6 +653,10 @@ watch(
 }
 
 /* ---- setting rows ---- */
+.row.muted {
+  opacity: 0.55;
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -536,6 +685,63 @@ watch(
   font-size: var(--text-xs);
   color: var(--text-3);
   line-height: 1.45;
+}
+
+/* ---- privacy mode style picker ---- */
+.privacy-styles {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3);
+  padding-bottom: 12px;
+}
+
+.privacy-style {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  text-align: left;
+  transition:
+    background-color var(--dur-hover) ease,
+    border-color var(--dur-hover) ease,
+    box-shadow var(--dur-hover) ease,
+    transform var(--dur-press) ease-out;
+}
+
+.privacy-style:hover {
+  background: var(--bg-hover);
+}
+
+.privacy-style:active {
+  transform: scale(0.98);
+}
+
+.privacy-style.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.privacy-style-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.privacy-style-sample {
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+
+.sample-blur {
+  filter: blur(3px);
+}
+
+.privacy-style-desc {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  line-height: 1.4;
 }
 
 .row .range {

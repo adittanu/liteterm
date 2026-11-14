@@ -2,6 +2,8 @@
 import { nextTick, ref } from 'vue'
 import { modKey } from '../utils/platform'
 import { Folder, HardDrive, Pencil } from 'lucide-vue-next'
+import PvText from './PvText.vue'
+import { usePrivacyStore } from '../stores/privacy'
 import type { FileEntry } from '../types'
 
 export interface Crumb {
@@ -29,6 +31,7 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{ navigate: [path: string] }>()
+const pv = usePrivacyStore()
 
 const editing = ref(false)
 const draft = ref('')
@@ -212,13 +215,13 @@ function onIdleClick(e: MouseEvent) {
             <button
               v-if="i < crumbs.length - 1"
               class="crumb text-ellipsis"
-              :title="c.path"
+              :title="pv.t(c.path)"
               @click="navigate(c.path)"
             >
-              {{ c.name }}
+              <PvText :text="c.name" />
             </button>
-            <span v-else class="crumb current text-ellipsis" :title="c.path" aria-current="location">
-              {{ c.name }}
+            <span v-else class="crumb current text-ellipsis" :title="pv.t(c.path)" aria-current="location">
+              <PvText :text="c.name" />
             </span>
             <span v-if="i < crumbs.length - 1" class="crumb-sep" aria-hidden="true">›</span>
           </template>
@@ -240,7 +243,7 @@ function onIdleClick(e: MouseEvent) {
         <input
           ref="inputEl"
           v-model="draft"
-          class="path-input mono"
+          class="path-input mono pv-field"
           type="text"
           :spellcheck="false"
           :autocomplete="'off'"
@@ -269,7 +272,8 @@ function onIdleClick(e: MouseEvent) {
               <HardDrive v-if="s.drive" :size="14" :stroke-width="1.5" class="sug-icon drive" aria-hidden="true" />
               <Folder v-else :size="14" :stroke-width="1.5" class="sug-icon" aria-hidden="true" />
               <span class="sug-name mono text-ellipsis">
-                <span class="sug-typed">{{ s.name.slice(0, highlightLen) }}</span>{{ s.name.slice(highlightLen) }}
+                <PvText v-if="pv.has(s.name)" :text="s.name" />
+                <template v-else><span class="sug-typed">{{ s.name.slice(0, highlightLen) }}</span>{{ s.name.slice(highlightLen) }}</template>
               </span>
             </button>
             <div v-if="!suggestions.length && listing" class="sug-empty mono">Listing…</div>

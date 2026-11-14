@@ -22,6 +22,8 @@ import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import HostDetailsPanel from '../components/HostDetailsPanel.vue'
 import PlanetAvatar from '../components/PlanetAvatar.vue'
+import PvText from '../components/PvText.vue'
+import { usePrivacyStore } from '../stores/privacy'
 import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
 import type { Host, HostGroup } from '../types'
@@ -30,6 +32,7 @@ const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const query = ref('')
 const selectedId = ref<number | null>(null)
@@ -46,10 +49,10 @@ const searching = computed(() => query.value.trim().length > 0)
 // against saved hosts (by exact address or resolved IP)
 const {
   target: smartTarget,
-  ips: smartIps,
   resolving: smartResolving,
   resolveFailed: smartResolveFailed,
   matches: smartMatches,
+  prefill: smartPrefill,
 } = useSmartConnect(query)
 const smartDisplay = computed(() => (smartTarget.value ? targetDisplay(smartTarget.value) : ''))
 
@@ -139,19 +142,9 @@ function connectFirst() {
 }
 
 function openQuickAdd() {
-  const t = smartTarget.value
-  if (!t) return
-  dialogs.openHostDialog(
-    null,
-    currentGroupId.value,
-    {
-      address: t.host,
-      port: t.port ?? 22,
-      username: t.username,
-      ips: t.kind === 'domain' ? smartIps.value : [],
-    },
-    true,
-  )
+  const prefill = smartPrefill()
+  if (!prefill) return
+  dialogs.openHostDialog(null, currentGroupId.value, prefill, true)
 }
 
 function statusFor(hostId: number): string {
@@ -262,7 +255,7 @@ async function deleteSelected() {
           <ChevronRight :size="13" :stroke-width="1.5" class="crumb-sep" aria-hidden="true" />
           <span class="crumb-current" aria-current="true">
             <Folder :size="14" :stroke-width="1.5" aria-hidden="true" />
-            <span class="text-ellipsis">{{ currentGroup.name }}</span>
+            <span class="text-ellipsis"><PvText :text="currentGroup.name" /></span>
           </span>
           <span class="crumb-count">
             {{ visibleHosts.length }} {{ visibleHosts.length === 1 ? 'host' : 'hosts' }}
@@ -284,11 +277,11 @@ async function deleteSelected() {
               <PlugZap :size="15" :stroke-width="1.5" class="smart-icon" aria-hidden="true" />
               <div class="smart-text">
                 <span class="smart-title">
-                  Connect to <span class="mono">{{ smartDisplay }}</span>
+                  Connect to <span class="mono"><PvText :text="smartDisplay" /></span>
                 </span>
                 <span class="smart-sub">
                   <template v-if="smartMatches.length">
-                    Matches “{{ smartMatches[0].host.label }}”<template v-if="smartMatches[0].reason === 'ip'"> · resolves to {{ smartMatches[0].ip }}</template><template v-if="smartMatches.length > 1"> · +{{ smartMatches.length - 1 }} more</template>
+                    Matches “<PvText :text="smartMatches[0].host.label" />”<template v-if="smartMatches[0].reason === 'ip'"> · resolves to <PvText :text="smartMatches[0].ip" /></template><template v-if="smartMatches.length > 1"> · +{{ smartMatches.length - 1 }} more</template>
                   </template>
                   <template v-else-if="smartResolving">Resolving address…</template>
                   <template v-else-if="smartResolveFailed">Address didn’t resolve</template>
@@ -317,7 +310,7 @@ async function deleteSelected() {
                   class="folder-card"
                   role="button"
                   tabindex="0"
-                  :aria-label="`Open group ${g.name}`"
+                  :aria-label="`Open group ${pv.t(g.name)}`"
                   @click="openGroup(g)"
                   @keydown.enter="openGroup(g)"
                   @keydown.space.prevent="openGroup(g)"
@@ -327,7 +320,7 @@ async function deleteSelected() {
                     <Folder :size="19" :stroke-width="1.5" aria-hidden="true" />
                   </span>
                   <span class="folder-text">
-                    <span class="folder-name text-ellipsis">{{ g.name }}</span>
+                    <span class="folder-name text-ellipsis"><PvText :text="g.name" /></span>
                     <span class="folder-sub">{{ g.count }} {{ g.count === 1 ? 'host' : 'hosts' }}</span>
                   </span>
                   <span class="folder-go">
@@ -377,7 +370,7 @@ async function deleteSelected() {
                 v-else-if="currentGroup && !visibleHosts.length && !searching"
                 class="empty-state dash-empty"
               >
-                <p>Nothing in “{{ currentGroup.name }}” yet.</p>
+                <p>Nothing in “<PvText :text="currentGroup.name" />” yet.</p>
                 <button class="btn btn-secondary" @click="dialogs.openHostDialog(null, currentGroupId)">
                   <Plus :size="14" :stroke-width="2" aria-hidden="true" />
                   Add host to this group
@@ -403,9 +396,9 @@ async function deleteSelected() {
                 >
                   <PlanetAvatar :host="host" :size="40" />
                   <span class="host-card-text">
-                    <span class="host-card-name text-ellipsis">{{ host.label }}</span>
+                    <span class="host-card-name text-ellipsis"><PvText :text="host.label" /></span>
                     <span class="host-card-sub text-ellipsis">
-                      ssh, {{ host.username }}<template v-if="host.group_id && host.group_id !== currentGroupId"> · {{ groupName(host.group_id) }}</template>
+                      ssh, <PvText :text="host.username" /><template v-if="host.group_id && host.group_id !== currentGroupId"> · <PvText :text="groupName(host.group_id)" /></template>
                     </span>
                   </span>
                   <span class="host-card-status" :class="statusFor(host.id)" :title="statusFor(host.id)"></span>

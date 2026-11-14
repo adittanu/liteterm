@@ -53,3 +53,29 @@ export function highlight(text: string, hits: number[]): { text: string; hit: bo
   }
   return out
 }
+
+/**
+ * Typo distance: insertions, deletions, substitutions and swapped neighbours
+ * ("prdo" → "prod") each cost 1 (optimal string alignment). Gives up and
+ * returns `max + 1` once the distance can only exceed `max`.
+ */
+export function editDistance(a: string, b: string, max = Infinity): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1
+  let prev2: number[] = []
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    let rowMin = i
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      let d = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d = Math.min(d, prev2[j - 2] + 1)
+      cur.push(d)
+      rowMin = Math.min(rowMin, d)
+    }
+    if (rowMin > max) return max + 1
+    prev2 = prev
+    prev = cur
+  }
+  return prev[b.length]
+}

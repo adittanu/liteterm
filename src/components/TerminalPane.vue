@@ -6,8 +6,14 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { useSessionsStore } from '../stores/sessions'
+import { useSessionsStore, errorText } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
+import { usePrivacyStore } from '../stores/privacy'
+import { api } from '../services/api'
+import { IMAGE_EXTS, blobToBase64, imageFiles } from '../utils/imageData'
+import { useSnippetsStore } from '../stores/extras'
+import { nextWord, suggestionFor } from '../services/autosuggest'
+import { PromptLine, isPromptText, textBeforeCursor } from '../services/promptLine'
 import { terminalThemeFor, xtermThemeFor } from '../services/terminalThemes'
 import { actionFor, captureActive, comboFor, comboText } from '../services/shortcuts'
 import { isMac, isWindows, terminalClipboardKeys } from '../utils/platform'
@@ -17,6 +23,7 @@ const props = defineProps<{ session: SessionTab }>()
 
 const sessions = useSessionsStore()
 const ui = useUiStore()
+const pv = usePrivacyStore()
 
 const container = ref<HTMLElement | null>(null)
 
@@ -240,6 +247,13 @@ watch(
   },
 )
 
+watch(
+  () => ui.terminalFocusRequest,
+  (req) => {
+    if (req && req.sessionId === props.session.id) void nextTick(() => term?.focus())
+  },
+)
+
 // ---- right-click context menu (Copy / Paste / Select All) ----
 // The WebView's own menu is suppressed app-wide (main.ts), so the terminal
 // carries its own. While it's open the keyboard belongs to the menu:
@@ -339,13 +353,13 @@ async function ctxPaste() {
     ui.toast('error', `Clipboard unavailable — press ${terminalClipboardKeys.paste} to paste`)
     return
   }
-  if (!text || !term) return
-  // Dispatch a real paste event so xterm's own handler applies newline
-  // normalization and bracketed-paste wrapping (vim, zsh, …)
-  const dt = new DataTransfer()
-  dt.setData('text/plain', text)
-  term.textarea?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt }))
-  term.focus()
+  if (!term) return
+  if (!text) {
+    const image = await clipboardImage()
+    if (image) void pasteImage(image)
+    return
+  }
+  pasteText(text)
 }
 
 function ctxSelectAll() {
@@ -419,7 +433,268 @@ function flushScreen() {
   }
   term.write(out, () => {
     if (n >= 2048) unstickPaint()
+    // The screen now shows what the shell sent: a new prompt, an echoed key
+    prompt?.track()
+    refreshGhost()
   })
+}
+
+// ---- command activity: notice when done (F), keep awake while busy (AE) ----
+// No shell integration is assumed. A command counts from an Enter pressed
+// while the shell sat at its prompt (output went quiet with the cursor right
+// after a prompt sign) until the prompt shows again. Commands started any
+// other way (a custom prompt we don't recognise) are simply not tracked.
+const QUIET_MS = 1200
+const LONG_COMMAND_MS = 10_000
+// A command that stops printing for this long no longer counts as busy:
+// shorter for full-screen programs (an idle opencode), long for a quiet build
+const IDLE_MS = { normal: 30 * 60_000, alternate: 2 * 60_000 }
+let commandStartedAt = 0
+let lastOutputAt = 0
+let quietTimer = 0
+let busyTimer = 0
+// The command line being typed (F, autosuggest); set up once the terminal exists
+let prompt: PromptLine | null = null
+
+function updateBusy() {
+  clearTimeout(busyTimer)
+  busyTimer = 0
+  let busy = false
+  if (commandStartedAt && term) {
+    const left = IDLE_MS[term.buffer.active.type] - (Date.now() - lastOutputAt)
+    busy = left > 0
+    if (busy) busyTimer = window.setTimeout(updateBusy, left + 50)
+  }
+  sessions.setBusy(props.session.id, busy)
+}
+
+function onQuiet() {
+  quietTimer = 0
+  if (!term || term.buffer.active.type !== 'normal') return
+  if (!isPromptText(textBeforeCursor(term))) return
+  if (!commandStartedAt) return
+  const ms = lastOutputAt - commandStartedAt
+  commandStartedAt = 0
+  updateBusy()
+  if (ms >= LONG_COMMAND_MS) sessions.notifyActivity(props.session.id, 'done', ms)
+}
+
+function onOutputActivity() {
+  lastOutputAt = Date.now()
+  clearTimeout(quietTimer)
+  quietTimer = window.setTimeout(onQuiet, QUIET_MS)
+  if (commandStartedAt && !busyTimer) updateBusy()
+}
+
+function onSessionInput(data: string) {
+  if (!term || term.buffer.active.type !== 'normal' || !/[\r\n]/.test(data)) return
+  prompt?.track()
+  if (!prompt?.active) return
+  // The Enter may travel with keys the shell hasn't echoed yet (a paste,
+  // an accepted suggestion): add those to what the screen shows
+  const typed = prompt.current()
+  const head = data.split(/[\r\n]/, 1)[0]
+  if (typed && !data.includes('\x1b')) recordCommand(typed.text + head)
+  prompt.clear()
+  hideGhost()
+  commandStartedAt = Date.now()
+  lastOutputAt = commandStartedAt
+  updateBusy()
+}
+
+function resetActivity() {
+  prompt?.clear()
+  hideGhost()
+  commandStartedAt = 0
+  clearTimeout(quietTimer)
+  quietTimer = 0
+  updateBusy()
+}
+
+// ---- suggestions while typing, from this host's history (fish-style) ----
+// Drawn by LiteTerm over the terminal, never sent: → or End takes it all,
+// Alt+→ (Ctrl+→) one word. Programs in the alternate screen get none.
+let history: string[] = []
+const hostIdForHistory = props.session.kind === 'herdr' ? undefined : props.session.hostId
+const snippetsStore = useSnippetsStore()
+const paneEl = ref<HTMLElement | null>(null)
+const ghost = ref<{ full: string; chars: string[]; left: number; top: number; cellW: number; cellH: number } | null>(null)
+
+function hideGhost() {
+  if (ghost.value) ghost.value = null
+}
+
+async function loadHistory() {
+  if (hostIdForHistory === undefined) return
+  try {
+    history = await api.historyList(hostIdForHistory)
+  } catch {
+    history = []
+  }
+  refreshGhost()
+}
+
+function recordCommand(raw: string) {
+  if (hostIdForHistory === undefined || !ui.settings.autosuggest) return
+  const cmd = raw.trimEnd()
+  // A leading space keeps a command out of history, as in bash and zsh
+  if (!cmd.trim() || cmd.startsWith(' ') || cmd.length > 1000) return
+  history = [cmd, ...history.filter((c) => c !== cmd)].slice(0, 2000)
+  void api.historyAdd(hostIdForHistory, cmd).catch(() => {})
+}
+
+function cellCss(): { width: number; height: number } | null {
+  const cell = (
+    term as unknown as {
+      _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } }
+    } | null
+  )?._core?._renderService?.dimensions?.css?.cell
+  return cell?.width && cell?.height ? { width: cell.width, height: cell.height } : null
+}
+
+function refreshGhost() {
+  const next = computeGhost()
+  if (next || ghost.value) ghost.value = next
+}
+
+function computeGhost(): typeof ghost.value {
+  if (!term || !ui.settings.autosuggest || hostIdForHistory === undefined || !prompt?.active) return null
+  const buf = term.buffer.active
+  // Scrolled back: the cursor's row isn't on screen
+  if (buf.type !== 'normal' || buf.viewportY !== buf.baseY) return null
+  const input = prompt.current()
+  if (!input?.free || input.room <= 0) return null
+  const snippetCommands = snippetsStore.snippets.map((s) => s.command)
+  const full = suggestionFor(input.text, history, snippetCommands)
+  if (!full) return null
+  const cell = cellCss()
+  const screen = term.element?.querySelector('.xterm-screen')
+  if (!cell || !screen || !paneEl.value) return null
+  const s = screen.getBoundingClientRect()
+  const p = paneEl.value.getBoundingClientRect()
+  return {
+    full,
+    chars: Array.from(full).slice(0, input.room),
+    left: s.left - p.left + buf.cursorX * cell.width,
+    top: s.top - p.top + buf.cursorY * cell.height,
+    cellW: cell.width,
+    cellH: cell.height,
+  }
+}
+
+function acceptGhost(oneWord: boolean): boolean {
+  const g = ghost.value
+  if (!g) return false
+  hideGhost()
+  queueInput(oneWord ? nextWord(g.full) : g.full)
+  return true
+}
+
+const ghostStyle = computed(() => {
+  const g = ghost.value
+  if (!g) return {}
+  const palette = terminalThemeFor(ui.settings.theme, ui.systemDark)
+  return {
+    left: `${g.left}px`,
+    top: `${g.top}px`,
+    height: `${g.cellH}px`,
+    lineHeight: `${g.cellH}px`,
+    fontFamily: term?.options.fontFamily,
+    fontSize: `${ui.settings.terminalFontSize}px`,
+    color: palette.brightBlack,
+    '--cell-w': `${g.cellW}px`,
+  }
+})
+
+watch(
+  () => ui.historyEpoch,
+  () => void loadHistory(),
+)
+watch(
+  () => ui.settings.autosuggest,
+  () => refreshGhost(),
+)
+
+// The server's own shell history, read once per host on the first connect
+let importAsked = false
+function maybeImportHistory() {
+  if (importAsked || props.session.kind !== 'ssh' || hostIdForHistory == null) return
+  if (!ui.settings.autosuggest || !ui.settings.autosuggestImport) return
+  importAsked = true
+  void api
+    .historyImport(props.session.id)
+    .then((n) => {
+      if (n) void loadHistory()
+    })
+    .catch(() => {})
+}
+
+// ---- pasting an image (AA) ----
+// A screenshot on the clipboard can't travel as keystrokes. It is saved
+// where this tab's programs can read it (the server's /tmp for SSH) and its
+// path is pasted instead, which is how opencode and friends take an image.
+const MAX_PASTE_IMAGE = 25 * 1024 * 1024
+let pastingImage = false
+
+function pasteText(text: string) {
+  if (!term) return
+  // A real paste event, so xterm applies newline normalization and
+  // bracketed-paste wrapping (vim, zsh, agent CLIs, …)
+  const dt = new DataTransfer()
+  dt.setData('text/plain', text)
+  term.textarea?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt }))
+  term.focus()
+}
+
+function quotePath(path: string): string {
+  if (!/[\s'"()&;$`]/.test(path)) return path
+  if (props.session.kind !== 'ssh' && isWindows) return `"${path}"`
+  return `'${path.replace(/'/g, `'\\''`)}'`
+}
+
+async function pasteImage(image: Blob) {
+  const ext = IMAGE_EXTS[image.type]
+  if (!ext || pastingImage) return
+  if (image.size > MAX_PASTE_IMAGE) {
+    ui.toast('error', 'That image is larger than 25 MB')
+    return
+  }
+  pastingImage = true
+  const remote = props.session.kind === 'ssh'
+  const toastId = remote ? ui.toast('info', `Uploading the image to ${props.session.label}…`, { duration: 0 }) : 0
+  try {
+    const path = await api.pasteImage(props.session.id, await blobToBase64(image), ext)
+    pasteText(quotePath(path))
+  } catch (e) {
+    ui.toast('error', `Could not paste the image: ${errorText(e)}`)
+  } finally {
+    if (toastId) ui.dismissToast(toastId)
+    pastingImage = false
+  }
+}
+
+// Capture phase on the pane, ahead of xterm's own paste handler on its textarea
+function onPasteCapture(e: ClipboardEvent) {
+  const dt = e.clipboardData
+  // Text wins: copying from a page can carry an image alongside it
+  if (!dt || dt.getData('text/plain')) return
+  const [image] = imageFiles(dt.items)
+  if (!image) return
+  e.preventDefault()
+  e.stopImmediatePropagation()
+  void pasteImage(image)
+}
+
+async function clipboardImage(): Promise<Blob | null> {
+  try {
+    for (const item of await navigator.clipboard.read()) {
+      const type = item.types.find((t) => IMAGE_EXTS[t])
+      if (type) return await item.getType(type)
+    }
+  } catch {
+    // no image, or the web view won't say
+  }
+  return null
 }
 
 onMounted(() => {
@@ -463,6 +738,7 @@ onMounted(() => {
     vtExtensions: { kittyKeyboard: true },
   })
   term.options.theme = terminalTheme()
+  prompt = new PromptLine(term)
   fit = new FitAddon()
   term.loadAddon(fit)
   term.loadAddon(new WebLinksAddon())
@@ -481,6 +757,14 @@ onMounted(() => {
     if (e.type !== 'keydown') return true
     // While rebinding a shortcut in Settings, no key may reach the shell
     if (captureActive.value) return false
+    // A suggestion on screen: → / End take it, Alt+→ or Ctrl+→ one word
+    // (Option+→ / Cmd+→ on a Mac). With none shown the keys work as usual.
+    if (ghost.value && (e.key === 'ArrowRight' || e.key === 'End')) {
+      const plain = !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+      const word = e.key === 'ArrowRight' && !e.shiftKey && !e.metaKey && (e.altKey !== e.ctrlKey)
+      const all = plain || (isMac && e.key === 'ArrowRight' && e.metaKey && !e.altKey && !e.ctrlKey && !e.shiftKey)
+      if ((word || all) && acceptGhost(word)) return false
+    }
     // Legacy input sends plain \r for Shift+Enter, so apps see it as Enter.
     // - Kitty-negotiated sessions get the native CSI 13;2u encoding.
     // - Other local (ConPTY) sessions — local shell and herdr: send
@@ -528,14 +812,24 @@ onMounted(() => {
     const bytes = b64ToBytes(data)
     scanKitty(bytes)
     chunks.push(bytes)
+    onOutputActivity()
     if (flushQueued) return
     flushQueued = true
     queueMicrotask(flushScreen)
   })
 
+  sessions.observeInput(props.session.id, onSessionInput)
+  term.onBell(() => sessions.notifyActivity(props.session.id, 'bell'))
+  term.onTitleChange((title) => sessions.setTitle(props.session.id, title))
+  term.onScroll(() => refreshGhost())
+  container.value.addEventListener('paste', onPasteCapture, true)
+  void loadHistory()
+  if (props.session.status === 'connected') maybeImportHistory()
+
   term.onData(queueInput)
   term.onResize(({ cols, rows }) => {
     if (props.session.status === 'connected') pushSize(cols, rows)
+    refreshGhost()
   })
 
   resizeObserver = new ResizeObserver(() => {
@@ -622,9 +916,13 @@ watch(
     if (status === 'reconnecting' && prev === 'connected' && term) {
       lostConnection = true
       kittyActive = false
+      // The shell that ran the command is gone, and so is its title
+      resetActivity()
+      sessions.setTitle(props.session.id, '')
       term.write(`${RESET_MODES}\r\n\x1b[2m── connection lost ──\x1b[0m\r\n`)
     }
     if (status === 'connected') {
+      maybeImportHistory()
       if (lostConnection && term) {
         lostConnection = false
         term.write('\x1b[2m── reconnected ──\x1b[0m\r\n')
@@ -656,6 +954,10 @@ watch(
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  container.value?.removeEventListener('paste', onPasteCapture, true)
+  clearTimeout(quietTimer)
+  clearTimeout(busyTimer)
+  prompt?.clear()
   closeCtxMenu(false)
   if (fitFrame) cancelAnimationFrame(fitFrame)
   chunks = []
@@ -669,12 +971,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="terminal-pane" @contextmenu="openCtxMenu">
+  <div ref="paneEl" class="terminal-pane" @contextmenu="openCtxMenu">
     <div
       ref="container"
       class="terminal-container"
-      :aria-label="`Terminal for ${session.label}`"
+      :aria-label="pv.t(`Terminal for ${session.label}`)"
     ></div>
+
+    <!-- Suggestion from history, drawn over the cell grid after the cursor;
+         one span per cell so it lines up with xterm's own glyphs -->
+    <div v-if="ghost" class="ghost" :style="ghostStyle" aria-hidden="true"><span v-for="(ch, i) in ghost.chars" :key="i">{{ ch }}</span></div>
 
     <!-- Find bar: floats over the top-right of the output, like Windows Terminal -->
     <div v-if="findOpen" class="find-bar" role="search" aria-label="Find in terminal">
@@ -768,6 +1074,22 @@ onUnmounted(() => {
 .terminal-pane {
   position: absolute;
   inset: 0;
+}
+
+.ghost {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  white-space: pre;
+  pointer-events: none;
+  user-select: none;
+  font-weight: normal;
+}
+
+.ghost span {
+  display: inline-block;
+  width: var(--cell-w);
+  overflow: visible;
 }
 
 .find-bar {

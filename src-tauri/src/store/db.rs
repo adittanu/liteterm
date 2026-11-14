@@ -134,6 +134,24 @@ pub(super) fn migrate_v2(conn: &Connection) -> Result<(), rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE notes ADD COLUMN sort INTEGER NOT NULL DEFAULT 0");
     // notes.archived — hidden from All Notes, listed under Archive
     let _ = conn.execute_batch("ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+    // hosts.startup_command — typed into the shell after every login
+    // (cd somewhere, tmux attach), added in v1.11
+    let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN startup_command TEXT");
+    // Commands typed at a prompt, for suggestions while typing (v1.11). Per
+    // host and this machine only: they hold tokens and passwords in their
+    // arguments, so there is no sync trigger on these tables.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS command_history (
+             host_key TEXT NOT NULL,
+             command  TEXT NOT NULL,
+             used_at  INTEGER NOT NULL,
+             PRIMARY KEY (host_key, command)
+         );
+         CREATE INDEX IF NOT EXISTS command_history_recent ON command_history(host_key, used_at DESC);
+         CREATE TABLE IF NOT EXISTS command_history_imported (
+             host_key TEXT PRIMARY KEY NOT NULL
+         );",
+    )?;
 
     // Schema v2: known_hosts keys off (host, key_type) — servers offer
     // several host key types and OpenSSH known_hosts stores one line per
@@ -191,6 +209,7 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
         sort: row.get(9)?,
         last_used_at: row.get(13)?,
         jump_host_id: row.get(14)?,
+        startup_command: row.get(15)?,
     })
 }
 
@@ -201,7 +220,7 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
 const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, \
     COALESCE(c.username, h.username), COALESCE(c.auth_method, h.auth_method), \
     h.password_saved, CASE WHEN c.id IS NULL THEN h.key_path ELSE c.key_path END, \
-    h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id";
+    h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id, h.startup_command";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -254,13 +273,18 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
     let credential_id = created_credential_id.or(input.credential_id);
     // A host can't hop through itself
     let jump_host_id = input.jump_host_id.filter(|j| Some(*j) != input.id);
+    let startup_command = input
+        .startup_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
 
     let id = match input.id {
         Some(id) => {
             conn.execute(
                 "UPDATE hosts SET group_id=?2, label=?3, address=?4, port=?5, username=?6, \
                  auth_method=?7, password_saved=?8, key_path=?9, credential_id=?10, \
-                 jump_host_id=?11, updated_at=datetime('now') WHERE id=?1",
+                 jump_host_id=?11, startup_command=?12, updated_at=datetime('now') WHERE id=?1",
                 params![
                     id,
                     input.group_id,
@@ -273,14 +297,15 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     input.key_path,
                     credential_id,
                     jump_host_id,
+                    startup_command,
                 ],
             )?;
             id
         }
         None => {
             conn.execute(
-                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id, startup_command) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     input.group_id,
                     input.label,
@@ -292,6 +317,7 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     input.key_path,
                     credential_id,
                     jump_host_id,
+                    startup_command,
                 ],
             )?;
             conn.last_insert_rowid()
@@ -327,12 +353,89 @@ pub fn delete_host(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
     conn.execute("DELETE FROM hosts WHERE id = ?1", params![id])?;
     keyring_delete(&password_entry(id));
     keyring_delete(&keypass_entry(id));
+    let key = history_key(Some(id));
+    conn.execute("DELETE FROM command_history WHERE host_key = ?1", [&key])?;
+    conn.execute("DELETE FROM command_history_imported WHERE host_key = ?1", [&key])?;
+    Ok(())
+}
+
+// ---------- command history (suggestions) ----------
+
+/// Most commands kept per host; the oldest go first
+pub const HISTORY_LIMIT: i64 = 2000;
+
+/// Saved hosts each have their own history; local terminals share one
+pub fn history_key(host_id: Option<i64>) -> String {
+    match host_id {
+        Some(id) => format!("host:{id}"),
+        None => "local".into(),
+    }
+}
+
+/// Newest first
+pub fn history_list(conn: &Connection, host_key: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT command FROM command_history WHERE host_key = ?1 ORDER BY used_at DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![host_key, HISTORY_LIMIT], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// Record `commands` (oldest first) as used at `used_at`, `used_at + 1`, …
+/// A command already known keeps its newer time.
+pub fn history_add(conn: &Connection, host_key: &str, commands: &[String], used_at: i64) -> Result<(), rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO command_history (host_key, command, used_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(host_key, command) DO UPDATE SET used_at = max(used_at, excluded.used_at)",
+        )?;
+        for (i, cmd) in commands.iter().enumerate() {
+            stmt.execute(params![host_key, cmd, used_at + i as i64])?;
+        }
+    }
+    tx.execute(
+        "DELETE FROM command_history WHERE host_key = ?1 AND command NOT IN \
+         (SELECT command FROM command_history WHERE host_key = ?1 ORDER BY used_at DESC LIMIT ?2)",
+        params![host_key, HISTORY_LIMIT],
+    )?;
+    tx.commit()
+}
+
+/// Forget every recorded command. Servers already imported stay marked, so
+/// Clear doesn't pull their history straight back on the next connect.
+pub fn history_clear(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch("DELETE FROM command_history;")
+}
+
+pub fn history_imported(conn: &Connection, host_key: &str) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM command_history_imported WHERE host_key = ?1)",
+        [host_key],
+        |r| r.get(0),
+    )
+}
+
+/// A server's own history is read once; this marks it done
+pub fn history_mark_imported(conn: &Connection, host_key: &str) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO command_history_imported (host_key) VALUES (?1) ON CONFLICT(host_key) DO NOTHING",
+        [host_key],
+    )?;
     Ok(())
 }
 
 pub fn set_host_os(conn: &Connection, id: i64, os: &str) -> Result<(), rusqlite::Error> {
     conn.execute("UPDATE hosts SET os = ?2 WHERE id = ?1", params![id, os])?;
     Ok(())
+}
+
+/// The command to type into a fresh shell on this host, if any. Read on
+/// every login, so a reconnect picks up an edit made meanwhile.
+pub fn host_startup_command(conn: &Connection, id: i64) -> Result<Option<String>, rusqlite::Error> {
+    conn.query_row("SELECT startup_command FROM hosts WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+        .map(Option::flatten)
 }
 
 /// Set (or clear) the jump host — used by the ssh-config importer's
@@ -804,6 +907,10 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, rusqlite::Error> {
             "confirmDeleteFile" => settings.confirm_delete_file = v == "true",
             "autoSudoPassword" => settings.auto_sudo_password = v != "false",
             "autoReconnect" => settings.auto_reconnect = v != "false",
+            "notifyCommandDone" => settings.notify_command_done = v != "false",
+            "keepAwake" => settings.keep_awake = v != "false",
+            "autosuggest" => settings.autosuggest = v != "false",
+            "autosuggestImport" => settings.autosuggest_import = v != "false",
             "keybindings" => settings.keybindings = serde_json::from_str(&v).unwrap_or_default(),
             "hostsLayout" => {
                 if v == "classic" || v == "modern" {
@@ -823,6 +930,10 @@ pub fn set_settings(conn: &Connection, settings: &AppSettings) -> Result<(), rus
         ("confirmDeleteFile", settings.confirm_delete_file.to_string()),
         ("autoSudoPassword", settings.auto_sudo_password.to_string()),
         ("autoReconnect", settings.auto_reconnect.to_string()),
+        ("notifyCommandDone", settings.notify_command_done.to_string()),
+        ("keepAwake", settings.keep_awake.to_string()),
+        ("autosuggest", settings.autosuggest.to_string()),
+        ("autosuggestImport", settings.autosuggest_import.to_string()),
         (
             "keybindings",
             serde_json::to_string(&settings.keybindings).unwrap_or_else(|_| "{}".into()),
@@ -880,6 +991,39 @@ pub fn keyring_delete(account: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_keeps_newest_first_without_duplicates_and_clear_keeps_imports() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let key = history_key(Some(7));
+        // Imported commands are stamped from 1, older than anything typed
+        history_add(&conn, &key, &["ls".into(), "git status".into()], 1).unwrap();
+        history_add(&conn, &key, &["make".into()], 1_000).unwrap();
+        history_add(&conn, &key, &["ls".into()], 2_000).unwrap();
+        assert_eq!(history_list(&conn, &key).unwrap(), ["ls", "make", "git status"]);
+        // An older stamp never pushes a command back down
+        history_add(&conn, &key, &["make".into()], 5).unwrap();
+        assert_eq!(history_list(&conn, &key).unwrap()[1], "make");
+        assert!(history_list(&conn, "local").unwrap().is_empty(), "hosts don't share history");
+
+        history_mark_imported(&conn, &key).unwrap();
+        history_clear(&conn).unwrap();
+        assert!(history_list(&conn, &key).unwrap().is_empty());
+        assert!(history_imported(&conn, &key).unwrap(), "Clear must not re-import the server's history");
+    }
+
+    #[test]
+    fn history_drops_the_oldest_past_its_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let many: Vec<String> = (0..HISTORY_LIMIT + 5).map(|i| format!("cmd {i}")).collect();
+        history_add(&conn, "local", &many, 1).unwrap();
+        let kept = history_list(&conn, "local").unwrap();
+        assert_eq!(kept.len() as i64, HISTORY_LIMIT);
+        assert_eq!(kept[0], format!("cmd {}", HISTORY_LIMIT + 4));
+        assert!(!kept.contains(&"cmd 0".to_string()));
+    }
 
     #[test]
     fn a_host_linked_to_a_credential_shows_the_credentials_login() {

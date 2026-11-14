@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Host, HostGroup } from '../types'
+import type { Host, HostGroup, Snippet } from '../types'
+import { snippetVars } from '../utils/snippetVars'
 
 interface ConfirmOptions {
   title: string
@@ -16,6 +17,10 @@ export interface HostPrefill {
   port: number
   username: string | null
   ips?: string[]
+  /** From a pasted `ssh -i …` command */
+  keyPath?: string | null
+  /** From a pasted `ssh -J …` command that names a saved host */
+  jumpHostId?: number | null
 }
 
 export const useDialogsStore = defineStore('dialogs', () => {
@@ -105,6 +110,30 @@ export const useDialogsStore = defineStore('dialogs', () => {
   const showPalette = ref(false)
   const showQuickNote = ref(false)
 
+  // Values for a snippet's {{placeholders}}, asked right before it runs
+  const snippetFill = ref<{
+    snippet: Snippet
+    /** "Run" or "Insert": names the button */
+    verb: string
+    resolve: (command: string | null) => void
+  } | null>(null)
+
+  /**
+   * The snippet's command ready to send: as it is when it has no
+   * placeholders, else filled in from a dialog. null = cancelled.
+   */
+  function fillSnippet(snippet: Snippet, verb = 'Run'): Promise<string | null> {
+    if (!snippetVars(snippet.command).length) return Promise.resolve(snippet.command)
+    snippetFill.value?.resolve(null)
+    return new Promise((resolve) => {
+      snippetFill.value = { snippet, verb, resolve }
+    })
+  }
+  function answerSnippetFill(command: string | null) {
+    snippetFill.value?.resolve(command)
+    snippetFill.value = null
+  }
+
   return {
     hostDialog,
     openHostDialog,
@@ -123,5 +152,8 @@ export const useDialogsStore = defineStore('dialogs', () => {
     showExport,
     showPalette,
     showQuickNote,
+    snippetFill,
+    fillSnippet,
+    answerSnippetFill,
   }
 })

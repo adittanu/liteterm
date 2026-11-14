@@ -58,6 +58,7 @@ pub const HOSTS: SyncedTable = SyncedTable {
         "key_path",
         "credential_id",
         "jump_host_id",
+        "startup_command",
         "sort",
     ],
 };

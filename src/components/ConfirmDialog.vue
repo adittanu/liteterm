@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import BaseModal from './BaseModal.vue'
+import PvText from './PvText.vue'
 import { useDialogsStore } from '../stores/dialogs'
 
 const dialogs = useDialogsStore()
@@ -13,7 +14,7 @@ const dialogs = useDialogsStore()
     @close="dialogs.answerConfirm(false)"
   >
     <div class="confirm">
-      <p class="confirm-message">{{ dialogs.confirmState.message }}</p>
+      <p class="confirm-message"><PvText :text="dialogs.confirmState.message" /></p>
       <footer class="confirm-actions">
         <button class="btn btn-ghost" @click="dialogs.answerConfirm(false)">Cancel</button>
         <button
