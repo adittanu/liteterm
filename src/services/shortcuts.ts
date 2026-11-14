@@ -40,6 +40,9 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'privacyMode', label: 'Toggle privacy mode', group: 'General', defaultKeys: 'Ctrl+Shift+B' },
   // Windows Terminal's binding; Go to Port Forwarding moved to Ctrl+Shift+U
   { id: 'terminalFind', label: 'Find in terminal', group: 'Terminal', defaultKeys: 'Ctrl+Shift+F' },
+  { id: 'splitRight', label: 'Split pane right', group: 'Terminal', defaultKeys: 'Ctrl+Shift+D' },
+  { id: 'splitDown', label: 'Split pane down', group: 'Terminal', defaultKeys: 'Ctrl+Shift+E' },
+  { id: 'focusOtherPane', label: 'Switch to the other pane', group: 'Terminal', defaultKeys: 'Ctrl+Shift+J' },
   view('hosts', 'Go to Hosts', 'Ctrl+Shift+H'),
   view('keychain', 'Go to Keychain', 'Ctrl+Shift+K'),
   view('forwards', 'Go to Port Forwarding', 'Ctrl+Shift+U'),

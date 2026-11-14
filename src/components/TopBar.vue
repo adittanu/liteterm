@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { onMounted, onUnmounted, ref } from 'vue'
-import { Menu, Plus, X, FolderTree, Eye, EyeOff } from 'lucide-vue-next'
+import { Menu, Plus, X, FolderTree, Eye, EyeOff, Columns2, Rows2 } from 'lucide-vue-next'
 import PvText from './PvText.vue'
 import { useUiStore } from '../stores/ui'
 import { useSessionsStore } from '../stores/sessions'
@@ -113,12 +113,14 @@ function onTopbarMouseDown(e: MouseEvent) {
 
 const tabItems = computed(() => {
   const sftp = { kind: 'sftp' as const, id: 'sftp', label: 'SFTP', status: 'idle' }
-  const sessionTabs = sessions.tabs.map((t) => ({
+  // A split's second pane lives inside its tab, not as a tab of its own
+  const sessionTabs = sessions.tabs.filter((t) => !t.parentId).map((t) => ({
     kind: 'session' as const,
     id: `session:${t.id}`,
     sessionId: t.id,
     label: t.label,
     title: t.title,
+    split: t.split?.dir,
     status: t.status,
   }))
   return [sftp, ...sessionTabs]
@@ -140,7 +142,8 @@ function dotState(status: string): string {
 }
 
 function closeSession(sessionId: number) {
-  void sessions.disconnect(sessionId)
+  // Both panes of a split tab
+  void sessions.closeTab(sessionId)
 }
 </script>
 
@@ -172,6 +175,8 @@ function closeSession(sessionId: number) {
         </template>
         <template v-else>
           <span class="top-tab-dot" :class="dotState(tab.status)" aria-hidden="true"></span>
+          <Columns2 v-if="tab.split === 'right'" class="top-tab-split" :size="12" :stroke-width="1.75" aria-label="Split in two" />
+          <Rows2 v-else-if="tab.split === 'down'" class="top-tab-split" :size="12" :stroke-width="1.75" aria-label="Split in two" />
           <span class="top-tab-label text-ellipsis"><PvText :text="tab.label" /><span v-if="tab.title" class="top-tab-title"> · <PvText :text="tab.title" /></span></span>
           <span
             class="top-tab-close"
@@ -324,6 +329,11 @@ function closeSession(sessionId: number) {
 .top-tab.active {
   color: var(--text-1);
   background: var(--bg-surface-2);
+}
+
+.top-tab-split {
+  flex-shrink: 0;
+  color: var(--text-4);
 }
 
 .top-tab-dot {

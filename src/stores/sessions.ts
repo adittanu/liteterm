@@ -7,7 +7,7 @@ import { useHostsStore } from './hosts'
 import { useUiStore } from './ui'
 import { useDialogsStore } from './dialogs'
 import { usePrivacyStore } from './privacy'
-import type { SessionKind, SessionTab, SessionStatus, HostKeyEvent, Transfer } from '../types'
+import type { SessionKind, SessionTab, SessionStatus, HostKeyEvent, Transfer, SplitDir } from '../types'
 
 function sessionView(id: number) {
   return `session:${id}` as const
@@ -122,7 +122,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     const tab = tabs.value.find((t) => t.id === sessionId)
     if (!tab) return
     const focused = document.hasFocus()
-    if (focused && ui.activeView === sessionView(sessionId)) return
+    if (focused && paneVisible(sessionId)) return
     if (kind === 'bell') {
       const now = Date.now()
       if (now - (lastBell.get(sessionId) ?? 0) < BELL_EVERY_MS) return
@@ -133,7 +133,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       actionLabel: 'Show',
       action: () => {
         activeId.value = sessionId
-        ui.openView(sessionView(sessionId))
+        ui.openView(sessionView(rootOf(sessionId)))
       },
       duration: 8000,
     })
@@ -144,29 +144,133 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
-  async function connect(hostId: number, pendingPassword?: string, opts?: { silent?: boolean }) {
+  // ---- split panes: a tab may show a second session beside or below it ----
+
+  /** The tab a session is shown in: itself, or the tab it is the second pane of */
+  function rootOf(sessionId: number): number {
+    return tabs.value.find((t) => t.id === sessionId)?.parentId ?? sessionId
+  }
+
+  /** The session's pane is on screen (its tab is the open view) */
+  function paneVisible(sessionId: number): boolean {
+    return useUiStore().activeView === sessionView(rootOf(sessionId))
+  }
+
+  /** The pane that has the keyboard in `rootId`'s tab */
+  function focusedPane(rootId: number): number {
+    const root = tabs.value.find((t) => t.id === rootId)
+    return activeId.value !== null && activeId.value === root?.split?.childId ? activeId.value : rootId
+  }
+
+  // A split whose connect stopped for a password: the retry from the prompt
+  // must land in the same place, not in a tab of its own
+  const pendingSplit = new Map<number, { target: SplitTarget; at: number }>()
+  const PENDING_SPLIT_MS = 5 * 60_000
+
+  interface SplitTarget {
+    parentId: number
+    dir: SplitDir
+    ratio?: number
+  }
+
+  function attachTab(tab: SessionTab, split: SplitTarget | undefined, silent: boolean) {
+    const parent = split ? tabs.value.find((t) => t.id === split.parentId && !t.split && !t.parentId) : undefined
+    if (parent) {
+      tab.parentId = parent.id
+      parent.split = { childId: tab.id, dir: split!.dir, ratio: split!.ratio ?? 0.5 }
+    }
+    tabs.value.push(tab)
+    replayBuffered(tab)
+    activeId.value = tab.id
+    // Silent connections (e.g. started from SFTP) don't hijack the view
+    if (!silent) useUiStore().openView(sessionView(parent?.id ?? tab.id))
+  }
+
+  /**
+   * Open a second pane in this session's tab, right of it or below it, with
+   * a fresh session to the same host (or a new local terminal). A tab holds
+   * two panes at most.
+   */
+  function splitPane(sessionId: number, dir: SplitDir) {
+    const rootId = rootOf(sessionId)
+    const root = tabs.value.find((t) => t.id === rootId)
+    if (!root) return
+    if (root.split) {
+      useUiStore().toast('info', 'This tab is already split in two')
+      return
+    }
+    const target = { parentId: rootId, dir }
+    if (root.kind === 'ssh' && root.hostId !== null) {
+      void connect(root.hostId, undefined, { split: target })
+    } else {
+      void spawnLocalTab(
+        { kind: root.kind, label: root.label, address: root.address },
+        root.kind === 'herdr' ? 'herdr.exe' : undefined,
+        target,
+      )
+    }
+  }
+
+  /** Close a whole tab: both panes when it is split */
+  async function closeTab(sessionId: number) {
+    const rootId = rootOf(sessionId)
+    const childId = tabs.value.find((t) => t.id === rootId)?.split?.childId
+    if (childId !== undefined) await disconnect(childId)
+    await disconnect(rootId)
+  }
+
+  /**
+   * A fresh session for a pane whose session ended (Reconnect, a reset host
+   * key). In a split it comes back as the tab's second pane; on its own it
+   * is a plain connect.
+   */
+  async function reconnectPane(sessionId: number) {
+    const tab = tabs.value.find((t) => t.id === sessionId)
+    if (!tab || tab.hostId === null) return
+    const hostId = tab.hostId
+    const root = tab.parentId !== undefined ? tabs.value.find((t) => t.id === tab.parentId) : tab
+    const split = root?.split
+    if (!root || !split) return connect(hostId)
+    // The pane that stays is the new tab's first pane
+    const keep = tab.id === root.id ? split.childId : root.id
+    const { dir, ratio } = split
+    await disconnect(sessionId)
+    await connect(hostId, undefined, { split: { parentId: keep, dir, ratio } })
+  }
+
+  async function connect(
+    hostId: number,
+    pendingPassword?: string,
+    opts?: { silent?: boolean; split?: SplitTarget },
+  ) {
     const hosts = useHostsStore()
     const host = hosts.hostById(hostId)
     if (!host) return
     hosts.touchHost(hostId)
 
-    // Reconnect: reuse tab for same host if its session ended
-    const existing = tabs.value.find(
-      (t) => t.hostId === hostId && (t.status === 'closed' || t.status === 'error'),
-    )
-    if (existing) {
-      await disconnect(existing.id)
-      tabs.value = tabs.value.filter((t) => t.id !== existing.id)
-    }
+    const pending = pendingPassword !== undefined ? pendingSplit.get(hostId) : undefined
+    const split = opts?.split ?? (pending && Date.now() - pending.at < PENDING_SPLIT_MS ? pending.target : undefined)
+    pendingSplit.delete(hostId)
 
-    const dup = tabs.value.find((t) => t.hostId === hostId)
-    if (dup) {
-      activeId.value = dup.id
-      // Connect / double-click / Enter on a host that already has a tab used to
-      // do nothing visible; take the user to that tab (silent callers — SFTP,
-      // Forwards — stay where they are)
-      if (!opts?.silent) useUiStore().openView(sessionView(dup.id))
-      return
+    if (!split) {
+      // Reconnect: reuse tab for same host if its session ended
+      const existing = tabs.value.find(
+        (t) => t.hostId === hostId && !t.parentId && !t.split && (t.status === 'closed' || t.status === 'error'),
+      )
+      if (existing) {
+        await disconnect(existing.id)
+        tabs.value = tabs.value.filter((t) => t.id !== existing.id)
+      }
+
+      const dup = tabs.value.find((t) => t.hostId === hostId)
+      if (dup) {
+        activeId.value = dup.id
+        // Connect / double-click / Enter on a host that already has a tab used to
+        // do nothing visible; take the user to that tab (silent callers — SFTP,
+        // Forwards — stay where they are)
+        if (!opts?.silent) useUiStore().openView(sessionView(rootOf(dup.id)))
+        return
+      }
     }
 
     try {
@@ -180,11 +284,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         status: 'connecting',
         sftpOpen: false,
       }
-      tabs.value.push(tab)
-      replayBuffered(tab)
-      activeId.value = sessionId
-      // Silent connections (e.g. started from SFTP) don't hijack the view
-      if (!opts?.silent) useUiStore().openView(sessionView(sessionId))
+      attachTab(tab, split, !!opts?.silent)
     } catch (e) {
       const msg = errorText(e)
       const silent = !!opts?.silent
@@ -192,8 +292,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       const promptName = () => msg.slice(msg.indexOf(':') + 1) || host.label
       // Backend asks for credentials at connect time
       if (msg.startsWith('password_required:')) {
+        if (split) pendingSplit.set(hostId, { target: split, at: Date.now() })
         useDialogsStore().openPasswordPrompt(hostId, promptName(), 'password', silent)
       } else if (msg.startsWith('passphrase_required:')) {
+        if (split) pendingSplit.set(hostId, { target: split, at: Date.now() })
         useDialogsStore().openPasswordPrompt(hostId, promptName(), 'passphrase', silent)
       } else {
         connectFailures.value[hostId] = (connectFailures.value[hostId] ?? 0) + 1
@@ -208,6 +310,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   async function spawnLocalTab(
     meta: { kind: SessionKind; label: string; address: string },
     command?: string,
+    split?: SplitTarget,
   ) {
     try {
       const sessionId = await api.spawnLocal(command)
@@ -220,10 +323,7 @@ export const useSessionsStore = defineStore('sessions', () => {
         status: 'connecting',
         sftpOpen: false,
       }
-      tabs.value.push(tab)
-      replayBuffered(tab)
-      activeId.value = sessionId
-      useUiStore().openView(sessionView(sessionId))
+      attachTab(tab, split, false)
     } catch (e) {
       useUiStore().toast(
         'error',
@@ -287,16 +387,39 @@ export const useSessionsStore = defineStore('sessions', () => {
     sinks.delete(sessionId)
     dropBuffers(sessionId)
     transfers.value = transfers.value.filter((t) => t.sessionId !== sessionId)
+    const gone = tabs.value.find((t) => t.id === sessionId)
+    const ui = useUiStore()
+    // Unhook a split: the other pane stays, as a tab of its own if need be
+    let survivor: number | null = null
+    if (gone?.parentId !== undefined) {
+      const parent = tabs.value.find((t) => t.id === gone.parentId)
+      if (parent) parent.split = undefined
+      survivor = gone.parentId
+    } else if (gone?.split) {
+      const child = tabs.value.find((t) => t.id === gone.split!.childId)
+      if (child) child.parentId = undefined
+      survivor = gone.split.childId
+    }
+    const wasOnScreen = ui.activeView === sessionView(rootOf(sessionId))
     tabs.value = tabs.value.filter((t) => t.id !== sessionId)
+    if (survivor !== null && tabs.value.some((t) => t.id === survivor)) {
+      if (activeId.value === sessionId) activeId.value = survivor
+      if (wasOnScreen) {
+        ui.openView(sessionView(survivor))
+        // The pane that stays takes the keyboard back
+        if (activeId.value === survivor) ui.requestTerminalFocus(survivor)
+      }
+      return
+    }
     if (activeId.value === sessionId) {
-      activeId.value = tabs.value.length ? tabs.value[tabs.value.length - 1].id : null
+      const last = tabs.value.filter((t) => !t.parentId).pop()
+      activeId.value = last ? last.id : null
     }
     // If we were looking at this session's page, fall back to the last open
     // session or the hosts dashboard
-    const ui = useUiStore()
-    if (ui.activeView === sessionView(sessionId)) {
+    if (wasOnScreen) {
       ui.openView(
-        activeId.value !== null ? sessionView(activeId.value) : 'hosts',
+        activeId.value !== null ? sessionView(rootOf(activeId.value)) : 'hosts',
       )
     }
   }
@@ -415,7 +538,7 @@ export const useSessionsStore = defineStore('sessions', () => {
           retryAt: retryInMs > 0 ? Date.now() + retryInMs : 0,
         }
         // The banner says it on the visible tab; elsewhere a toast does
-        if (prev === 'connected' && useUiStore().activeView !== sessionView(sessionId)) {
+        if (prev === 'connected' && !paneVisible(sessionId)) {
           useUiStore().toast('info', `${tab.label}: connection lost — reconnecting…`, { duration: 3000 })
         }
         return
@@ -482,6 +605,12 @@ export const useSessionsStore = defineStore('sessions', () => {
     attachSink,
     detachSink,
     observeInput,
+    rootOf,
+    paneVisible,
+    focusedPane,
+    splitPane,
+    closeTab,
+    reconnectPane,
     setTitle,
     setBusy,
     notifyActivity,

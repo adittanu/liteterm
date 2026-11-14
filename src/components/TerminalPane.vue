@@ -362,6 +362,24 @@ async function ctxPaste() {
   pasteText(text)
 }
 
+// ---- split panes (from the menu; shortcuts live in App.vue) ----
+const inSplit = computed(() => !!props.session.parentId || !!props.session.split)
+const splitKeys = computed(() => ({
+  right: comboText(comboFor('splitRight', ui.settings)),
+  down: comboText(comboFor('splitDown', ui.settings)),
+  close: comboText(comboFor('closeTab', ui.settings)),
+}))
+
+function ctxSplit(dir: 'right' | 'down') {
+  closeCtxMenu(false)
+  sessions.splitPane(props.session.id, dir)
+}
+
+function ctxClosePane() {
+  closeCtxMenu(false)
+  void sessions.disconnect(props.session.id)
+}
+
 function ctxSelectAll() {
   closeCtxMenu()
   term?.selectAll()
@@ -837,9 +855,11 @@ onMounted(() => {
   })
   resizeObserver.observe(container.value)
 
-  if (props.session.status === 'connected') {
+  if (props.session.status === 'connected' && hasKeyboard()) {
     term.focus()
   }
+  // In a split, clicking a pane (or tabbing into it) gives it the keyboard
+  term.textarea?.addEventListener('focus', onTermFocus)
 
   // Long occlusion/minimize can strand a debounced paint; repaint once the
   // window becomes visible again
@@ -891,15 +911,32 @@ function onVisibilityChange() {
   if (document.visibilityState === 'visible') recoverPaint()
 }
 
-// View switch lands here: repaint + focus
+// View switch lands here: repaint + focus. In a split both panes repaint;
+// only the one that had the keyboard takes it back.
 watch(
   () => ui.activeView,
-  (view) => {
-    if (view !== `session:${props.session.id}`) return
+  () => {
+    if (!sessions.paneVisible(props.session.id)) return
     closeCtxMenu(false)
     scheduleRecoverPaint()
-    term?.focus()
+    if (hasKeyboard()) term?.focus()
   },
+)
+
+/** This pane is on screen and is the one typing goes to */
+function hasKeyboard(): boolean {
+  const id = props.session.id
+  return sessions.paneVisible(id) && sessions.focusedPane(sessions.rootOf(id)) === id
+}
+
+function onTermFocus() {
+  if (sessions.activeId !== props.session.id) sessions.activeId = props.session.id
+}
+
+// A split pane appears or goes: both panes change size and redraw
+watch(
+  () => !!props.session.parentId || !!props.session.split,
+  () => scheduleRecoverPaint(),
 )
 
 // Reconnect: the backend redials on the same session, so this terminal and
@@ -931,7 +968,7 @@ watch(
       // A fresh PTY starts at 80×24; tell it the real size even when the
       // fit didn't change (reconnects keep this pane's dimensions)
       if (term) pushSize(term.cols, term.rows)
-      if (!findOpen.value) term?.focus()
+      if (!findOpen.value && hasKeyboard()) term?.focus()
     }
   },
 )
@@ -954,6 +991,7 @@ watch(
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  term?.textarea?.removeEventListener('focus', onTermFocus)
   container.value?.removeEventListener('paste', onPasteCapture, true)
   clearTimeout(quietTimer)
   clearTimeout(busyTimer)
@@ -1065,6 +1103,18 @@ onUnmounted(() => {
       <div class="ctx-sep" role="separator" aria-hidden="true"></div>
       <button class="ctx-item" role="menuitem" @click="ctxSelectAll">
         <span>Select All</span>
+      </button>
+      <div class="ctx-sep" role="separator" aria-hidden="true"></div>
+      <template v-if="!inSplit">
+        <button class="ctx-item" role="menuitem" @click="ctxSplit('right')">
+          <span>Split right</span><kbd v-if="splitKeys.right">{{ splitKeys.right }}</kbd>
+        </button>
+        <button class="ctx-item" role="menuitem" @click="ctxSplit('down')">
+          <span>Split down</span><kbd v-if="splitKeys.down">{{ splitKeys.down }}</kbd>
+        </button>
+      </template>
+      <button v-else class="ctx-item" role="menuitem" @click="ctxClosePane">
+        <span>Close pane</span><kbd v-if="splitKeys.close">{{ splitKeys.close }}</kbd>
       </button>
     </div>
   </div>

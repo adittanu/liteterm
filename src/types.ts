@@ -137,7 +137,13 @@ export interface SessionTab {
   title?: string
   /** A command typed at the prompt is still running (TerminalPane decides) */
   busy?: boolean
+  /** Second pane of another tab's split: not a tab of its own in the top bar */
+  parentId?: number
+  /** This tab shows a second pane beside (right) or below (down) its own */
+  split?: { childId: number; dir: SplitDir; ratio: number }
 }
+
+export type SplitDir = 'right' | 'down'
 
 export interface FileEntry {
   name: string

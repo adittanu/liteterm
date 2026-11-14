@@ -52,7 +52,7 @@ async function resetHostKey(t: SessionTab) {
   const { api } = await import('../services/api')
   try {
     await api.forgetHostKey(t.hostId)
-    await sessions.connect(t.hostId)
+    await sessions.reconnectPane(t.id)
   } catch {
     // reconnect attempt surfaces its own errors
   }
@@ -102,7 +102,7 @@ async function resetHostKey(t: SessionTab) {
           <button
             v-if="tab.hostId !== null"
             class="btn btn-secondary"
-            @click="sessions.connect(tab.hostId!)"
+            @click="sessions.reconnectPane(tab.id)"
           >
             Reconnect
           </button>

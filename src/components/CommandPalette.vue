@@ -3,6 +3,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Component 
 import {
   ArrowLeftRight,
   ClipboardPaste,
+  Columns2,
+  Rows2,
   Clock,
   Download,
   FolderTree,
@@ -161,7 +163,26 @@ const actions = computed<ActionDef[]>(() => [
   { key: 'import', label: 'Import hosts…', sub: '~/.ssh/config or Termius', icon: Download, always: false, run: () => (dialogs.showImport = true) },
   { key: 'note', label: 'Quick note', icon: StickyNote, shortcut: 'quickNote', always: false, run: () => (dialogs.showQuickNote = true) },
   { key: 'settings', label: 'Settings', icon: Settings, shortcut: 'openSettings', always: false, run: () => (dialogs.showSettings = true) },
+  ...(openSessionTab.value
+    ? [
+        { key: 'splitRight', label: 'Split pane right', sub: openSessionTab.value.label, icon: Columns2, shortcut: 'splitRight', always: false, run: () => splitOpenTab('right') },
+        { key: 'splitDown', label: 'Split pane down', sub: openSessionTab.value.label, icon: Rows2, shortcut: 'splitDown', always: false, run: () => splitOpenTab('down') },
+      ]
+    : []),
 ])
+
+// The session tab on screen behind the palette, if any
+const openSessionTab = computed(() => {
+  const view = ui.activeView
+  if (!view.startsWith('session:')) return null
+  const id = Number(view.slice(8))
+  return sessions.tabs.find((t) => t.id === id && !t.parentId && !t.split) ?? null
+})
+
+function splitOpenTab(dir: 'right' | 'down') {
+  const tab = openSessionTab.value
+  if (tab) sessions.splitPane(tab.id, dir)
+}
 
 const views: { id: ViewId; label: string; icon: Component }[] = [
   { id: 'hosts', label: 'Hosts', icon: MonitorCog },
