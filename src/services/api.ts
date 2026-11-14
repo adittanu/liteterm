@@ -21,6 +21,8 @@ import type {
   UpdateAsset,
   UpdateInfo,
   CloudStatus,
+  KeyDefaults,
+  GeneratedKey,
 } from '../types'
 
 export const api = {
@@ -47,6 +49,15 @@ export const api = {
   historyClear: (): Promise<void> => invoke('history_clear'),
   /** Reads the server's own shell history once per host; how many came in */
   historyImport: (sessionId: number): Promise<number> => invoke('history_import', { sessionId }),
+  keygenDefaults: (): Promise<KeyDefaults> => invoke('keygen_defaults'),
+  /** New Ed25519 key in ~/.ssh/<name> (+ .pub) */
+  keygen: (name: string, comment: string, passphrase: string | null): Promise<GeneratedKey> =>
+    invoke('keygen', { name, comment, passphrase }),
+  /** The authorized_keys line for a private key file */
+  publicKeyOf: (path: string): Promise<string> => invoke('public_key_of', { path }),
+  /** Adds the key to the server's ~/.ssh/authorized_keys; false = it was there already */
+  installPublicKey: (sessionId: number, publicKey: string): Promise<boolean> =>
+    invoke('install_public_key', { sessionId, publicKey }),
 
   // ---- known hosts / session logs ----
   listKnownHosts: (): Promise<KnownHostRow[]> => invoke('list_known_hosts'),

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { KeyRound, LockKeyhole, MoreHorizontal, Pencil, Plus, Trash2, IdCard, Fingerprint } from 'lucide-vue-next'
+import { KeyRound, LockKeyhole, MoreHorizontal, Pencil, Plus, Trash2, IdCard, Fingerprint, Copy, Upload } from 'lucide-vue-next'
 import { useCredentialsStore } from '../stores/credentials'
 import { useHostsStore } from '../stores/hosts'
 import { useDialogsStore } from '../stores/dialogs'
@@ -8,10 +8,14 @@ import { useUiStore } from '../stores/ui'
 import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
 import CredentialDialog from '../components/CredentialDialog.vue'
+import GenerateKeyDialog from '../components/GenerateKeyDialog.vue'
+import InstallKeyDialog from '../components/InstallKeyDialog.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
 import PvText from '../components/PvText.vue'
-import { matchesQuery, plural } from '../utils/pageHelpers'
+import { api } from '../services/api'
+import { copyText, matchesQuery, plural } from '../utils/pageHelpers'
+import type { KeySource } from '../utils/installKey'
 import { secretStore } from '../utils/platform'
 import type { Credential } from '../types'
 
@@ -69,14 +73,52 @@ function openEdit(cred: Credential) {
 }
 
 function openMenu(cred: Credential, e: MouseEvent) {
+  const keyItems: MenuItem[] =
+    cred.auth_method === 'key' && cred.key_path
+      ? [
+          { label: 'Copy public key', icon: Copy, action: () => void copyPublicKey(cred) },
+          { label: 'Install on a host…', icon: Upload, action: () => void installCredential(cred) },
+        ]
+      : []
   menu.value = {
     x: e.clientX,
     y: e.clientY,
     items: [
       { label: 'Edit', icon: Pencil, action: () => openEdit(cred) },
+      ...keyItems,
       { label: 'Delete', icon: Trash2, danger: true, action: () => void remove(cred) },
     ],
   }
+}
+
+// ---- keys: generate, copy the public half, install on a host ----
+
+const keygenOpen = ref(false)
+const installing = ref<{ source: KeySource; keyName: string } | null>(null)
+
+function openInstall(source: KeySource, keyName: string) {
+  keygenOpen.value = false
+  installing.value = { source, keyName }
+}
+
+async function publicKeyFor(cred: Credential): Promise<string | null> {
+  try {
+    return await api.publicKeyOf(cred.key_path!)
+  } catch (e) {
+    ui.toast('error', errorText(e))
+    return null
+  }
+}
+
+async function copyPublicKey(cred: Credential) {
+  const key = await publicKeyFor(cred)
+  if (key) await copyText(key, 'Public key copied')
+}
+
+async function installCredential(cred: Credential) {
+  const key = await publicKeyFor(cred)
+  if (!key) return
+  openInstall({ publicKey: key, keyPath: cred.key_path!, credentialId: cred.id }, keyFile(cred) || cred.name)
 }
 
 async function remove(cred: Credential) {
@@ -110,6 +152,10 @@ async function remove(cred: Credential) {
         <p class="page-sub">Save a login once, reuse it on any host. Secrets stay in the {{ secretStore }}.</p>
       </div>
       <div class="page-actions">
+        <button class="btn btn-secondary" @click="keygenOpen = true">
+          <KeyRound :size="14" :stroke-width="1.75" aria-hidden="true" />
+          Generate key
+        </button>
         <button class="btn btn-primary" @click="openNew">
           <Plus :size="14" :stroke-width="2" aria-hidden="true" />
           New credential
@@ -187,6 +233,8 @@ async function remove(cred: Credential) {
     </div>
 
     <CredentialDialog v-if="editorOpen" :credential="editing" @close="editorOpen = false" />
+    <GenerateKeyDialog v-if="keygenOpen" @close="keygenOpen = false" @install="openInstall" />
+    <InstallKeyDialog v-if="installing" :source="installing.source" :key-name="installing.keyName" @close="installing = null" />
     <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" :items="menu.items" @close="menu = null" />
   </div>
 </template>

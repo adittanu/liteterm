@@ -69,6 +69,18 @@ export interface CredentialInput {
   key_passphrase?: string | null
 }
 
+export interface KeyDefaults {
+  name: string // a file name in ~/.ssh not taken yet
+  comment: string // user@computer
+  dir: string // ~/.ssh, spelled out
+}
+
+export interface GeneratedKey {
+  path: string
+  publicKey: string // the authorized_keys line
+  fingerprint: string // SHA256:…
+}
+
 export interface Snippet {
   id: number
   name: string

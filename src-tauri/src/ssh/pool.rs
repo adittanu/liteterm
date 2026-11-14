@@ -1293,6 +1293,39 @@ pub async fn sftp_read_tail(session: &SshSession, path: &str, max: u64) -> Optio
     Some((buf, cut))
 }
 
+/// Create a folder only the login user can enter (0700) unless it exists.
+/// For ~/.ssh when installing a key.
+pub async fn sftp_ensure_private_dir(session: &SshSession, path: &str) -> Result<(), String> {
+    use russh_sftp::protocol::FileAttributes;
+
+    let guard = session.sftp.lock().await;
+    let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
+    if sftp.try_exists(path).await.unwrap_or(false) {
+        return Ok(());
+    }
+    sftp.create_dir(path).await.map_err(|e| format!("Could not create ~/{path}: {e}"))?;
+    // sshd's StrictModes refuses keys in a folder others can write to
+    let attrs = FileAttributes { permissions: Some(0o700), ..FileAttributes::empty() };
+    let _ = sftp.set_metadata(path, attrs).await;
+    Ok(())
+}
+
+/// Append to a file, creating it readable by the login user only (0600)
+pub async fn sftp_append_private(session: &SshSession, path: &str, bytes: &[u8]) -> Result<(), String> {
+    use russh_sftp::protocol::{FileAttributes, OpenFlags};
+    use tokio::io::AsyncWriteExt;
+
+    let guard = session.sftp.lock().await;
+    let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
+    let attrs = FileAttributes { permissions: Some(0o600), ..FileAttributes::empty() };
+    let mut file = sftp
+        .open_with_flags_and_attributes(path, OpenFlags::CREATE | OpenFlags::APPEND | OpenFlags::WRITE, attrs)
+        .await
+        .map_err(|e| format!("Could not open ~/{path}: {e}"))?;
+    file.write_all(bytes).await.map_err(|e| format!("Write failed: {e}"))?;
+    file.shutdown().await.map_err(|e| format!("Write failed: {e}"))
+}
+
 /// Write `bytes` to a new file only the login user can read (0600). Refuses
 /// to replace an existing file. For screenshots pasted into the terminal.
 pub async fn sftp_put_private(session: &SshSession, path: &str, bytes: &[u8]) -> Result<(), String> {
