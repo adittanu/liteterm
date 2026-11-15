@@ -22,7 +22,7 @@ const faq = [
   },
   {
     q: 'How is LiteTerm different from Termius?',
-    a: 'Both are SSH clients with SFTP, port forwarding, snippets and jump hosts. LiteTerm is free and open source, syncs between your computers without a subscription, keeps passwords in your OS keychain and adds notes you can run from. Termius has phone and tablet apps, Mosh, Telnet, serial, agent forwarding and team vaults; syncing needs its Pro plan. The comparison table above lists the details.',
+    a: 'Both are SSH clients with SFTP, port forwarding, snippets and jump hosts. LiteTerm is free and open source, syncs between your computers without a subscription, keeps passwords in your OS keychain and adds notes you can run from. Termius has phone and tablet apps, Mosh, Telnet, serial and team vaults; syncing needs its Pro plan. The comparison table above lists the details.',
   },
   {
     q: 'Can I bring my hosts from another app?',
@@ -34,7 +34,7 @@ const faq = [
   },
   {
     q: 'Does it work with 1Password or an SSH agent?',
-    a: 'Yes. Choose Agent as the sign-in method. LiteTerm reads keys from the OpenSSH agent (the Windows "OpenSSH Authentication Agent" service, or the SSH_AUTH_SOCK socket on macOS and Linux), which 1Password, Bitwarden and KeePassXC can also serve.',
+    a: 'Yes. Choose Agent as the sign-in method. LiteTerm reads keys from the OpenSSH agent (the Windows "OpenSSH Authentication Agent" service, or the SSH_AUTH_SOCK socket on macOS and Linux), which 1Password, Bitwarden and KeePassXC can also serve. Turn on Forward the SSH agent for a host, and ssh or git on that server can sign with the same keys.',
   },
   {
     q: 'How do updates work?',

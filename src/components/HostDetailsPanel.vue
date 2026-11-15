@@ -36,6 +36,7 @@ const form = reactive({
   group_id: props.host.group_id,
   jump_host_id: props.host.jump_host_id ?? null,
   startup_command: props.host.startup_command ?? '',
+  agent_forwarding: props.host.agent_forwarding,
   credential_id: props.host.credential_id,
   // inline auth (used when credential_id is null)
   username: props.host.username,
@@ -152,6 +153,7 @@ function snapshot(h: Host) {
     group_id: h.group_id,
     jump_host_id: h.jump_host_id ?? null,
     startup_command: h.startup_command ?? '',
+    agent_forwarding: h.agent_forwarding,
     credential_id: h.credential_id,
     username: h.username,
     auth_method: h.auth_method,
@@ -211,6 +213,7 @@ async function saveFieldUnsafe() {
     form.group_id === props.host.group_id &&
     form.jump_host_id === (props.host.jump_host_id ?? null) &&
     form.startup_command.trim() === (props.host.startup_command ?? '') &&
+    form.agent_forwarding === props.host.agent_forwarding &&
     form.credential_id === props.host.credential_id &&
     (form.credential_id !== null ||
       (form.username === props.host.username &&
@@ -234,6 +237,7 @@ function buildInput() {
     group_id: form.group_id,
     jump_host_id: form.jump_host_id,
     startup_command: form.startup_command.trim() || null,
+    agent_forwarding: form.agent_forwarding,
     label: form.label.trim() || props.host.label,
     address: form.address.trim() || props.host.address,
     port: parsePort(),
@@ -329,6 +333,16 @@ function connect() {
           <label class="field-label" for="hp-startup">Startup command</label>
           <input id="hp-startup" v-model="form.startup_command" class="field-input mono" type="text" placeholder="cd /var/www && tmux new -A -s main" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
           <span class="field-hint">Typed into the shell after every login, reconnects too.</span>
+        </div>
+        <div class="field">
+          <label class="check">
+            <input v-model="form.agent_forwarding" type="checkbox" @change="saveField" />
+            Forward the SSH agent
+          </label>
+          <span class="field-hint">
+            ssh and git on this server can use your agent's keys. Root there can too, while
+            you're connected. Applies from the next connection.
+          </span>
         </div>
         <div class="field">
           <label class="field-label" for="hp-cred">Credentials</label>

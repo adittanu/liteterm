@@ -44,6 +44,7 @@ const form = reactive({
   group_id: null as number | null,
   jump_host_id: null as number | null,
   startup_command: '',
+  agent_forwarding: false,
   // inline (legacy / no credential)
   username: '',
   auth_method: 'password' as AuthMethod,
@@ -128,6 +129,7 @@ watch(open, (o) => {
     form.group_id = host.group_id
     form.jump_host_id = host.jump_host_id ?? null
     form.startup_command = host.startup_command ?? ''
+    form.agent_forwarding = host.agent_forwarding
     form.username = host.username
     form.auth_method = host.auth_method
     form.password = ''
@@ -149,6 +151,7 @@ watch(open, (o) => {
     form.group_id = dialogs.hostDialog.groupId
     form.jump_host_id = prefill?.jumpHostId ?? null
     form.startup_command = ''
+    form.agent_forwarding = false
     form.username = prefill?.username ?? ''
     form.auth_method = prefill?.keyPath ? 'key' : 'password'
     form.password = ''
@@ -196,6 +199,7 @@ async function save() {
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
         startup_command: form.startup_command.trim() || null,
+        agent_forwarding: form.agent_forwarding,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -209,6 +213,7 @@ async function save() {
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
         startup_command: form.startup_command.trim() || null,
+        agent_forwarding: form.agent_forwarding,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -230,6 +235,7 @@ async function save() {
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
         startup_command: form.startup_command.trim() || null,
+        agent_forwarding: form.agent_forwarding,
         label: form.label.trim(),
         address: form.address.trim(),
         port: Number(form.port),
@@ -357,6 +363,18 @@ async function save() {
         <span class="field-hint">
           Typed into the shell after every login, reconnects too. With tmux, work keeps
           running while the connection is down.
+        </span>
+      </div>
+
+      <div class="field">
+        <label class="check">
+          <input v-model="form.agent_forwarding" type="checkbox" />
+          Forward the SSH agent
+        </label>
+        <span class="field-hint">
+          Lets ssh and git on this server sign in with the keys in your SSH agent, without
+          copying a key there. Anyone with root on the server can use your keys while
+          you're connected, so turn it on only for servers you trust.
         </span>
       </div>
 

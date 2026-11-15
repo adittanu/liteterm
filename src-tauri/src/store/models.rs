@@ -22,6 +22,8 @@ pub struct Host {
     pub jump_host_id: Option<i64>,
     /// Typed into the shell after every login, reconnects included
     pub startup_command: Option<String>,
+    /// Let programs on this server use this computer's SSH agent (ssh -A)
+    pub agent_forwarding: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +45,10 @@ pub struct HostInput {
     pub jump_host_id: Option<i64>,
     #[serde(default)]
     pub startup_command: Option<String>,
+    /// None leaves it as it is (off for a new host), so a caller that
+    /// doesn't know the field can't switch it off by saving
+    #[serde(default)]
+    pub agent_forwarding: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -162,6 +162,7 @@ fn apply_parsed_hosts(
             create_credential: None,
             jump_host_id: None,
             startup_command: h.startup_command.clone(),
+            agent_forwarding: None,
         };
         let host = db::upsert_host(conn, &input).map_err(|e| e.to_string())?;
         host_ids.push(host.id);

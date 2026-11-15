@@ -403,6 +403,21 @@ pub struct ClientHandler {
     /// Signalled when the handshake starts waiting for the user to verify a
     /// host key, so the dial's deadline can move out to a human's pace
     pub prompting: Arc<tokio::sync::Notify>,
+    /// This hop asked to forward the agent (the target hop of a host with
+    /// agent forwarding on); any other refuses agent channels
+    pub agent_forward: bool,
+    /// Open agent channels: where the server's bytes for each go
+    pub agent_channels: HashMap<russh::ChannelId, mpsc::UnboundedSender<Vec<u8>>>,
+    /// Cancelled when this handler is dropped, which happens when its
+    /// connection ends. Agent channels stop then, before a reconnect could
+    /// reuse their channel numbers on the new connection.
+    pub alive: CancellationToken,
+}
+
+impl Drop for ClientHandler {
+    fn drop(&mut self) {
+        self.alive.cancel();
+    }
 }
 
 #[async_trait::async_trait]
@@ -551,6 +566,160 @@ impl russh::client::Handler for ClientHandler {
             }
         });
         Ok(())
+    }
+
+    /// A program on the server (ssh, git) wants to use this computer's SSH
+    /// agent. Only honoured on a connection that asked for agent forwarding:
+    /// a server must not reach the agent just by opening the channel.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::ChannelId,
+        session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        if !self.agent_forward {
+            session.close(channel);
+            return Ok(());
+        }
+        // A local pipe or socket: connecting is immediate, so it is done
+        // here, and a missing agent closes the channel at once instead of
+        // leaving the program on the server waiting for a reply
+        match open_agent_stream().await {
+            Ok(agent) => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                self.agent_channels.insert(channel, tx);
+                tokio::spawn(pump_agent(self.state.clone(), self.session_id, channel, agent, rx, self.alive.clone()));
+            }
+            Err(e) => {
+                crate::applog::write_throttled("agent forward", &format!("agent forwarding: {e}"));
+                session.close(channel);
+            }
+        }
+        Ok(())
+    }
+
+    /// Bytes on a channel the server opened. Only agent channels are ours to
+    /// route; the rest (the shell, SFTP) have their own Channel objects.
+    async fn data(
+        &mut self,
+        channel: russh::ChannelId,
+        data: &[u8],
+        session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(tx) = self.agent_channels.get(&channel) {
+            if tx.send(data.to_vec()).is_err() {
+                // The local agent went away
+                self.agent_channels.remove(&channel);
+                session.close(channel);
+            }
+        }
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: russh::ChannelId,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        self.agent_channels.remove(&channel);
+        Ok(())
+    }
+
+    async fn channel_close(
+        &mut self,
+        channel: russh::ChannelId,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        self.agent_channels.remove(&channel);
+        Ok(())
+    }
+}
+
+type AgentStream = Box<dyn AgentIo>;
+trait AgentIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> AgentIo for T {}
+
+/// The Windows agent pipe: SSH_AUTH_SOCK when it names a pipe (some agent
+/// apps set it), otherwise the Windows OpenSSH agent's well-known pipe,
+/// which 1Password / Bitwarden / KeePassXC can also serve
+#[cfg(windows)]
+fn windows_agent_pipe() -> String {
+    std::env::var("SSH_AUTH_SOCK")
+        .ok()
+        .filter(|p| p.starts_with(r"\\.\pipe\") || p.starts_with("//./pipe/"))
+        .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".to_string())
+}
+
+/// A raw connection to this computer's SSH agent, for a forwarded channel
+async fn open_agent_stream() -> Result<AgentStream, String> {
+    #[cfg(windows)]
+    {
+        let path = windows_agent_pipe();
+        let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&path)
+            .map_err(|e| format!("no SSH agent at {path}: {e}"))?;
+        Ok(Box::new(pipe))
+    }
+    #[cfg(unix)]
+    {
+        let path = std::env::var_os("SSH_AUTH_SOCK").ok_or("SSH_AUTH_SOCK is not set")?;
+        let sock = tokio::net::UnixStream::connect(&path)
+            .await
+            .map_err(|e| format!("no SSH agent at {}: {e}", std::path::Path::new(&path).display()))?;
+        Ok(Box::new(sock))
+    }
+}
+
+/// Carry one forwarded agent channel: what the server sends goes to the
+/// agent, and the agent's replies go back on the same channel
+async fn pump_agent(
+    state: Arc<AppState>,
+    session_id: u32,
+    channel: russh::ChannelId,
+    agent: AgentStream,
+    mut from_server: mpsc::UnboundedReceiver<Vec<u8>>,
+    alive: CancellationToken,
+) {
+    use tokio::io::AsyncReadExt;
+
+    let Some(session) = state.sessions.lock().unwrap().get(&session_id).cloned() else { return };
+    let (mut agent_rd, mut agent_wr) = tokio::io::split(agent);
+    let to_agent = async {
+        while let Some(chunk) = from_server.recv().await {
+            if agent_wr.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+    };
+    let to_server = async {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            let n = match agent_rd.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            // The shell stores the handle right after asking for it; a
+            // .bashrc that uses the agent may get here first
+            let mut sent = false;
+            for _ in 0..50 {
+                if alive.is_cancelled() {
+                    break;
+                }
+                if let Some(handle) = session.handle.read().await.as_ref() {
+                    sent = handle.data(channel, russh::CryptoVec::from_slice(&buf[..n])).await.is_ok();
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if !sent {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = to_agent => {}
+        _ = to_server => {}
+        _ = alive.cancelled() => {}
+        _ = session.closed.cancelled() => {}
     }
 }
 
@@ -834,13 +1003,7 @@ async fn connect_agent() -> Result<
     russh::keys::agent::client::AgentClient<tokio::net::windows::named_pipe::NamedPipeClient>,
     String,
 > {
-    // SSH_AUTH_SOCK wins when it names a pipe (some agent apps set it);
-    // otherwise the Windows OpenSSH agent's well-known pipe, which
-    // 1Password / Bitwarden / KeePassXC can also serve
-    let path = std::env::var("SSH_AUTH_SOCK")
-        .ok()
-        .filter(|p| p.starts_with(r"\\.\pipe\") || p.starts_with("//./pipe/"))
-        .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".to_string());
+    let path = windows_agent_pipe();
     let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
         .open(&path)
         .map_err(|e| {
@@ -891,6 +1054,7 @@ async fn open_hop(
     hop: &ConnParams,
     via: Option<&russh::client::Handle<ClientHandler>>,
     config: Arc<russh::client::Config>,
+    agent_forward: bool,
 ) -> Result<russh::client::Handle<ClientHandler>, ConnectError> {
     let host_tag = format!("{}:{}", hop.address, hop.port);
     let known_keys = Connection::open(&state.db_path)
@@ -906,6 +1070,9 @@ async fn open_hop(
         key_mismatch: session.key_mismatch.clone(),
         state: state.clone(),
         prompting: prompting.clone(),
+        agent_forward,
+        agent_channels: HashMap::new(),
+        alive: CancellationToken::new(),
     };
 
     let dial = async {
@@ -966,6 +1133,7 @@ async fn open_chain(
     session: &Arc<SshSession>,
     params: &ConnParams,
     config: Arc<russh::client::Config>,
+    agent_forward: bool,
 ) -> Result<(russh::client::Handle<ClientHandler>, Vec<russh::client::Handle<ClientHandler>>), ConnectError> {
     let mut hops: Vec<&ConnParams> = Vec::new();
     let mut cur = Some(params);
@@ -978,7 +1146,8 @@ async fn open_chain(
     let mut bastions: Vec<russh::client::Handle<ClientHandler>> = Vec::new();
     let last = hops.len() - 1;
     for (i, hop) in hops.iter().enumerate() {
-        match open_hop(state, session, hop, bastions.last(), config.clone()).await {
+        // Only the target hop forwards the agent: the bastions just carry it
+        match open_hop(state, session, hop, bastions.last(), config.clone(), agent_forward && i == last).await {
             Ok(handle) if i == last => return Ok((handle, bastions)),
             Ok(handle) => bastions.push(handle),
             Err(mut e) => {
@@ -1013,8 +1182,15 @@ async fn connect_and_stream(
         ..Default::default()
     });
 
-    let (handle, bastions) = open_chain(state, session, params, config).await?;
-    let result = stream_session(state, session, params, host_tag, handle).await;
+    // Read on every attempt, so a reconnect follows an edit made meanwhile
+    let agent_forward = session.host_id.is_some_and(|id| {
+        Connection::open(&state.db_path)
+            .ok()
+            .and_then(|conn| db::host_agent_forwarding(&conn, id).ok())
+            .unwrap_or(false)
+    });
+    let (handle, bastions) = open_chain(state, session, params, config, agent_forward).await?;
+    let result = stream_session(state, session, params, host_tag, handle, agent_forward).await;
     close_handles(bastions).await;
     result
 }
@@ -1025,6 +1201,7 @@ async fn stream_session(
     params: &ConnParams,
     host_tag: &str,
     handle: russh::client::Handle<ClientHandler>,
+    agent_forward: bool,
 ) -> Result<StreamEnd, ConnectError> {
     // ---- detect the server OS on a quiet exec channel ----
     if let Some(host_id) = session.host_id {
@@ -1048,6 +1225,11 @@ async fn stream_session(
         .map_err(|e| ConnectError::transient(format!("Could not open channel: {e}")))?;
 
     let mut channel = channel;
+    if agent_forward {
+        // Before the shell starts, so the server sets SSH_AUTH_SOCK in it.
+        // No reply is awaited: a server that refuses just leaves it unset.
+        let _ = channel.agent_forward(false).await;
+    }
     channel
         .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
         .await

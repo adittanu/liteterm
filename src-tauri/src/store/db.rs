@@ -137,6 +137,8 @@ pub(super) fn migrate_v2(conn: &Connection) -> Result<(), rusqlite::Error> {
     // hosts.startup_command — typed into the shell after every login
     // (cd somewhere, tmux attach), added in v1.11
     let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN startup_command TEXT");
+    // hosts.agent_forwarding — ssh -A for this host, off unless chosen (v1.12)
+    let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN agent_forwarding INTEGER NOT NULL DEFAULT 0");
     // Commands typed at a prompt, for suggestions while typing (v1.11). Per
     // host and this machine only: they hold tokens and passwords in their
     // arguments, so there is no sync trigger on these tables.
@@ -210,6 +212,7 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
         last_used_at: row.get(13)?,
         jump_host_id: row.get(14)?,
         startup_command: row.get(15)?,
+        agent_forwarding: row.get::<_, i64>(16)? != 0,
     })
 }
 
@@ -220,7 +223,7 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
 const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, \
     COALESCE(c.username, h.username), COALESCE(c.auth_method, h.auth_method), \
     h.password_saved, CASE WHEN c.id IS NULL THEN h.key_path ELSE c.key_path END, \
-    h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id, h.startup_command";
+    h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id, h.startup_command, h.agent_forwarding";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -284,7 +287,8 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
             conn.execute(
                 "UPDATE hosts SET group_id=?2, label=?3, address=?4, port=?5, username=?6, \
                  auth_method=?7, password_saved=?8, key_path=?9, credential_id=?10, \
-                 jump_host_id=?11, startup_command=?12, updated_at=datetime('now') WHERE id=?1",
+                 jump_host_id=?11, startup_command=?12, agent_forwarding=COALESCE(?13, agent_forwarding), \
+                 updated_at=datetime('now') WHERE id=?1",
                 params![
                     id,
                     input.group_id,
@@ -298,14 +302,15 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     credential_id,
                     jump_host_id,
                     startup_command,
+                    input.agent_forwarding,
                 ],
             )?;
             id
         }
         None => {
             conn.execute(
-                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id, startup_command) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id, startup_command, agent_forwarding) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     input.group_id,
                     input.label,
@@ -318,6 +323,7 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     credential_id,
                     jump_host_id,
                     startup_command,
+                    input.agent_forwarding.unwrap_or(false),
                 ],
             )?;
             conn.last_insert_rowid()
@@ -436,6 +442,14 @@ pub fn host_startup_command(conn: &Connection, id: i64) -> Result<Option<String>
     conn.query_row("SELECT startup_command FROM hosts WHERE id = ?1", [id], |r| r.get(0))
         .optional()
         .map(Option::flatten)
+}
+
+/// Whether this host forwards the SSH agent. Read on every login, like the
+/// startup command.
+pub fn host_agent_forwarding(conn: &Connection, id: i64) -> Result<bool, rusqlite::Error> {
+    conn.query_row("SELECT agent_forwarding FROM hosts WHERE id = ?1", [id], |r| r.get::<_, i64>(0))
+        .optional()
+        .map(|v| v.unwrap_or(0) != 0)
 }
 
 /// Set (or clear) the jump host — used by the ssh-config importer's

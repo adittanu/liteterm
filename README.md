@@ -106,6 +106,7 @@
 - **Auto-reconnect** after a Wi-Fi switch or a sleeping laptop, in the same tab, scrollback kept.
 - **SFTP** in two panes: this computer and a host, or two hosts. Files or whole folders, with progress and cancel.
 - **Port forwarding**: local (`-L`), remote (`-R`) and a SOCKS proxy (`-D`), started from a list or with their host.
+- **Agent forwarding** (`-A`) per host, off until you turn it on: `git pull` on the server signs with the keys in your agent.
 - **Snippets**: run in one click, or Shift+click to insert. `{{name}}` placeholders are asked for first.
 - **Local terminal** next to your sessions.
 
@@ -160,7 +161,7 @@ Better to read this before you install than to find out after.
 |:--|:--|
 | **Interrupted transfers start over** | SFTP does not resume a file or folder transfer that broke off. |
 | **Mac updates need the Applications folder** | Started from the disk image, or straight from Downloads, LiteTerm can't replace itself and opens the release page instead. |
-| **No agent forwarding, no Pageant** | The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work. |
+| **No Pageant** | PuTTY's agent isn't read. The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work, for signing in and for agent forwarding. |
 | **Jump hosts need a saved login** | A password with Remember, a key or an agent. |
 | **Sync carries key paths, not key files** | A synced host remembers where its private key is: copy the key to the same place, or use an SSH agent. Images in notes don't sync yet. |
 | **Older versions see every forward as local** | LiteTerm 1.11 and earlier don't know remote and SOCKS forwards. Synced to such a computer, those run there as local forwards. Update every computer that syncs. |

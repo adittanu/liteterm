@@ -96,6 +96,11 @@ pub struct HostData {
     /// before; an older LiteTerm ignores the field
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_command: Option<String>,
+    /// Left out when off, so most hosts push the same payload as before. An
+    /// older LiteTerm drops it, so an edit made there turns it off again:
+    /// the safe direction for a setting that hands the server your agent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_forwarding: bool,
     #[serde(default)]
     pub sort: i64,
     #[serde(default)]
@@ -168,6 +173,10 @@ pub struct PortForwardData {
     /// a local one; nothing on this side can change that.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forward_kind: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -300,7 +309,8 @@ fn read_payload(
             let row = conn
                 .query_row(
                     "SELECT h.id, h.label, h.address, h.port, h.username, h.auth_method, h.key_path, \
-                     g.sync_id, c.sync_id, j.sync_id, h.sort, h.password_saved, h.modified_at, h.startup_command \
+                     g.sync_id, c.sync_id, j.sync_id, h.sort, h.password_saved, h.modified_at, h.startup_command, \
+                     h.agent_forwarding \
                      FROM hosts h \
                      LEFT JOIN groups g ON g.id = h.group_id \
                      LEFT JOIN credentials c ON c.id = h.credential_id \
@@ -319,6 +329,7 @@ fn read_payload(
                             credential: r.get(8)?,
                             jump_host: r.get(9)?,
                             startup_command: r.get(13)?,
+                            agent_forwarding: r.get::<_, i64>(14)? != 0,
                             sort: r.get(10)?,
                             password_saved: r.get::<_, i64>(11)? != 0,
                             password: None,
@@ -620,6 +631,7 @@ fn apply_upsert(
                     ("credential_id", &credential_id),
                     ("jump_host_id", &jump_id),
                     ("startup_command", &d.startup_command),
+                    ("agent_forwarding", &d.agent_forwarding),
                     ("sort", &d.sort),
                     ("password_saved", &d.password_saved),
                 ],
@@ -1081,6 +1093,35 @@ mod tests {
             .unwrap();
         tx.commit().unwrap();
         assert_eq!(b.val::<String>("SELECT name FROM port_forwards WHERE kind = 'dynamic'"), "proxy");
+    }
+
+    #[test]
+    fn agent_forwarding_syncs_and_is_off_when_the_payload_lacks_it() {
+        let (a, b, mut server) = (Device::new(), Device::new(), Server::default());
+        let host = a.add_host("app");
+        let first = queued(&a.conn, &a.secrets).unwrap();
+        let json = serde_json::to_string(&first[0].payload).unwrap();
+        assert!(!json.contains("agent_forwarding"), "off is left out: {json}");
+        a.sync_with(&mut server);
+
+        a.conn.execute("UPDATE hosts SET agent_forwarding = 1 WHERE id = ?1", [host]).unwrap();
+        assert_eq!(a.outbox().len(), 1, "turning it on queues the host");
+        a.sync_with(&mut server);
+        b.sync_with(&mut server);
+        assert_eq!(b.val::<i64>("SELECT agent_forwarding FROM hosts WHERE label = 'app'"), 1);
+
+        // An older LiteTerm edits the host: no field, so it goes back off
+        let sid: String = b.val("SELECT sync_id FROM hosts WHERE label = 'app'");
+        let Some((Payload::Host(mut d), _)) = read_payload(&b.conn, &b.secrets, "host", &sid).unwrap() else {
+            panic!("no host payload")
+        };
+        let mut old = serde_json::to_value(&d).unwrap();
+        old.as_object_mut().unwrap().remove("agent_forwarding");
+        d = serde_json::from_value(old).unwrap();
+        let tx = b.conn.unchecked_transaction().unwrap();
+        apply(&tx, vec![Incoming { sync_id: sid, payload: Some(Payload::Host(d)), modified_at: i64::MAX / 2 }]).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(b.val::<i64>("SELECT agent_forwarding FROM hosts WHERE label = 'app'"), 0);
     }
 
     #[test]

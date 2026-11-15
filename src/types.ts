@@ -26,6 +26,7 @@ export interface Host {
   last_used_at: number | null // ms since epoch, bumped on connect
   jump_host_id: number | null // saved host to hop through (ProxyJump)
   startup_command: string | null // typed into the shell after every login
+  agent_forwarding: boolean // ssh -A: the server may use this computer's agent
 }
 
 export interface HostInput {
@@ -47,6 +48,8 @@ export interface HostInput {
   jump_host_id: number | null
   // Required for the same reason: missing reads as "no startup command"
   startup_command: string | null
+  // Optional: left out, the backend keeps what the host has
+  agent_forwarding?: boolean
 }
 
 export interface Credential {
