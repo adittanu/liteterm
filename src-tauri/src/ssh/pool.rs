@@ -956,15 +956,73 @@ async fn authenticate(
             }
         }
         AuthSpec::Key { path, passphrase } => {
-            let key = russh::keys::load_secret_key(path, passphrase.as_deref())
-                .map_err(|e| ConnectError::fatal(format!("Could not load key: {e}")))?;
-            handle
-                .authenticate_publickey(&hop.username, Arc::new(key))
+            let key = Arc::new(
+                russh::keys::load_secret_key(path, passphrase.as_deref())
+                    .map_err(|e| ConnectError::fatal(format!("Could not load key: {e}")))?,
+            );
+            let cert = key_certificate(path);
+            if let KeyCert::Usable(cert) = &cert {
+                // Servers that trust a CA (step-ca, Vault, Teleport) want the
+                // certificate; one that doesn't still takes the plain key below
+                if handle
+                    .authenticate_openssh_cert(&hop.username, key.clone(), cert.clone())
+                    .await
+                    .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?
+                {
+                    return Ok(true);
+                }
+            }
+            let accepted = handle
+                .authenticate_publickey(&hop.username, key)
                 .await
-                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))
+                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?;
+            match cert {
+                KeyCert::Expired(file) if !accepted => Err(ConnectError::fatal(format!(
+                    "Authentication failed. The certificate {file} is outside its validity period: get a new one signed"
+                ))),
+                _ => Ok(accepted),
+            }
         }
         AuthSpec::Agent => authenticate_agent(handle, &hop.username).await,
     }
+}
+
+/// An OpenSSH certificate for a private key, found the way OpenSSH looks for
+/// one: `<key>-cert.pub` next to the key file
+enum KeyCert {
+    None,
+    Usable(ssh_key::Certificate),
+    /// Its file name: expired, or not valid yet
+    Expired(String),
+}
+
+fn key_certificate(key_path: &str) -> KeyCert {
+    let file = format!("{key_path}-cert.pub");
+    if !std::path::Path::new(&file).is_file() {
+        return KeyCert::None;
+    }
+    let cert = match russh::keys::load_openssh_certificate(&file) {
+        Ok(cert) => cert,
+        Err(e) => {
+            crate::applog::write(&format!("certificate {file} could not be read, using the plain key: {e}"));
+            return KeyCert::None;
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if cert_valid_at(cert.valid_after(), cert.valid_before(), now) {
+        KeyCert::Usable(cert)
+    } else {
+        let name = std::path::Path::new(&file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(file);
+        KeyCert::Expired(name)
+    }
+}
+
+/// OpenSSH validity window, in seconds since the epoch; both ends inclusive
+fn cert_valid_at(after: u64, before: u64, now: u64) -> bool {
+    after <= now && now <= before
 }
 
 /// Offer each identity the agent holds until the server accepts one. The
@@ -2935,6 +2993,48 @@ mod tests {
         assert!(pos(&Step::Dir(s(&["b", "deep"]))) < pos(&Step::File(s(&["b", "deep", "two.bin"]), 7)));
         assert!(plan.steps.contains(&Step::Dir(s(&["a"]))), "empty folders come along");
         assert!(plan.steps.contains(&Step::File(s(&["top.txt"]), 5)));
+    }
+
+    #[test]
+    fn a_certificate_next_to_the_key_is_found_and_dated() {
+        use ssh_key::{certificate, rand_core::OsRng, Algorithm, LineEnding, PrivateKey};
+
+        let dir = std::env::temp_dir().join(format!("liteterm-cert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("id_ed25519");
+        let key_path = key_path.to_str().unwrap();
+        let ca = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let user = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        std::fs::write(key_path, user.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+
+        assert!(matches!(key_certificate(key_path), KeyCert::None), "no file, no certificate");
+
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let sign = |after: u64, before: u64| {
+            let mut b = certificate::Builder::new_with_random_nonce(&mut OsRng, user.public_key().key_data().clone(), after, before)
+                .unwrap();
+            b.serial(1).unwrap();
+            b.key_id("test").unwrap();
+            b.cert_type(certificate::CertType::User).unwrap();
+            b.valid_principal("ops").unwrap();
+            b.sign(&ca).unwrap().to_openssh().unwrap()
+        };
+        let cert_path = format!("{key_path}-cert.pub");
+        std::fs::write(&cert_path, sign(now - 60, now + 3600)).unwrap();
+        assert!(matches!(key_certificate(key_path), KeyCert::Usable(_)));
+        // The private key still loads the way authenticate() loads it
+        assert!(russh::keys::load_secret_key(key_path, None).is_ok());
+
+        std::fs::write(&cert_path, sign(now - 7200, now - 3600)).unwrap();
+        assert!(matches!(key_certificate(key_path), KeyCert::Expired(name) if name == "id_ed25519-cert.pub"));
+
+        std::fs::write(&cert_path, "not a certificate").unwrap();
+        assert!(matches!(key_certificate(key_path), KeyCert::None), "an unreadable file falls back to the key");
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(cert_valid_at(10, 20, 10) && cert_valid_at(10, 20, 20));
+        assert!(!cert_valid_at(10, 20, 9) && !cert_valid_at(10, 20, 21));
     }
 
     #[test]

@@ -198,6 +198,7 @@ async function save() {
             <button type="button" class="btn btn-secondary" @click="browseKey">Browse…</button>
           </div>
           <span v-if="errors.key_path" class="field-error">{{ errors.key_path }}</span>
+          <span v-else class="field-hint">A certificate next to it (<span class="mono">id_ed25519-cert.pub</span>) is offered first.</span>
         </div>
         <div class="field">
           <label class="field-label" for="cf-keypass">Key passphrase</label>

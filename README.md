@@ -107,6 +107,7 @@
 - **SFTP** in two panes: this computer and a host, or two hosts. Files or whole folders, with progress and cancel.
 - **Port forwarding**: local (`-L`), remote (`-R`) and a SOCKS proxy (`-D`), started from a list or with their host.
 - **Agent forwarding** (`-A`) per host, off until you turn it on: `git pull` on the server signs with the keys in your agent.
+- **SSH certificates**: a `-cert.pub` next to the private key (as `ssh-keygen -s` writes it) is offered first, for servers that trust a CA.
 - **Snippets**: run in one click, or Shift+click to insert. `{{name}}` placeholders are asked for first.
 - **Local terminal** next to your sessions.
 

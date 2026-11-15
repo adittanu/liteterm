@@ -402,6 +402,7 @@ function connect() {
               <input id="hp-key" v-model="form.key_path" class="field-input mono" type="text" placeholder="C:\Users\you\.ssh\id_ed25519" spellcheck="false" @blur="saveField" @keydown.enter="saveField" />
               <button type="button" class="btn btn-secondary" @click="browseKey">Browse…</button>
             </div>
+            <span class="field-hint">A certificate next to it (<span class="mono">id_ed25519-cert.pub</span>) is offered first.</span>
           </div>
           <div class="field">
             <label class="field-label" for="hp-keypass">Key passphrase</label>
