@@ -302,3 +302,57 @@ export interface CloudStatus {
   error: string | null
   pending: number // local changes not on the server yet
 }
+
+// ---- team vaults ----
+
+export type TeamRole = 'owner' | 'admin' | 'editor' | 'viewer'
+
+export interface TeamSummary {
+  id: string
+  name: string
+  /** This account's role in the team */
+  role: TeamRole
+  /** Bumps each time the team key changes */
+  epoch: number
+}
+
+/** An invite addressed to this account */
+export interface InviteForMe {
+  id: string
+  teamName: string
+  invitedBy: string
+  role: TeamRole
+  expiresAt: string // ISO timestamp
+  /** Accepted, waiting for an owner or admin to admit */
+  accepted: boolean
+}
+
+export interface TeamsView {
+  /** This account's, to read out to whoever admits it */
+  safetyCode: string
+  teams: TeamSummary[]
+  invites: InviteForMe[]
+}
+
+export interface MemberView {
+  userId: string
+  email: string
+  role: TeamRole
+  isMe: boolean
+}
+
+/** An invite to the team, as its owners and admins see it */
+export interface PendingView {
+  id: string
+  email: string
+  role: TeamRole
+  expiresAt: string // ISO timestamp
+  accepted: boolean
+  /** The code of the key they accepted with, to compare before admitting */
+  safetyCode: string | null
+}
+
+export interface TeamDetail {
+  members: MemberView[]
+  pending: PendingView[]
+}

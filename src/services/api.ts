@@ -22,6 +22,10 @@ import type {
   UpdateAsset,
   UpdateInfo,
   CloudStatus,
+  TeamsView,
+  TeamSummary,
+  TeamDetail,
+  TeamRole,
   KeyDefaults,
   GeneratedKey,
   SerialPortEntry,
@@ -198,6 +202,28 @@ export const api = {
   cloudResetVault: (): Promise<CloudStatus> => invoke('cloud_reset_vault'),
   cloudSignOut: (): Promise<CloudStatus> => invoke('cloud_sign_out'),
   cloudSyncNow: (): Promise<CloudStatus> => invoke('cloud_sync_now'),
+
+  // ---- team vaults ----
+  cloudTeams: (): Promise<TeamsView> => invoke('cloud_teams'),
+  cloudTeamDetail: (teamId: string): Promise<TeamDetail> => invoke('cloud_team_detail', { teamId }),
+  cloudCreateTeam: (name: string): Promise<TeamSummary> => invoke('cloud_create_team', { name }),
+  cloudRenameTeam: (teamId: string, name: string): Promise<void> =>
+    invoke('cloud_rename_team', { teamId, name }),
+  cloudDeleteTeam: (teamId: string): Promise<void> => invoke('cloud_delete_team', { teamId }),
+  cloudInvite: (teamId: string, email: string, role: TeamRole): Promise<void> =>
+    invoke('cloud_invite', { teamId, email, role }),
+  cloudAcceptInvite: (inviteId: string): Promise<void> => invoke('cloud_accept_invite', { inviteId }),
+  /** Decline an invite, or withdraw one */
+  cloudCancelInvite: (inviteId: string): Promise<void> => invoke('cloud_cancel_invite', { inviteId }),
+  /** `shownCode` is the safety code compared with the person being admitted */
+  cloudAdmit: (inviteId: string, shownCode: string): Promise<void> =>
+    invoke('cloud_admit', { inviteId, shownCode }),
+  cloudSetMemberRole: (teamId: string, userId: string, role: TeamRole): Promise<void> =>
+    invoke('cloud_set_member_role', { teamId, userId, role }),
+  /** Resolves to the team's saved passwords the removed member could read */
+  cloudRemoveMember: (teamId: string, userId: string): Promise<string[]> =>
+    invoke('cloud_remove_member', { teamId, userId }),
+  cloudLeaveTeam: (teamId: string): Promise<void> => invoke('cloud_leave_team', { teamId }),
 
   // ---- self-update ----
   checkUpdate: (): Promise<UpdateInfo> => invoke('check_update'),

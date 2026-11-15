@@ -32,6 +32,7 @@ import { useHostsStore } from './stores/hosts'
 import { useCredentialsStore } from './stores/credentials'
 import { useSnippetsStore, useForwardsStore } from './stores/extras'
 import { useCloudStore } from './stores/cloud'
+import { useTeamsStore } from './stores/teams'
 import { usePrivacyStore } from './stores/privacy'
 
 const ui = useUiStore()
@@ -51,3 +52,5 @@ void forwardsStore.load()
 void forwardsStore.initEvents()
 // Optional account: follow the backend's sync status and reload what it changes
 void useCloudStore().init()
+// Shared team vaults: loaded when Settings → Teams first opens
+void useTeamsStore().init()

@@ -26,9 +26,9 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use zeroize::Zeroizing;
 
-use super::api::{Api, ApiError, PullItem, PushItem, RewriteItem, Session, TeamPullItem, VaultRow};
+use super::api::{Api, ApiError, MemberRow, PullItem, PushItem, RewriteItem, Session, TeamPullItem, VaultRow, WrappedFor};
 use super::items::{self, Incoming, Keyring, Payload, Queued, Vault};
-use super::team_crypto::{AccountKey, TeamKey};
+use super::team_crypto::{safety_code, AccountKey, TeamKey};
 use super::vault::{self, RecoveryKey, VaultError, VaultKey};
 use crate::store::db;
 use crate::Db;
@@ -551,6 +551,300 @@ impl Cloud {
         self.status(app)
     }
 
+    // ---- team management ----
+
+    /// The personal vault key and this account's id, for team actions
+    fn ready(&self, app: &AppHandle) -> Result<(Arc<VaultKey>, String), Error> {
+        if self.status(app)?.state != "ready" {
+            return Err(msg("Teams need sync with a master password. Set it up under Account & sync first."));
+        }
+        let key = self.inner().key.clone().ok_or_else(|| msg("The vault is locked."))?;
+        Ok((key, self.user_id(app)?))
+    }
+
+    /// The teams this computer knows, invites for this account, and its
+    /// safety code
+    pub async fn teams(&self, app: &AppHandle) -> Result<TeamsView, Error> {
+        let (vault_key, uid) = self.ready(app)?;
+        let account = self.account_key(&vault_key, &uid).await?;
+        let email = with_db(app, |c| setting(c, S_EMAIL))?.unwrap_or_default().to_lowercase();
+        let invites = self.authed(|t| async move { self.api.invites(&t).await }).await?;
+        let teams = with_db(app, |c| {
+            c.prepare("SELECT id, name, role, epoch FROM teams ORDER BY name COLLATE NOCASE")?
+                .query_map([], |r| Ok(TeamSummary { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, epoch: r.get(3)? }))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+        let invites = invites
+            .into_iter()
+            .filter(|i| i.email == email)
+            .map(|i| InviteForMe {
+                accepted: i.accepted_by.is_some(),
+                id: i.id,
+                team_name: i.team_name,
+                invited_by: i.invited_by_email,
+                role: i.role,
+                expires_at: i.expires_at,
+            })
+            .collect();
+        Ok(TeamsView { safety_code: account.safety_code(), teams, invites })
+    }
+
+    /// Members and pending invites of one team
+    pub async fn team_detail(&self, app: &AppHandle, team_id: &str) -> Result<TeamDetail, Error> {
+        let (_, uid) = self.ready(app)?;
+        let team_id = uuid(team_id)?;
+        let tid = team_id.as_str();
+        let members = self.authed(|t| async move { self.api.team_members(&t, tid).await }).await?;
+        let invites = self.authed(|t| async move { self.api.invites(&t).await }).await?;
+        Ok(TeamDetail {
+            members: members
+                .into_iter()
+                .map(|m| MemberView { is_me: m.user_id == uid, user_id: m.user_id, email: m.email, role: m.role })
+                .collect(),
+            pending: invites
+                .into_iter()
+                .filter(|i| i.team_id == team_id)
+                .map(|i| PendingView {
+                    safety_code: i.accepted_public_key.as_deref().and_then(|k| safety_code(k).ok()),
+                    accepted: i.accepted_by.is_some(),
+                    id: i.id,
+                    email: i.email,
+                    role: i.role,
+                    expires_at: i.expires_at,
+                })
+                .collect(),
+        })
+    }
+
+    pub async fn create_team(&self, app: &AppHandle, name: &str) -> Result<TeamSummary, Error> {
+        let _run = self.run.lock().await;
+        let (vault_key, uid) = self.ready(app)?;
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 80 {
+            return Err(msg("Give the team a name of up to 80 characters."));
+        }
+        let account = self.account_key(&vault_key, &uid).await?;
+        let team_id = new_uuid();
+        let key = TeamKey::generate();
+        let wrapped = key.seal_for(&team_id, 1, &uid, &account.public_key())?;
+        let (tid, wrapped) = (team_id.as_str(), wrapped.as_str());
+        self.authed(|t| async move { self.api.create_team(&t, tid, name, wrapped).await }).await?;
+        self.inner().team_keys.insert((team_id.clone(), 1), Arc::new(key));
+        with_db(app, |c| {
+            c.execute(
+                "INSERT INTO teams (id, name, role, epoch) VALUES (?1, ?2, 'owner', 1) ON CONFLICT(id) DO NOTHING",
+                params![team_id, name],
+            )?;
+            pin_peer(c, &team_id, &uid, &account.public_key()).map(drop)
+        })?;
+        let _ = app.emit("cloud:teams", ());
+        Ok(TeamSummary { id: team_id, name: name.to_string(), role: "owner".into(), epoch: 1 })
+    }
+
+    pub async fn rename_team(&self, app: &AppHandle, team_id: &str, name: &str) -> Result<(), Error> {
+        self.ready(app)?;
+        let team_id = uuid(team_id)?;
+        let (tid, name) = (team_id.as_str(), name.trim());
+        if name.is_empty() || name.chars().count() > 80 {
+            return Err(msg("Give the team a name of up to 80 characters."));
+        }
+        self.authed(|t| async move { self.api.rename_team(&t, tid, name).await }).await?;
+        with_db(app, |c| c.execute("UPDATE teams SET name = ?1 WHERE id = ?2", params![name, tid]).map(drop))?;
+        let _ = app.emit("cloud:teams", ());
+        Ok(())
+    }
+
+    pub async fn invite(&self, app: &AppHandle, team_id: &str, email: &str, role: &str) -> Result<(), Error> {
+        self.ready(app)?;
+        let team_id = uuid(team_id)?;
+        let email = email.trim();
+        if !email.contains('@') || email.len() > 254 {
+            return Err(msg("That email address doesn't look right."));
+        }
+        if !matches!(role, "admin" | "editor" | "viewer") {
+            return Err(msg("Unknown role"));
+        }
+        let tid = team_id.as_str();
+        self.authed(|t| async move { self.api.invite_member(&t, tid, email, role).await }).await?;
+        Ok(())
+    }
+
+    /// Say yes to an invite. A team owner or admin then admits this account,
+    /// after comparing its safety code.
+    pub async fn accept_invite(&self, app: &AppHandle, invite_id: &str) -> Result<(), Error> {
+        let _run = self.run.lock().await;
+        let (vault_key, uid) = self.ready(app)?;
+        let invite_id = uuid(invite_id)?;
+        // The invite carries the account key, so there must be one
+        self.account_key(&vault_key, &uid).await?;
+        let iid = invite_id.as_str();
+        self.authed(|t| async move { self.api.accept_invite(&t, iid).await }).await?;
+        Ok(())
+    }
+
+    /// Decline an invite, or withdraw one
+    pub async fn cancel_invite(&self, app: &AppHandle, invite_id: &str) -> Result<(), Error> {
+        self.ready(app)?;
+        let invite_id = uuid(invite_id)?;
+        let iid = invite_id.as_str();
+        self.authed(|t| async move { self.api.cancel_invite(&t, iid).await }).await?;
+        Ok(())
+    }
+
+    /// Admit someone who accepted. `shown_code` is the safety code the owner
+    /// compared with the person: the team key is sealed only to the key with
+    /// that code, whatever the server hands out meanwhile.
+    pub async fn admit(&self, app: &AppHandle, invite_id: &str, shown_code: &str) -> Result<(), Error> {
+        let _run = self.run.lock().await;
+        self.ready(app)?;
+        let invite_id = uuid(invite_id)?;
+        let invites = self.authed(|t| async move { self.api.invites(&t).await }).await?;
+        let invite = invites
+            .into_iter()
+            .find(|i| i.id == invite_id)
+            .ok_or_else(|| msg("That invite is gone. It was withdrawn, or has expired."))?;
+        let (Some(member), Some(public_key)) = (invite.accepted_by.clone(), invite.accepted_public_key.clone()) else {
+            return Err(msg("They haven't accepted the invite yet."));
+        };
+        let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+        if digits(&safety_code(&public_key)?) != digits(shown_code) {
+            return Err(msg(
+                "Their key no longer has the safety code you compared. Don't admit them: ask them to accept the invite again.",
+            ));
+        }
+        let epoch = with_db(app, |c| {
+            c.query_row("SELECT epoch FROM teams WHERE id = ?1", [&invite.team_id], |r| r.get::<_, i64>(0))
+                .optional()
+        })?
+        .ok_or_else(|| msg("This computer hasn't synced that team yet."))?;
+        let key = self
+            .team_key(&invite.team_id, epoch)
+            .ok_or_else(|| msg("This computer doesn't have the team's current key yet. Sync, then try again."))?;
+        let wrapped = key.seal_for(&invite.team_id, epoch, &member, &public_key)?;
+        let (iid, wrapped_ref) = (invite_id.as_str(), wrapped.as_str());
+        self.authed(|t| async move { self.api.admit_member(&t, iid, epoch, wrapped_ref).await }).await?;
+        // Checked by code just now: the strongest pin there is
+        with_db(app, |c| {
+            c.execute(
+                "INSERT INTO team_peers (team_id, user_id, public_key) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(team_id, user_id) DO UPDATE SET public_key = excluded.public_key",
+                params![invite.team_id, member, public_key],
+            )
+            .map(drop)
+        })?;
+        Ok(())
+    }
+
+    pub async fn set_role(&self, app: &AppHandle, team_id: &str, user_id: &str, role: &str) -> Result<(), Error> {
+        self.ready(app)?;
+        let (team_id, user_id) = (uuid(team_id)?, uuid(user_id)?);
+        if !matches!(role, "owner" | "admin" | "editor" | "viewer") {
+            return Err(msg("Unknown role"));
+        }
+        let (tid, uid) = (team_id.as_str(), user_id.as_str());
+        self.authed(|t| async move { self.api.set_member_role(&t, tid, uid, role).await }).await?;
+        Ok(())
+    }
+
+    /// Remove a member and change the team key. Returns what they could read
+    /// and should be changed on the servers: the team's saved passwords.
+    pub async fn remove_member(&self, app: &AppHandle, team_id: &str, user_id: &str) -> Result<Vec<String>, Error> {
+        let _run = self.run.lock().await;
+        let (_, me) = self.ready(app)?;
+        let (team_id, user_id) = (uuid(team_id)?, uuid(user_id)?);
+        let (epoch, key, wrapped) = self.next_epoch(app, &me, &team_id, &user_id).await?;
+        let (tid, uid, wrapped) = (team_id.as_str(), user_id.as_str(), &wrapped);
+        self.authed(|t| async move { self.api.remove_member(&t, tid, uid, epoch, wrapped).await }).await?;
+        self.inner().team_keys.insert((team_id.clone(), epoch), Arc::new(key));
+        let exposed = with_db(app, |c| {
+            c.execute("UPDATE teams SET epoch = ?1 WHERE id = ?2", params![epoch, tid])?;
+            c.execute("DELETE FROM team_peers WHERE team_id = ?1 AND user_id = ?2", params![tid, uid])?;
+            exposed_secrets(c, tid)
+        })?;
+        // The next sync moves the items to the new key
+        self.wake.notify_one();
+        Ok(exposed)
+    }
+
+    /// Leave a team. The key changes for the others, and the team's data
+    /// leaves this computer.
+    pub async fn leave_team(&self, app: &AppHandle, team_id: &str) -> Result<(), Error> {
+        let _run = self.run.lock().await;
+        let (_, me) = self.ready(app)?;
+        let team_id = uuid(team_id)?;
+        let (epoch, _, wrapped) = self.next_epoch(app, &me, &team_id, &me).await?;
+        let (tid, wrapped) = (team_id.as_str(), &wrapped);
+        self.authed(|t| async move { self.api.leave_team(&t, tid, epoch, wrapped).await }).await?;
+        self.drop_team_here(app, &team_id)
+    }
+
+    pub async fn delete_team(&self, app: &AppHandle, team_id: &str) -> Result<(), Error> {
+        let _run = self.run.lock().await;
+        self.ready(app)?;
+        let team_id = uuid(team_id)?;
+        let tid = team_id.as_str();
+        self.authed(|t| async move { self.api.delete_team(&t, tid).await }).await?;
+        self.drop_team_here(app, &team_id)
+    }
+
+    fn drop_team_here(&self, app: &AppHandle, team_id: &str) -> Result<(), Error> {
+        let applied = with_db(app, |c| {
+            let tx = c.unchecked_transaction()?;
+            let applied = items::forget_team(&tx, team_id)?;
+            tx.commit()?;
+            Ok(applied)
+        })?;
+        applied.write_secrets(&Keyring);
+        self.inner().team_keys.retain(|(team, _), _| team != team_id);
+        emit_changed(app, &applied);
+        let _ = app.emit("cloud:teams", ());
+        Ok(())
+    }
+
+    /// A new team key for everyone in the team except `leaving`, sealed to
+    /// each of them. Every member's key must match the one this computer
+    /// pinned for them; one seen for the first time is pinned now.
+    async fn next_epoch(
+        &self,
+        app: &AppHandle,
+        me: &str,
+        team_id: &str,
+        leaving: &str,
+    ) -> Result<(i64, TeamKey, Vec<WrappedFor>), Error> {
+        let memberships = self.authed(|t| async move { self.api.memberships(&t, me).await }).await?;
+        let current = memberships
+            .iter()
+            .find(|m| m.team_id == team_id)
+            .ok_or_else(|| msg("You're not in that team any more."))?
+            .teams
+            .epoch;
+        let members = self.authed(|t| async move { self.api.team_members(&t, team_id).await }).await?;
+        let staying: Vec<MemberRow> = members.into_iter().filter(|m| m.user_id != leaving).collect();
+        let ids: Vec<String> = staying.iter().map(|m| m.user_id.clone()).collect();
+        let ids_ref = &ids;
+        let keys = self.authed(|t| async move { self.api.public_keys(&t, ids_ref).await }).await?;
+        let epoch = current + 1;
+        let key = TeamKey::generate();
+        let mut wrapped = Vec::with_capacity(staying.len());
+        for m in &staying {
+            let public_key = keys
+                .iter()
+                .find(|k| k.user_id == m.user_id)
+                .map(|k| k.public_key.clone())
+                .ok_or_else(|| Error::Msg(format!("The server didn't give {}'s key.", m.email)))?;
+            let pinned = with_db(app, |c| pin_peer(c, team_id, &m.user_id, &public_key))?;
+            if !pinned {
+                return Err(Error::Msg(format!(
+                    "{}'s key is not the one this computer saw before, so the new team key wasn't sealed to it. \
+                     Remove them and invite them again, checking their safety code.",
+                    m.email
+                )));
+            }
+            wrapped.push(WrappedFor { user_id: m.user_id.clone(), wrapped_key: key.seal_for(team_id, epoch, &m.user_id, &public_key)? });
+        }
+        Ok((epoch, key, wrapped))
+    }
+
     // ---- syncing ----
 
     /// Sync now, if this device is ready to
@@ -726,6 +1020,7 @@ impl Cloud {
             applied.write_secrets(&Keyring);
             self.inner().team_keys.retain(|(team, _), _| team != gone);
             emit_changed(app, &applied);
+            let _ = app.emit("cloud:teams", ());
         }
         if memberships.is_empty() {
             return Ok(());
@@ -753,6 +1048,7 @@ impl Cloud {
         }
 
         let mut first_error = None;
+        let before = local_teams(app)?;
         for m in &memberships {
             with_db(app, |c| {
                 c.execute(
@@ -767,6 +1063,9 @@ impl Cloud {
                 crate::applog::write(&format!("team {}: {e}", m.team_id));
                 first_error.get_or_insert(e);
             }
+        }
+        if local_teams(app)? != before {
+            let _ = app.emit("cloud:teams", ());
         }
         match first_error {
             Some(e) => Err(e),
@@ -980,6 +1279,158 @@ fn emit_changed(app: &AppHandle, applied: &items::Applied) {
         let mut kinds: Vec<&str> = applied.kinds.iter().copied().collect();
         kinds.sort_unstable();
         let _ = app.emit("cloud:changed", kinds);
+    }
+}
+
+/// The teams table as this computer has it, to tell when it changed
+fn local_teams(app: &AppHandle) -> Result<Vec<TeamSummary>, Error> {
+    with_db(app, |c| {
+        c.prepare("SELECT id, name, role, epoch FROM teams ORDER BY id")?
+            .query_map([], |r| Ok(TeamSummary { id: r.get(0)?, name: r.get(1)?, role: r.get(2)?, epoch: r.get(3)? }))?
+            .collect()
+    })
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSummary {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub epoch: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteForMe {
+    pub id: String,
+    pub team_name: String,
+    pub invited_by: String,
+    pub role: String,
+    pub expires_at: String,
+    /// Accepted, waiting for an owner or admin to admit
+    pub accepted: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamsView {
+    /// This account's, to read out to whoever admits it
+    pub safety_code: String,
+    pub teams: Vec<TeamSummary>,
+    pub invites: Vec<InviteForMe>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberView {
+    pub user_id: String,
+    pub email: String,
+    pub role: String,
+    pub is_me: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingView {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+    pub expires_at: String,
+    pub accepted: bool,
+    /// The code of the key they accepted with, to compare before admitting
+    pub safety_code: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamDetail {
+    pub members: Vec<MemberView>,
+    pub pending: Vec<PendingView>,
+}
+
+/// Ids go into request paths: only a uuid's characters may
+fn uuid(text: &str) -> Result<String, Error> {
+    let t = text.trim().to_ascii_lowercase();
+    let ok = t.len() == 36
+        && t.char_indices().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { c == '-' } else { c.is_ascii_hexdigit() });
+    if ok { Ok(t) } else { Err(msg("That isn't a valid id.")) }
+}
+
+/// A random (version 4) uuid
+fn new_uuid() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut b = [0u8; 16];
+    OsRng.fill_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+}
+
+/// Remember a teammate's public key, or check it against the one already
+/// remembered. False when it differs.
+fn pin_peer(conn: &Connection, team_id: &str, user_id: &str, public_key: &str) -> rusqlite::Result<bool> {
+    let known: Option<String> = conn
+        .query_row(
+            "SELECT public_key FROM team_peers WHERE team_id = ?1 AND user_id = ?2",
+            params![team_id, user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match known {
+        Some(k) => Ok(k == public_key),
+        None => {
+            conn.execute(
+                "INSERT INTO team_peers (team_id, user_id, public_key) VALUES (?1, ?2, ?3)",
+                params![team_id, user_id, public_key],
+            )?;
+            Ok(true)
+        }
+    }
+}
+
+/// The team's saved passwords, which every member could read: the hosts and
+/// credentials to change them on after someone leaves
+fn exposed_secrets(conn: &Connection, team_id: &str) -> rusqlite::Result<Vec<String>> {
+    let mut out: Vec<String> = conn
+        .prepare("SELECT label FROM hosts WHERE team_id = ?1 AND password_saved = 1 ORDER BY label COLLATE NOCASE")?
+        .query_map([team_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    out.extend(
+        conn.prepare(
+            "SELECT name FROM credentials WHERE team_id = ?1 AND password_saved = 1 ORDER BY name COLLATE NOCASE",
+        )?
+        .query_map([team_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_are_checked_before_they_reach_a_url() {
+        let id = new_uuid();
+        assert_eq!(uuid(&id).unwrap(), id);
+        assert_eq!(&id[14..15], "4", "version 4: {id}");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"), "variant: {id}");
+        assert_eq!(uuid(" 7EA70000-0000-4000-8000-000000000001 ").unwrap(), "7ea70000-0000-4000-8000-000000000001");
+        assert!(uuid("7ea70000-0000-4000-8000-00000000000&").is_err());
+        assert!(uuid("x&team_id=eq.other").is_err());
+        assert!(uuid("").is_err());
+    }
+
+    #[test]
+    fn a_teammates_key_is_pinned_the_first_time() {
+        let conn = Connection::open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        assert!(pin_peer(&conn, "t", "u", "KEY-1").unwrap());
+        assert!(pin_peer(&conn, "t", "u", "KEY-1").unwrap());
+        assert!(!pin_peer(&conn, "t", "u", "KEY-2").unwrap(), "a swapped key is caught");
+        assert!(pin_peer(&conn, "other-team", "u", "KEY-2").unwrap(), "pins are per team");
     }
 }
 

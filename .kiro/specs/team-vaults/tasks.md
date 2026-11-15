@@ -32,7 +32,7 @@
   - Device simulation tests: two members, viewer refused, removal cleanup.
   - _Requirements: 4.4, 5.3, 6.1, 6.2, 7.2_
 
-- [ ] 6. Team management commands and Settings → Teams
+- [x] 6. Team management commands and Settings → Teams
   - Create, invite, accept, admit with safety code, roles, remove, leave,
     delete. Rotation on removal, with the "change these passwords" list.
   - _Requirements: 1, 2, 3, 5_

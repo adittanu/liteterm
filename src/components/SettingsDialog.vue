@@ -10,10 +10,12 @@ import {
   TerminalSquare,
   Keyboard,
   Cloud,
+  Users,
 } from 'lucide-vue-next'
 import { getVersion } from '@tauri-apps/api/app'
 import BaseModal from './BaseModal.vue'
 import AccountSection from './AccountSection.vue'
+import TeamsSection from './TeamsSection.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useUiStore } from '../stores/ui'
 import { usePrivacyStore } from '../stores/privacy'
@@ -69,6 +71,7 @@ const SECTIONS = [
   { id: 'terminal', label: 'Terminal', icon: TerminalSquare },
   { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
   { id: 'account', label: 'Account & sync', icon: Cloud },
+  { id: 'teams', label: 'Teams', icon: Users },
 ] as const
 type SectionId = (typeof SECTIONS)[number]['id']
 const section = ref<SectionId>('general')
@@ -526,6 +529,11 @@ watch(
           <!-- ============ Account & sync ============ -->
           <div v-else-if="section === 'account'" key="account" class="pane-page">
             <AccountSection />
+          </div>
+
+          <!-- ============ Teams ============ -->
+          <div v-else-if="section === 'teams'" key="teams" class="pane-page">
+            <TeamsSection @go-account="section = 'account'" />
           </div>
 
           <!-- ============ Shortcuts ============ -->

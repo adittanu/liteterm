@@ -216,6 +216,17 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         tx.execute_batch(&triggers_sql(t))?;
     }
     tx.execute_batch(SAME_VAULT_TRIGGERS)?;
+    // Teammates' public keys as this computer first saw them (or checked them
+    // with a safety code). A key change for the same member is refused when
+    // sealing a new team key to it, so a server can't swap one in later.
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS team_peers (
+            team_id    TEXT NOT NULL,
+            user_id    TEXT NOT NULL,
+            public_key TEXT NOT NULL,
+            PRIMARY KEY (team_id, user_id)
+        );",
+    )?;
     tx.commit()
 }
 

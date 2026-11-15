@@ -93,7 +93,6 @@ const VAULT_COLS: &str = "vault_id,kdf,wrapped_key,wrapped_key_recovery,rev";
 
 #[derive(Debug, Deserialize)]
 pub struct AccountKeyRow {
-    pub user_id: String,
     pub public_key: String,
     pub private_key_sealed: String,
 }
@@ -315,7 +314,7 @@ impl Api {
 
     pub async fn account_key(&self, access: &str, user_id: &str) -> Result<Option<AccountKeyRow>, ApiError> {
         let value = self
-            .get(access, &format!("/rest/v1/account_keys?user_id=eq.{user_id}&select=user_id,public_key,private_key_sealed"))
+            .get(access, &format!("/rest/v1/account_keys?user_id=eq.{user_id}&select=public_key,private_key_sealed"))
             .await?;
         let mut rows: Vec<AccountKeyRow> = parse(value)?;
         Ok(rows.pop())

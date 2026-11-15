@@ -1012,6 +1012,7 @@ pub fn forget_team(conn: &Connection, team_id: &str) -> Result<Applied, rusqlite
     }
     // The deletes queued tombstones; they are not this computer's to send
     conn.execute("DELETE FROM sync_outbox WHERE team_id = ?1", [team_id])?;
+    conn.execute("DELETE FROM team_peers WHERE team_id = ?1", [team_id])?;
     conn.execute("DELETE FROM teams WHERE id = ?1", [team_id])?;
     Ok(out)
 }
