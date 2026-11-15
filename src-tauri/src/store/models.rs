@@ -24,6 +24,10 @@ pub struct Host {
     pub startup_command: Option<String>,
     /// Let programs on this server use this computer's SSH agent (ssh -A)
     pub agent_forwarding: bool,
+    /// "ssh", "telnet" or "serial". A serial host keeps its device (COM3,
+    /// /dev/ttyUSB0) in `address` and its speed in `baud_rate`
+    pub protocol: String,
+    pub baud_rate: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,7 +53,15 @@ pub struct HostInput {
     /// doesn't know the field can't switch it off by saving
     #[serde(default)]
     pub agent_forwarding: Option<bool>,
+    /// None leaves protocol and baud rate as they are ("ssh" for a new
+    /// host). When it is set, `baud_rate` is written too, None clearing it.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub baud_rate: Option<i64>,
 }
+
+pub const HOST_PROTOCOLS: [&str; 3] = ["ssh", "telnet", "serial"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Credential {

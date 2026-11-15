@@ -196,7 +196,7 @@ pub fn spawn_local(state: &AppState, command: Option<&str>) -> Result<u32, Strin
     Ok(id)
 }
 
-fn emit_stdout(app: &tauri::AppHandle, session_id: u32, bytes: &[u8]) {
+pub(crate) fn emit_stdout(app: &tauri::AppHandle, session_id: u32, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
@@ -222,7 +222,7 @@ fn emit_stdout(app: &tauri::AppHandle, session_id: u32, bytes: &[u8]) {
 /// is a deadline, not an idle timeout — a steady trickle of small chunks must
 /// not keep postponing the flush (an idle timeout never fires while chunks
 /// keep arriving faster than it).
-fn flush_loop(rx: mpsc::Receiver<Vec<u8>>, mut emit: impl FnMut(&[u8])) {
+pub(crate) fn flush_loop(rx: mpsc::Receiver<Vec<u8>>, mut emit: impl FnMut(&[u8])) {
     let mut pending: Vec<u8> = Vec::new();
     let mut deadline: Option<Instant> = None;
     loop {

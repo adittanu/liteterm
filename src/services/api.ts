@@ -24,6 +24,7 @@ import type {
   CloudStatus,
   KeyDefaults,
   GeneratedKey,
+  SerialPortEntry,
 } from '../types'
 
 export const api = {
@@ -142,6 +143,7 @@ export const api = {
     invoke('confirm_host_key', { sessionId, accept, remember }),
   reconnectNow: (sessionId: number): Promise<void> => invoke('reconnect_now', { sessionId }),
   disconnect: (sessionId: number): Promise<void> => invoke('disconnect_session', { sessionId }),
+  listSerialPorts: (): Promise<SerialPortEntry[]> => invoke('list_serial_ports'),
   write: (sessionId: number, data: string): Promise<void> => invoke('session_write', { sessionId, data }),
   resize: (
     sessionId: number,

@@ -114,6 +114,12 @@ fn resolve_conn_params(
         let bastion = db::get_host(conn, jid)
             .map_err(|e| e.to_string())?
             .ok_or("The jump host no longer exists — edit this host and pick another")?;
+        if bastion.protocol != "ssh" {
+            return Err(format!(
+                "Jump host “{}” is not an SSH host. Edit “{}” and pick an SSH host to jump through",
+                bastion.label, host.label
+            ));
+        }
         next = bastion.jump_host_id;
         chain.push(bastion);
     }
@@ -149,6 +155,24 @@ fn resolve_conn_params(
     ))
 }
 
+/// Where a Telnet or serial host connects; None for SSH
+fn stream_target_of(host: &crate::store::models::Host) -> Option<crate::stream::Target> {
+    match host.protocol.as_str() {
+        "telnet" => Some(crate::stream::Target::Telnet {
+            address: host.address.clone(),
+            port: host.port as u16,
+        }),
+        "serial" => Some(crate::stream::Target::Serial {
+            device: host.address.clone(),
+            baud: host
+                .baud_rate
+                .and_then(|b| u32::try_from(b).ok())
+                .unwrap_or(crate::stream::DEFAULT_BAUD),
+        }),
+        _ => None,
+    }
+}
+
 fn registered_session(state: &Arc<AppState>, id: u32) -> Result<Arc<SshSession>, String> {
     state
         .sessions
@@ -166,11 +190,23 @@ pub async fn connect_host(
     host_id: i64,
     password: Option<String>,
 ) -> Result<u32, String> {
-    let (params, label) = {
+    let stream_target = {
         let conn = db.0.lock().map_err(|_| "database busy")?;
         // Recency: the access attempt itself bumps last_used_at, even if the
         // connection later fails
         db::touch_host(&conn, host_id).ok();
+        let host = db::get_host(&conn, host_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Host not found")?;
+        stream_target_of(&host)
+    };
+    // Telnet and serial hosts: a byte stream, none of the SSH machinery
+    if let Some(target) = stream_target {
+        return Ok(crate::stream::open(state.inner(), target));
+    }
+
+    let (params, label) = {
+        let conn = db.0.lock().map_err(|_| "database busy")?;
         resolve_conn_params(&conn, host_id, password)?
     };
 
@@ -256,6 +292,14 @@ pub async fn spawn_local(
     crate::local::spawn_local(state.inner(), command.as_deref())
 }
 
+/// The serial ports this computer has, for the host dialog's port picker
+#[tauri::command]
+pub async fn list_serial_ports() -> Result<Vec<crate::stream::SerialPortEntry>, String> {
+    tauri::async_runtime::spawn_blocking(crate::stream::serial_ports)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn disconnect_session(
     state: State<'_, Arc<AppState>>,
@@ -265,6 +309,11 @@ pub async fn disconnect_session(
     let local = state.local_sessions.lock().unwrap().get(&session_id).cloned();
     if let Some(session) = local {
         crate::local::close_local(state.inner(), &session);
+        return Ok(());
+    }
+    let stream = state.stream_sessions.lock().unwrap().get(&session_id).cloned();
+    if let Some(session) = stream {
+        crate::stream::close(state.inner(), &session);
         return Ok(());
     }
     pool::disconnect_session(state.inner(), session_id).await;
@@ -282,6 +331,10 @@ pub async fn session_write(
     let local = state.local_sessions.lock().unwrap().get(&session_id).cloned();
     if let Some(session) = local {
         return crate::local::local_write(&session, &data);
+    }
+    let stream = state.stream_sessions.lock().unwrap().get(&session_id).cloned();
+    if let Some(session) = stream {
+        return crate::stream::write(&session, &data);
     }
 
     let session = registered_session(state.inner(), session_id)?;
@@ -317,6 +370,12 @@ pub async fn session_resize(
         let pw = u16::try_from(pix_width).unwrap_or(u16::MAX);
         let ph = u16::try_from(pix_height).unwrap_or(u16::MAX);
         return crate::local::local_resize(&session, c, r, pw, ph);
+    }
+    let stream = state.stream_sessions.lock().unwrap().get(&session_id).cloned();
+    if let Some(session) = stream {
+        let c = u16::try_from(cols).unwrap_or(u16::MAX);
+        let r = u16::try_from(rows).unwrap_or(u16::MAX);
+        return crate::stream::resize(&session, c, r);
     }
 
     let session = registered_session(state.inner(), session_id)?;

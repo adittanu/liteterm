@@ -6,6 +6,7 @@ import { useHostsStore } from '../stores/hosts'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
 import { installKeyOn, switchHostToKey, type KeySource } from '../utils/installKey'
+import { isSsh } from '../utils/hostProtocol'
 
 // ssh-copy-id from the Keychain: pick a saved host, LiteTerm logs in the way
 // it does today and appends the public key to ~/.ssh/authorized_keys.
@@ -21,7 +22,7 @@ const switchLogin = ref(true)
 const busy = ref(false)
 
 const hostOptions = computed<ComboOption[]>(() =>
-  [...hosts.hosts]
+  [...hosts.hosts.filter(isSsh)]
     .sort((a, b) => (b.last_used_at ?? 0) - (a.last_used_at ?? 0) || a.label.localeCompare(b.label))
     .map((h) => ({ value: h.id, label: h.label, hint: `${h.username}@${h.address}` })),
 )

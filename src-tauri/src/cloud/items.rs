@@ -101,6 +101,13 @@ pub struct HostData {
     /// the safe direction for a setting that hands the server your agent.
     #[serde(default, skip_serializing_if = "is_false")]
     pub agent_forwarding: bool,
+    /// "ssh", "telnet" or "serial"; this version always sends it. Without it
+    /// (an older LiteTerm, which only knows SSH) the stored protocol and
+    /// baud rate stay as they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baud_rate: Option<i64>,
     #[serde(default)]
     pub sort: i64,
     #[serde(default)]
@@ -310,7 +317,7 @@ fn read_payload(
                 .query_row(
                     "SELECT h.id, h.label, h.address, h.port, h.username, h.auth_method, h.key_path, \
                      g.sync_id, c.sync_id, j.sync_id, h.sort, h.password_saved, h.modified_at, h.startup_command, \
-                     h.agent_forwarding \
+                     h.agent_forwarding, h.protocol, h.baud_rate \
                      FROM hosts h \
                      LEFT JOIN groups g ON g.id = h.group_id \
                      LEFT JOIN credentials c ON c.id = h.credential_id \
@@ -330,6 +337,8 @@ fn read_payload(
                             jump_host: r.get(9)?,
                             startup_command: r.get(13)?,
                             agent_forwarding: r.get::<_, i64>(14)? != 0,
+                            protocol: Some(r.get(15)?),
+                            baud_rate: r.get(16)?,
                             sort: r.get(10)?,
                             password_saved: r.get::<_, i64>(11)? != 0,
                             password: None,
@@ -614,28 +623,28 @@ fn apply_upsert(
             let credential_id = resolve(conn, "credentials", d.credential.as_deref())?;
             let jump = d.jump_host.as_deref().filter(|j| *j != sid);
             let jump_id = resolve(conn, "hosts", jump)?;
-            let id = write_row(
-                conn,
-                "hosts",
-                existing,
-                sid,
-                m,
-                &[
-                    ("label", &d.label),
-                    ("address", &d.address),
-                    ("port", &d.port),
-                    ("username", &d.username),
-                    ("auth_method", &d.auth_method),
-                    ("key_path", &d.key_path),
-                    ("group_id", &group_id),
-                    ("credential_id", &credential_id),
-                    ("jump_host_id", &jump_id),
-                    ("startup_command", &d.startup_command),
-                    ("agent_forwarding", &d.agent_forwarding),
-                    ("sort", &d.sort),
-                    ("password_saved", &d.password_saved),
-                ],
-            )?;
+            let mut cols: Vec<(&str, &dyn ToSql)> = vec![
+                ("label", &d.label),
+                ("address", &d.address),
+                ("port", &d.port),
+                ("username", &d.username),
+                ("auth_method", &d.auth_method),
+                ("key_path", &d.key_path),
+                ("group_id", &group_id),
+                ("credential_id", &credential_id),
+                ("jump_host_id", &jump_id),
+                ("startup_command", &d.startup_command),
+                ("agent_forwarding", &d.agent_forwarding),
+                ("sort", &d.sort),
+                ("password_saved", &d.password_saved),
+            ];
+            // Only a payload that names a protocol this version knows speaks
+            // for it and the baud rate; an older device's edit leaves both
+            if let Some(protocol) = d.protocol.as_ref().filter(|p| crate::store::models::HOST_PROTOCOLS.contains(&p.as_str())) {
+                cols.push(("protocol", protocol));
+                cols.push(("baud_rate", &d.baud_rate));
+            }
+            let id = write_row(conn, "hosts", existing, sid, m, &cols)?;
             if let (Some(jump), None) = (jump, jump_id) {
                 jumps.push((sid.to_string(), jump.to_string(), m));
             }
@@ -1122,6 +1131,36 @@ mod tests {
         apply(&tx, vec![Incoming { sync_id: sid, payload: Some(Payload::Host(d)), modified_at: i64::MAX / 2 }]).unwrap();
         tx.commit().unwrap();
         assert_eq!(b.val::<i64>("SELECT agent_forwarding FROM hosts WHERE label = 'app'"), 0);
+    }
+
+    #[test]
+    fn a_serial_host_syncs_and_an_older_devices_edit_keeps_it_serial() {
+        let (a, b, mut server) = (Device::new(), Device::new(), Server::default());
+        let host = a.add_host("console");
+        a.conn
+            .execute("UPDATE hosts SET protocol = 'serial', address = 'COM3', port = 0, baud_rate = 9600 WHERE id = ?1", [host])
+            .unwrap();
+        a.sync_with(&mut server);
+        b.sync_with(&mut server);
+        assert_eq!(b.val::<String>("SELECT protocol FROM hosts WHERE label = 'console'"), "serial");
+        assert_eq!(b.val::<i64>("SELECT baud_rate FROM hosts WHERE label = 'console'"), 9600);
+
+        // An older LiteTerm renames it; its payload knows nothing of protocols
+        let sid: String = b.val("SELECT sync_id FROM hosts WHERE label = 'console'");
+        let Some((Payload::Host(d), _)) = read_payload(&b.conn, &b.secrets, "host", &sid).unwrap() else {
+            panic!("no host payload")
+        };
+        let mut old = serde_json::to_value(&d).unwrap();
+        let obj = old.as_object_mut().unwrap();
+        obj.remove("protocol");
+        obj.remove("baud_rate");
+        obj.insert("label".into(), "switch".into());
+        let d: HostData = serde_json::from_value(old).unwrap();
+        let tx = b.conn.unchecked_transaction().unwrap();
+        apply(&tx, vec![Incoming { sync_id: sid, payload: Some(Payload::Host(d)), modified_at: i64::MAX / 2 }]).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(b.val::<String>("SELECT protocol FROM hosts WHERE label = 'switch'"), "serial");
+        assert_eq!(b.val::<i64>("SELECT baud_rate FROM hosts WHERE label = 'switch'"), 9600);
     }
 
     #[test]

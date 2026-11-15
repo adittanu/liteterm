@@ -108,6 +108,7 @@
 - **Port forwarding**: local (`-L`), remote (`-R`) and a SOCKS proxy (`-D`), started from a list or with their host.
 - **Agent forwarding** (`-A`) per host, off until you turn it on: `git pull` on the server signs with the keys in your agent.
 - **SSH certificates**: a `-cert.pub` next to the private key (as `ssh-keygen -s` writes it) is offered first, for servers that trust a CA.
+- **Telnet and serial consoles** as hosts too, for switches, routers and boards: pick the protocol, then a port and baud rate for serial (8N1, no flow control).
 - **Snippets**: run in one click, or Shift+click to insert. `{{name}}` placeholders are asked for first.
 - **Local terminal** next to your sessions.
 
@@ -166,6 +167,7 @@ Better to read this before you install than to find out after.
 | **Jump hosts need a saved login** | A password with Remember, a key or an agent. |
 | **Sync carries key paths, not key files** | A synced host remembers where its private key is: copy the key to the same place, or use an SSH agent. Images in notes don't sync yet. |
 | **Older versions see every forward as local** | LiteTerm 1.11 and earlier don't know remote and SOCKS forwards. Synced to such a computer, those run there as local forwards. Update every computer that syncs. |
+| **Telnet and serial hosts need 1.13** | Older versions treat them as SSH hosts and fail to connect. Serial lines are fixed at 8N1 without flow control, and Telnet has no local echo for servers that expect one. |
 | **macOS and Linux are new** | Those builds come from CI and have had far less testing than Windows. |
 
 <br>

@@ -35,6 +35,7 @@ import { api } from '../services/api'
 import { fuzzy, highlight } from '../utils/fuzzy'
 import { comboFor, keyLabel, viewShortcutId } from '../services/shortcuts'
 import { localShellName, thisComputerLower } from '../utils/platform'
+import { hostTarget, isSsh } from '../utils/hostProtocol'
 import type { Host, Snippet } from '../types'
 
 // Opened 100+ times a day (Ctrl+K, the + tab button): no open/close
@@ -195,6 +196,7 @@ const views: { id: ViewId; label: string; icon: Component }[] = [
 ]
 
 function hostSub(h: Host): string {
+  if (!isSsh(h)) return hostTarget(h)
   return `${h.username}@${h.address}${h.port !== 22 ? `:${h.port}` : ''}`
 }
 
@@ -212,7 +214,7 @@ function hostItem(h: Host, section: Section, score: number, hits: number[], sub?
     status,
     verb: tab ? 'Switch to' : 'Connect',
     run: () => (tab ? openTab(tab.id) : void sessions.connect(h.id)),
-    alt: { verb: 'Browse files', run: () => ui.openSftpFor(h.id) },
+    alt: isSsh(h) ? { verb: 'Browse files', run: () => ui.openSftpFor(h.id) } : undefined,
   }
 }
 

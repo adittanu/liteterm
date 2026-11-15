@@ -8,6 +8,7 @@ mod menu;
 mod paths;
 mod ssh;
 mod store;
+mod stream;
 mod trace;
 
 use std::collections::HashMap;
@@ -47,6 +48,7 @@ pub fn run() {
                 next_transfer_id: std::sync::atomic::AtomicU32::new(1),
                 sessions: Mutex::new(HashMap::new()),
                 local_sessions: Mutex::new(HashMap::new()),
+                stream_sessions: Mutex::new(HashMap::new()),
                 pending_hostkey: Mutex::new(HashMap::new()),
                 forwards: Mutex::new(HashMap::new()),
                 remote_targets: Mutex::new(HashMap::new()),
@@ -100,6 +102,7 @@ pub fn run() {
             commands::session::connect_host,
             commands::session::connect_adhoc,
             commands::session::spawn_local,
+            commands::session::list_serial_ports,
             commands::session::confirm_host_key,
             commands::session::reconnect_now,
             commands::session::disconnect_session,

@@ -139,6 +139,10 @@ pub(super) fn migrate_v2(conn: &Connection) -> Result<(), rusqlite::Error> {
     let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN startup_command TEXT");
     // hosts.agent_forwarding — ssh -A for this host, off unless chosen (v1.12)
     let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN agent_forwarding INTEGER NOT NULL DEFAULT 0");
+    // hosts.protocol / baud_rate — Telnet and serial-console hosts next to
+    // SSH ones (v1.13). A serial host's device goes in `address`.
+    let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ssh'");
+    let _ = conn.execute_batch("ALTER TABLE hosts ADD COLUMN baud_rate INTEGER");
     // Commands typed at a prompt, for suggestions while typing (v1.11). Per
     // host and this machine only: they hold tokens and passwords in their
     // arguments, so there is no sync trigger on these tables.
@@ -213,6 +217,8 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
         jump_host_id: row.get(14)?,
         startup_command: row.get(15)?,
         agent_forwarding: row.get::<_, i64>(16)? != 0,
+        protocol: row.get(17)?,
+        baud_rate: row.get(18)?,
     })
 }
 
@@ -223,7 +229,8 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
 const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, \
     COALESCE(c.username, h.username), COALESCE(c.auth_method, h.auth_method), \
     h.password_saved, CASE WHEN c.id IS NULL THEN h.key_path ELSE c.key_path END, \
-    h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id, h.startup_command, h.agent_forwarding";
+    h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id, h.startup_command, h.agent_forwarding, \
+    h.protocol, h.baud_rate";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -288,6 +295,7 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                 "UPDATE hosts SET group_id=?2, label=?3, address=?4, port=?5, username=?6, \
                  auth_method=?7, password_saved=?8, key_path=?9, credential_id=?10, \
                  jump_host_id=?11, startup_command=?12, agent_forwarding=COALESCE(?13, agent_forwarding), \
+                 protocol=COALESCE(?14, protocol), baud_rate=CASE WHEN ?14 IS NULL THEN baud_rate ELSE ?15 END, \
                  updated_at=datetime('now') WHERE id=?1",
                 params![
                     id,
@@ -303,14 +311,16 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     jump_host_id,
                     startup_command,
                     input.agent_forwarding,
+                    input.protocol,
+                    input.baud_rate,
                 ],
             )?;
             id
         }
         None => {
             conn.execute(
-                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id, startup_command, agent_forwarding) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id, startup_command, agent_forwarding, protocol, baud_rate) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     input.group_id,
                     input.label,
@@ -324,6 +334,8 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     jump_host_id,
                     startup_command,
                     input.agent_forwarding.unwrap_or(false),
+                    input.protocol.as_deref().unwrap_or("ssh"),
+                    input.baud_rate,
                 ],
             )?;
             conn.last_insert_rowid()

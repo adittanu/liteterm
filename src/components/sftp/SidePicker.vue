@@ -7,6 +7,7 @@ import { useHostsStore } from '../../stores/hosts'
 import { useSessionsStore } from '../../stores/sessions'
 import { matchesQuery } from '../../utils/pageHelpers'
 import { thisComputer } from '../../utils/platform'
+import { isSsh } from '../../utils/hostProtocol'
 
 // Chooses what one side of the SFTP view shows: this PC or a saved host.
 // Connected hosts lead the list — they open instantly.
@@ -31,7 +32,7 @@ const connected = computed(
 type Item = { kind: 'local' } | { kind: 'host'; id: number }
 
 const hostList = computed(() =>
-  [...hosts.hosts]
+  [...hosts.hosts.filter(isSsh)]
     .filter((h) => matchesQuery(query.value, h.label, h.address, h.username))
     .sort((a, b) => {
       const ca = connected.value.has(a.id) ? 0 : 1

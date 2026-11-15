@@ -14,7 +14,8 @@ import { api } from '../services/api'
 import { isIpv4 } from '../utils/parseTarget'
 import { jumpCandidates } from '../utils/jumpHosts'
 import { secretStore, sshAgentName } from '../utils/platform'
-import type { AuthMethod } from '../types'
+import { BAUD_RATES, DEFAULT_BAUD, DEFAULT_PORT, PROTOCOLS, protocolOf } from '../utils/hostProtocol'
+import type { AuthMethod, HostProtocol, SerialPortEntry } from '../types'
 
 const dialogs = useDialogsStore()
 const hosts = useHostsStore()
@@ -39,8 +40,10 @@ const showCredDetails = ref(false)
 
 const form = reactive({
   label: '',
+  protocol: 'ssh' as HostProtocol,
   address: '',
   port: '22',
+  baud: String(DEFAULT_BAUD),
   group_id: null as number | null,
   jump_host_id: null as number | null,
   startup_command: '',
@@ -56,8 +59,36 @@ const form = reactive({
   cred_name: '',
 })
 
-const errors = reactive<{ label?: string; address?: string; port?: string; username?: string; key_path?: string; cred_name?: string }>({})
+const errors = reactive<{ label?: string; address?: string; port?: string; baud?: string; username?: string; key_path?: string; cred_name?: string }>({})
 const saving = ref(false)
+
+const isSshForm = computed(() => form.protocol === 'ssh')
+
+// Serial ports found on this computer, offered as suggestions; any other
+// device name can still be typed (a port that is unplugged right now)
+const serialPorts = ref<SerialPortEntry[]>([])
+async function loadSerialPorts() {
+  serialPorts.value = await api.listSerialPorts().catch(() => [])
+}
+
+function setProtocol(p: HostProtocol) {
+  const before = form.protocol
+  if (before === p) return
+  form.protocol = p
+  // A port left at the old protocol's default follows the new one
+  if (before !== 'serial' && p !== 'serial' && form.port === String(DEFAULT_PORT[before])) {
+    form.port = String(DEFAULT_PORT[p])
+  }
+  if (p === 'serial') {
+    void loadSerialPorts()
+    // A hostname typed for SSH is no serial device
+    if (before !== 'serial') form.address = ''
+  } else if (before === 'serial') {
+    form.address = ''
+    form.port = String(DEFAULT_PORT[p])
+  }
+  errors.address = errors.port = errors.baud = errors.username = undefined
+}
 
 const selectedCred = computed(() => {
   const id = Number(credentialChoice.value)
@@ -104,9 +135,17 @@ watch(
 function validate(): boolean {
   let ok = true
   if (!form.label.trim()) { errors.label = 'Give this connection a name'; ok = false }
+  if (form.protocol === 'serial') {
+    if (!form.address.trim()) { errors.address = 'Choose or type the serial port'; ok = false }
+    const b = Number(form.baud)
+    if (!Number.isInteger(b) || b < 50 || b > 4_000_000) { errors.baud = 'Baud rate must be 50–4000000'; ok = false }
+    return ok
+  }
   if (!form.address.trim()) { errors.address = 'Hostname or IP is required'; ok = false }
   const p = Number(form.port)
   if (!form.port || !Number.isInteger(p) || p < 1 || p > 65535) { errors.port = 'Port must be 1–65535'; ok = false }
+  // Telnet signs in at the server's own prompt
+  if (form.protocol === 'telnet') return ok
   if (credentialChoice.value === 'new') {
     if (!form.cred_name.trim()) { errors.cred_name = 'Name this credential'; ok = false }
     if (!form.username.trim()) { errors.username = 'Username is required'; ok = false }
@@ -124,8 +163,11 @@ watch(open, (o) => {
   showCredDetails.value = false
   if (host) {
     form.label = host.label
+    form.protocol = protocolOf(host)
     form.address = host.address
     form.port = String(host.port)
+    form.baud = String(host.baud_rate ?? DEFAULT_BAUD)
+    if (form.protocol === 'serial') void loadSerialPorts()
     form.group_id = host.group_id
     form.jump_host_id = host.jump_host_id ?? null
     form.startup_command = host.startup_command ?? ''
@@ -148,6 +190,8 @@ watch(open, (o) => {
     // domain stays as the label
     form.address = prefill?.ips?.[0] ?? typed
     form.port = prefill ? String(prefill.port) : '22'
+    form.protocol = 'ssh'
+    form.baud = String(DEFAULT_BAUD)
     form.group_id = dialogs.hostDialog.groupId
     form.jump_host_id = prefill?.jumpHostId ?? null
     form.startup_command = ''
@@ -171,7 +215,7 @@ watch(open, (o) => {
         .catch(() => {})
     }
   }
-  errors.label = errors.address = errors.port = errors.username = errors.key_path = errors.cred_name = undefined
+  errors.label = errors.address = errors.port = errors.baud = errors.username = errors.key_path = errors.cred_name = undefined
 })
 
 async function browseKey() {
@@ -193,9 +237,30 @@ async function save() {
     const usingExisting = Number.isInteger(credId) && credId > 0 ? credentials.byId(credId) : undefined
 
     let input
-    if (usingExisting) {
+    if (form.protocol !== 'ssh') {
+      // Telnet and serial log in at the device's own prompt: no stored login
+      const serial = form.protocol === 'serial'
       input = {
         id: editing.value?.id,
+        group_id: form.group_id,
+        jump_host_id: null,
+        startup_command: null,
+        agent_forwarding: false,
+        protocol: form.protocol,
+        baud_rate: serial ? Number(form.baud) : null,
+        label: form.label.trim(),
+        address: form.address.trim(),
+        port: serial ? 0 : Number(form.port),
+        username: form.username.trim(),
+        auth_method: 'password' as AuthMethod,
+        save_password: false,
+        credential_id: null,
+      }
+    } else if (usingExisting) {
+      input = {
+        id: editing.value?.id,
+        protocol: 'ssh' as HostProtocol,
+        baud_rate: null,
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
         startup_command: form.startup_command.trim() || null,
@@ -210,6 +275,8 @@ async function save() {
     } else if (credentialChoice.value === 'new') {
       input = {
         id: editing.value?.id,
+        protocol: 'ssh' as HostProtocol,
+        baud_rate: null,
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
         startup_command: form.startup_command.trim() || null,
@@ -232,6 +299,8 @@ async function save() {
     } else {
       input = {
         id: editing.value?.id,
+        protocol: 'ssh' as HostProtocol,
+        baud_rate: null,
         group_id: form.group_id,
         jump_host_id: form.jump_host_id,
         startup_command: form.startup_command.trim() || null,
@@ -266,7 +335,7 @@ async function save() {
           ? form.key_passphrase
           : ''
     const pending =
-      credentialChoice.value === '' || credentialChoice.value === 'new'
+      form.protocol === 'ssh' && (credentialChoice.value === '' || credentialChoice.value === 'new')
         ? typedSecret || undefined
         : undefined
     dialogs.closeHostDialog()
@@ -302,7 +371,77 @@ async function save() {
         <span v-if="errors.label" class="field-error">{{ errors.label }}</span>
       </div>
 
-      <div class="row">
+      <div class="field">
+        <span class="field-label">Protocol</span>
+        <div class="auth-toggle" role="radiogroup" aria-label="Protocol">
+          <button
+            v-for="p in PROTOCOLS"
+            :key="p.value"
+            type="button"
+            class="auth-option"
+            :class="{ on: form.protocol === p.value }"
+            role="radio"
+            :aria-checked="form.protocol === p.value"
+            @click="setProtocol(p.value)"
+          >
+            {{ p.label }}
+          </button>
+        </div>
+        <span v-if="form.protocol === 'telnet'" class="field-hint">
+          Unencrypted: everything you type, passwords included, crosses the network as is.
+          For switches, routers and old systems without SSH.
+        </span>
+        <span v-else-if="form.protocol === 'serial'" class="field-hint">
+          A console cable or USB-serial adapter on this computer. 8 data bits, no parity,
+          1 stop bit, no flow control.
+        </span>
+      </div>
+
+      <div v-if="form.protocol === 'serial'" class="row">
+        <div class="field grow">
+          <label class="field-label" for="hf-serial">Serial port</label>
+          <input
+            id="hf-serial"
+            v-model="form.address"
+            class="field-input mono"
+            :class="{ invalid: errors.address }"
+            type="text"
+            list="hf-serial-ports"
+            :placeholder="serialPorts[0]?.name ?? 'COM3 or /dev/ttyUSB0'"
+            spellcheck="false"
+            autocapitalize="off"
+          />
+          <datalist id="hf-serial-ports">
+            <option v-for="p in serialPorts" :key="p.name" :value="p.name">{{ p.description ?? '' }}</option>
+          </datalist>
+          <span v-if="errors.address" class="field-error">{{ errors.address }}</span>
+          <span v-else class="field-hint">
+            <template v-if="serialPorts.length">
+              Found: <span class="mono">{{ serialPorts.map((p) => p.description ? `${p.name} (${p.description})` : p.name).join(', ') }}</span>.
+            </template>
+            <template v-else>No serial port found. Plug the adapter in, then</template>
+            <button type="button" class="link-btn" @click="loadSerialPorts">look again</button>
+          </span>
+        </div>
+        <div class="field baud">
+          <label class="field-label" for="hf-baud">Baud rate</label>
+          <input
+            id="hf-baud"
+            v-model="form.baud"
+            class="field-input mono"
+            :class="{ invalid: errors.baud }"
+            type="text"
+            inputmode="numeric"
+            list="hf-baud-rates"
+          />
+          <datalist id="hf-baud-rates">
+            <option v-for="b in BAUD_RATES" :key="b" :value="String(b)" />
+          </datalist>
+          <span v-if="errors.baud" class="field-error">{{ errors.baud }}</span>
+        </div>
+      </div>
+
+      <div v-else class="row">
         <div class="field grow">
           <label class="field-label" for="hf-address">Host</label>
           <input
@@ -329,7 +468,7 @@ async function save() {
             :class="{ invalid: errors.port }"
             type="text"
             inputmode="numeric"
-            placeholder="22"
+            :placeholder="String(DEFAULT_PORT[form.protocol === 'telnet' ? 'telnet' : 'ssh'])"
           />
           <span v-if="errors.port" class="field-error">{{ errors.port }}</span>
         </div>
@@ -340,7 +479,7 @@ async function save() {
         <SearchSelect id="hf-group" v-model="form.group_id" :options="groupOptions" aria-label="Group" />
       </div>
 
-      <div class="field">
+      <div v-if="isSshForm" class="field">
         <label class="field-label" for="hf-jump">Jump host</label>
         <SearchSelect id="hf-jump" v-model="form.jump_host_id" :options="jumpOptions" aria-label="Jump host" />
         <span class="field-hint">
@@ -349,7 +488,7 @@ async function save() {
         </span>
       </div>
 
-      <div class="field">
+      <div v-if="isSshForm" class="field">
         <label class="field-label" for="hf-startup">Startup command</label>
         <input
           id="hf-startup"
@@ -366,7 +505,7 @@ async function save() {
         </span>
       </div>
 
-      <div class="field">
+      <div v-if="isSshForm" class="field">
         <label class="check">
           <input v-model="form.agent_forwarding" type="checkbox" />
           Forward the SSH agent
@@ -378,6 +517,7 @@ async function save() {
         </span>
       </div>
 
+      <template v-if="isSshForm">
       <div class="divider"></div>
 
       <!-- Credentials -->
@@ -547,6 +687,7 @@ async function save() {
           </div>
         </template>
       </template>
+      </template>
 
       <footer class="form-actions">
         <button type="button" class="btn btn-ghost" @click="dialogs.closeHostDialog()">Cancel</button>
@@ -578,6 +719,31 @@ async function save() {
 .port {
   width: 96px;
   flex-shrink: 0;
+}
+
+.baud {
+  width: 128px;
+  flex-shrink: 0;
+}
+
+/* "look again" inside a hint: reads as part of the sentence */
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.link-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .field-input.invalid {

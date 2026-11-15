@@ -42,7 +42,7 @@ const groups: { name: string; rows: [string, Cell, Cell, Cell][] }[] = [
       ['Jump hosts', yes(), yes(), yes()],
       ['Port forwarding', yes('Local, remote and SOCKS'), yes(), yes()],
       ['Agent forwarding', yes('Per host, off until you turn it on'), yes(), yes()],
-      ['Mosh, Telnet and serial', no(), yes(), yes()],
+      ['Mosh, Telnet and serial', part('Telnet and serial; no Mosh'), yes(), yes()],
       ['SSH certificates and FIDO2 keys', part('Certificates; FIDO2 keys not yet'), yes(), yes()],
     ],
   },
@@ -78,7 +78,7 @@ const pickLiteterm = [
 
 const pickTermius = [
   'You connect from a phone or a tablet.',
-  'You need Mosh, Telnet or a serial console.',
+  'You need Mosh.',
   'You log in with FIDO2 hardware keys.',
   'Your team shares hosts and credentials from one vault.',
 ];

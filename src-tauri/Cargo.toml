@@ -34,6 +34,9 @@ async-trait = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 russh = "0.45"
 russh-sftp = "2"
+# Serial-console hosts (src/stream.rs). Without libudev: Linux lists ports
+# from /sys/class/tty, so building needs no extra system package
+serialport = { version = "4.10", default-features = false }
 portable-pty = "0.8"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

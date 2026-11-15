@@ -12,6 +12,7 @@ import { errorText } from '../stores/sessions'
 import { api } from '../services/api'
 import { jumpCandidates } from '../utils/jumpHosts'
 import { secretStore, sshAgentName } from '../utils/platform'
+import { DEFAULT_BAUD, protocolOf } from '../utils/hostProtocol'
 import { previewOf } from '../utils/notePreview'
 import PlanetAvatar from './PlanetAvatar.vue'
 import PvText from './PvText.vue'
@@ -20,6 +21,10 @@ import type { Host } from '../types'
 
 const props = defineProps<{ host: Host }>()
 const emit = defineEmits<{ close: [] }>()
+
+const protocol = computed(() => protocolOf(props.host))
+// SSH-only parts (jump host, login, agent, SFTP) stay hidden for Telnet and serial
+const ssh = computed(() => protocol.value === 'ssh')
 
 const hosts = useHostsStore()
 const credentials = useCredentialsStore()
@@ -33,6 +38,7 @@ const form = reactive({
   label: props.host.label,
   address: props.host.address,
   port: String(props.host.port),
+  baud: String(props.host.baud_rate ?? DEFAULT_BAUD),
   group_id: props.host.group_id,
   jump_host_id: props.host.jump_host_id ?? null,
   startup_command: props.host.startup_command ?? '',
@@ -98,8 +104,11 @@ const credOptions = computed<ComboOption[]>(() => [
 // The username is otherwise invisible when a credential is linked (the
 // Login card is hidden) — surface it here, next to port and OS
 const metaLine = computed(() => {
-  const parts = [props.host.username, `port ${props.host.port}`]
-  if (props.host.os && props.host.os !== 'unknown') parts.push(props.host.os)
+  const h = props.host
+  if (protocol.value === 'telnet') return `Telnet · port ${h.port}`
+  if (protocol.value === 'serial') return `Serial · ${h.baud_rate ?? DEFAULT_BAUD} baud`
+  const parts = [h.username, `port ${h.port}`]
+  if (h.os && h.os !== 'unknown') parts.push(h.os)
   return parts.join(' · ')
 })
 
@@ -150,6 +159,7 @@ function snapshot(h: Host) {
     label: h.label,
     address: h.address,
     port: String(h.port),
+    baud: String(h.baud_rate ?? DEFAULT_BAUD),
     group_id: h.group_id,
     jump_host_id: h.jump_host_id ?? null,
     startup_command: h.startup_command ?? '',
@@ -198,9 +208,19 @@ async function saveField(): Promise<boolean> {
 // `Number(form.port) || old` quietly swapped a bad entry for the old port while
 // the box kept the bad text; 99999 wrapped around to 34463 in the backend
 function parsePort(): number {
+  // A serial host has no network port; its speed is the baud rate
+  if (protocol.value === 'serial') return 0
   const n = Number(form.port)
   if (!Number.isInteger(n) || n < 1 || n > 65535) {
     throw new Error('Port must be a whole number from 1 to 65535')
+  }
+  return n
+}
+
+function parseBaud(): number {
+  const n = Number(form.baud)
+  if (!Number.isInteger(n) || n < 50 || n > 4_000_000) {
+    throw new Error('Baud rate must be a whole number from 50 to 4000000')
   }
   return n
 }
@@ -210,6 +230,7 @@ async function saveFieldUnsafe() {
     form.label === props.host.label &&
     form.address.trim() === props.host.address &&
     form.port === String(props.host.port) &&
+    form.baud === String(props.host.baud_rate ?? DEFAULT_BAUD) &&
     form.group_id === props.host.group_id &&
     form.jump_host_id === (props.host.jump_host_id ?? null) &&
     form.startup_command.trim() === (props.host.startup_command ?? '') &&
@@ -249,6 +270,8 @@ function buildInput() {
     key_path: inlineMode.value && form.auth_method === 'key' ? form.key_path.trim() || null : null,
     key_passphrase: inlineMode.value && form.auth_method === 'key' && form.key_passphrase ? form.key_passphrase : null,
     credential_id: form.credential_id,
+    // Telnet and serial: the protocol rides along so the baud rate is saved
+    ...(ssh.value ? {} : { protocol: protocol.value, baud_rate: protocol.value === 'serial' ? parseBaud() : null }),
   }
 }
 
@@ -311,7 +334,17 @@ function connect() {
           <label class="field-label" for="hp-label">Name</label>
           <input id="hp-label" v-model="form.label" class="field-input pv-field" type="text" spellcheck="false" @blur="saveField" @keydown.enter="saveField" />
         </div>
-        <div class="gen-row">
+        <div v-if="protocol === 'serial'" class="gen-row">
+          <div class="field grow">
+            <label class="field-label" for="hp-address">Serial port</label>
+            <input id="hp-address" v-model="form.address" class="field-input mono" type="text" placeholder="COM3 or /dev/ttyUSB0" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
+          </div>
+          <div class="field port-field">
+            <label class="field-label" for="hp-baud">Baud</label>
+            <input id="hp-baud" v-model="form.baud" class="field-input mono" type="text" inputmode="numeric" @blur="saveField" @keydown.enter="saveField" />
+          </div>
+        </div>
+        <div v-else class="gen-row">
           <div class="field grow">
             <label class="field-label" for="hp-address">Host</label>
             <input id="hp-address" v-model="form.address" class="field-input mono pv-field" type="text" placeholder="example.com or 192.168.1.10" spellcheck="false" autocapitalize="off" @blur="saveField" @keydown.enter="saveField" />
@@ -325,6 +358,7 @@ function connect() {
           <label class="field-label" for="hp-group">Group</label>
           <SearchSelect id="hp-group" v-model="form.group_id" :options="groupOptions" aria-label="Group" @change="saveField" />
         </div>
+        <template v-if="ssh">
         <div class="field">
           <label class="field-label" for="hp-jump">Jump host</label>
           <SearchSelect id="hp-jump" v-model="form.jump_host_id" :options="jumpOptions" aria-label="Jump host" @change="saveField" />
@@ -351,10 +385,15 @@ function connect() {
             Create reusable credentials in Keychain.
           </span>
         </div>
+        </template>
+        <p v-else class="field-hint">
+          {{ protocol === 'telnet' ? 'Telnet' : 'A serial console' }} signs in at the device's own prompt.
+          Change the protocol under Edit.
+        </p>
       </div>
 
       <!-- Inline auth: shown when no credential is linked -->
-      <div v-if="inlineMode" class="panel-card">
+      <div v-if="ssh && inlineMode" class="panel-card">
         <div class="panel-card-title">Login</div>
         <div class="field">
           <label class="field-label" for="hp-user">Username</label>
@@ -447,6 +486,7 @@ function connect() {
     <footer class="panel-footer">
       <button class="btn btn-primary connect-btn" @click="connect">Connect</button>
       <button
+        v-if="ssh"
         class="btn btn-secondary sftp-btn"
         :aria-label="pv.t(`Browse files on ${host.label}`)"
         title="Browse files (SFTP)"

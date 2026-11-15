@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
 import { thisComputerLower } from '../utils/platform'
+import { hostTarget, protocolOf } from '../utils/hostProtocol'
 import { useHostsStore } from './hosts'
 import { useUiStore } from './ui'
 import { useDialogsStore } from './dialogs'
@@ -200,7 +201,12 @@ export const useSessionsStore = defineStore('sessions', () => {
       return
     }
     const target = { parentId: rootId, dir }
-    if (root.kind === 'ssh' && root.hostId !== null) {
+    if (root.kind === 'serial') {
+      // The port is held by this pane; a second one could not open it
+      useUiStore().toast('info', 'A serial port takes one connection at a time')
+      return
+    }
+    if (root.hostId !== null && (root.kind === 'ssh' || root.kind === 'telnet')) {
       void connect(root.hostId, undefined, { split: target })
     } else {
       void spawnLocalTab(
@@ -277,10 +283,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       const sessionId = await api.connect(hostId, pendingPassword ?? undefined)
       const tab: SessionTab = {
         id: sessionId,
-        kind: 'ssh',
+        kind: protocolOf(host),
         hostId,
         label: host.label,
-        address: `${host.username}@${host.address}`,
+        address: hostTarget(host),
         status: 'connecting',
         sftpOpen: false,
       }

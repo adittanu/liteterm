@@ -35,6 +35,7 @@ import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
 import { fuzzy, highlight } from '../utils/fuzzy'
 import { copyText, plural, relativeAge } from '../utils/pageHelpers'
+import { hostTarget, isSsh, protocolOf } from '../utils/hostProtocol'
 import { comboFor, comboText } from '../services/shortcuts'
 import type { Host, HostGroup } from '../types'
 
@@ -191,6 +192,7 @@ function openSftp(host: Host) {
 }
 
 function sshCommand(h: Host): string {
+  if (protocolOf(h) === 'telnet') return `telnet ${h.address}${h.port !== 23 ? ` ${h.port}` : ''}`
   return `ssh ${h.username}@${h.address}${h.port !== 22 ? ` -p ${h.port}` : ''}`
 }
 
@@ -207,6 +209,9 @@ async function duplicate(h: Host) {
       credential_id: h.credential_id,
       jump_host_id: h.jump_host_id,
       startup_command: h.startup_command,
+      agent_forwarding: h.agent_forwarding,
+      protocol: protocolOf(h),
+      baud_rate: h.baud_rate,
       save_password: false,
     })
     selectedId.value = copy.id
@@ -262,10 +267,16 @@ function hostMenu(host: Host, e: MouseEvent) {
     y: e.clientY,
     items: [
       { label: live ? 'Open terminal' : 'Connect', icon: Play, action: () => connect(host) },
-      { label: 'Browse files (SFTP)', icon: FolderTree, action: () => openSftp(host) },
+      ...(isSsh(host) ? [{ label: 'Browse files (SFTP)', icon: FolderTree, action: () => openSftp(host) }] : []),
       { label: 'Edit', icon: Pencil, action: () => dialogs.openHostDialog(host) },
       { label: 'Duplicate', icon: Copy, action: () => void duplicate(host) },
-      { label: 'Copy SSH command', icon: ClipboardCopy, action: () => void copyText(sshCommand(host), 'SSH command copied') },
+      ...(protocolOf(host) === 'serial'
+        ? []
+        : [{
+            label: isSsh(host) ? 'Copy SSH command' : 'Copy telnet command',
+            icon: ClipboardCopy,
+            action: () => void copyText(sshCommand(host), isSsh(host) ? 'SSH command copied' : 'Telnet command copied'),
+          }]),
       { label: 'Delete', icon: Trash2, danger: true, action: () => void removeHost(host) },
     ],
   }
@@ -583,7 +594,7 @@ function pickGroup(g: GroupFilter) {
                 role="button"
                 :tabindex="tabIndexFor(r.host.id, sec.key === 'rest' && activeRows.length ? i + activeRows.length : i)"
                 :data-host-id="r.host.id"
-                :aria-label="`${pv.t(r.host.label)}, ${pv.t(r.host.username)}@${pv.t(r.host.address)}${r.status !== 'idle' ? ', ' + statusLabel[r.status] : ''}. Enter to connect`"
+                :aria-label="`${pv.t(r.host.label)}, ${pv.t(hostTarget(r.host))}${r.status !== 'idle' ? ', ' + statusLabel[r.status] : ''}. Enter to connect`"
                 @click="selectedId = r.host.id; focusKey = r.host.id"
                 @dblclick="connect(r.host)"
                 @keydown.self="onCardKey($event, r.host)"
@@ -600,7 +611,8 @@ function pickGroup(g: GroupFilter) {
                     <PvText v-if="pv.enabled" :text="r.host.label" />
                     <template v-for="(seg, k) in r.label" v-else :key="k"><mark v-if="seg.hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
                   </span>
-                  <span class="host-sub mono text-ellipsis"><PvText :text="r.host.username" />@<PvText :text="r.host.address" /><template v-if="r.host.port !== 22">:{{ r.host.port }}</template></span>
+                  <span v-if="isSsh(r.host)" class="host-sub mono text-ellipsis"><PvText :text="r.host.username" />@<PvText :text="r.host.address" /><template v-if="r.host.port !== 22">:{{ r.host.port }}</template></span>
+                  <span v-else class="host-sub mono text-ellipsis">{{ protocolOf(r.host) === 'telnet' ? 'telnet' : 'serial' }} · <PvText :text="hostTarget(r.host)" /></span>
                 </span>
 
                 <span v-if="layout === 'list'" class="host-col group-col text-ellipsis">
@@ -620,6 +632,7 @@ function pickGroup(g: GroupFilter) {
                   </span>
                   <span class="trail-actions">
                     <button
+                      v-if="isSsh(r.host)"
                       class="act"
                       :aria-label="`Browse files on ${pv.t(r.host.label)}`"
                       title="Browse files (SFTP)"

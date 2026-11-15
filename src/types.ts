@@ -27,6 +27,15 @@ export interface Host {
   jump_host_id: number | null // saved host to hop through (ProxyJump)
   startup_command: string | null // typed into the shell after every login
   agent_forwarding: boolean // ssh -A: the server may use this computer's agent
+  protocol: HostProtocol
+  baud_rate: number | null // serial hosts; their device (COM3, /dev/ttyUSB0) is `address`
+}
+
+export type HostProtocol = 'ssh' | 'telnet' | 'serial'
+
+export interface SerialPortEntry {
+  name: string
+  description: string | null
 }
 
 export interface HostInput {
@@ -50,6 +59,9 @@ export interface HostInput {
   startup_command: string | null
   // Optional: left out, the backend keeps what the host has
   agent_forwarding?: boolean
+  // Optional the same way; when protocol is sent, baud_rate is written with it
+  protocol?: HostProtocol
+  baud_rate?: number | null
 }
 
 export interface Credential {
@@ -129,7 +141,7 @@ export type SessionStatus =
   | 'reconnecting' // dropped; the backend redials with backoff on the same session
   | 'error'
   | 'closed'
-export type SessionKind = 'ssh' | 'local' | 'herdr'
+export type SessionKind = 'ssh' | 'local' | 'herdr' | 'telnet' | 'serial'
 
 export interface SessionTab {
   id: number // session id (backend)

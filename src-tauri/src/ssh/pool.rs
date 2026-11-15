@@ -88,6 +88,8 @@ pub struct AppState {
     pub next_transfer_id: AtomicU32,
     pub sessions: Mutex<HashMap<u32, Arc<SshSession>>>,
     pub local_sessions: Mutex<HashMap<u32, Arc<crate::local::LocalSession>>>,
+    /// Telnet and serial-console sessions: a byte stream, no SSH
+    pub stream_sessions: Mutex<HashMap<u32, Arc<crate::stream::StreamSession>>>,
     pub pending_hostkey: Mutex<HashMap<u32, mpsc::Sender<HostKeyDecision>>>,
     pub forwards: Mutex<HashMap<i64, ForwardHandle>>,
     /// Remote forwards (-R) the servers listen for, by (session id, server

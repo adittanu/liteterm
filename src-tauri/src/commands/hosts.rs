@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::store::models::{Host, HostGroup, HostInput};
+use crate::store::models::{Host, HostGroup, HostInput, HOST_PROTOCOLS};
 use crate::store::db;
 use crate::Db;
 
@@ -18,12 +18,29 @@ pub fn list_groups(db: State<Db>) -> Result<Vec<HostGroup>, String> {
 
 #[tauri::command]
 pub fn upsert_host(db: State<Db>, input: HostInput) -> Result<Host, String> {
-    // The column is an i64 but connecting casts it `as u16`, which silently
-    // wrapped 99999 into 34463
-    if !(1..=65535).contains(&input.port) {
+    let conn = db.0.lock().map_err(|_| "database busy")?;
+    // A caller that leaves the protocol out keeps the stored one
+    let stored = match (input.id, &input.protocol) {
+        (Some(id), None) => db::get_host(&conn, id).map_err(|e| e.to_string())?.map(|h| h.protocol),
+        _ => None,
+    };
+    let protocol = input.protocol.clone().or(stored).unwrap_or_else(|| "ssh".into());
+    if !HOST_PROTOCOLS.contains(&protocol.as_str()) {
+        return Err(format!("Unknown protocol “{protocol}”"));
+    }
+    if protocol == "serial" {
+        if input.address.trim().is_empty() {
+            return Err("Choose the serial port".into());
+        }
+        let baud_given = input.protocol.is_some();
+        if baud_given && !input.baud_rate.is_some_and(|b| (50..=4_000_000).contains(&b)) {
+            return Err("Baud rate must be 50–4000000".into());
+        }
+    } else if !(1..=65535).contains(&input.port) {
+        // The column is an i64 but connecting casts it `as u16`, which silently
+        // wrapped 99999 into 34463
         return Err("Port must be 1–65535".into());
     }
-    let conn = db.0.lock().map_err(|_| "database busy")?;
     db::upsert_host(&conn, &input).map_err(|e| e.to_string())
 }
 

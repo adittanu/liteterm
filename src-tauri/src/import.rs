@@ -25,6 +25,9 @@ pub struct ParsedHost {
     pub auth_method: Option<String>,
     /// From a LiteTerm export
     pub startup_command: Option<String>,
+    /// From a LiteTerm export: "telnet" or "serial" (None is SSH)
+    pub protocol: Option<String>,
+    pub baud_rate: Option<i64>,
 }
 
 impl Default for ParsedHost {
@@ -43,6 +46,8 @@ impl Default for ParsedHost {
             proxy_jump: None,
             auth_method: None,
             startup_command: None,
+            protocol: None,
+            baud_rate: None,
         }
     }
 }
@@ -482,6 +487,8 @@ fn host_from_json(host: &serde_json::Value, idx: &JsonIndex) -> Option<ParsedHos
         auth_method: first_str(host, &["authMethod", "auth_method"])
             .filter(|m| matches!(m.as_str(), "agent" | "key" | "password")),
         startup_command: first_str(host, &["startupCommand", "startup_command"]),
+        protocol: first_str(host, &["protocol"]).filter(|p| crate::store::models::HOST_PROTOCOLS.contains(&p.as_str())),
+        baud_rate: host.get("baudRate").or_else(|| host.get("baud_rate")).and_then(|v| v.as_i64()),
     })
 }
 

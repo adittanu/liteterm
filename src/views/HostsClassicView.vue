@@ -26,6 +26,7 @@ import PvText from '../components/PvText.vue'
 import { usePrivacyStore } from '../stores/privacy'
 import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
+import { isSsh, protocolOf } from '../utils/hostProtocol'
 import type { Host, HostGroup } from '../types'
 
 const hosts = useHostsStore()
@@ -398,7 +399,7 @@ async function deleteSelected() {
                   <span class="host-card-text">
                     <span class="host-card-name text-ellipsis"><PvText :text="host.label" /></span>
                     <span class="host-card-sub text-ellipsis">
-                      ssh, <PvText :text="host.username" /><template v-if="host.group_id && host.group_id !== currentGroupId"> · <PvText :text="groupName(host.group_id)" /></template>
+                      <template v-if="isSsh(host)">ssh, <PvText :text="host.username" /></template><template v-else>{{ protocolOf(host) }}, <PvText :text="host.address" /></template><template v-if="host.group_id && host.group_id !== currentGroupId"> · <PvText :text="groupName(host.group_id)" /></template>
                     </span>
                   </span>
                   <span class="host-card-status" :class="statusFor(host.id)" :title="statusFor(host.id)"></span>

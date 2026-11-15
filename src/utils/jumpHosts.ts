@@ -1,4 +1,5 @@
 import type { Host } from '../types'
+import { isSsh } from './hostProtocol'
 import { parseHop } from './parseTarget'
 
 /**
@@ -6,9 +7,11 @@ import { parseHop } from './parseTarget'
  * host whose own jump chain already passes through `selfId` (picking one
  * would make a loop). `selfId` null = a host that isn't saved yet.
  */
-export function jumpCandidates(hosts: Host[], selfId: number | null): Host[] {
+export function jumpCandidates(all: Host[], selfId: number | null): Host[] {
+  // Only an SSH host can carry the tunnel to the next hop
+  const hosts = all.filter(isSsh)
   if (selfId === null) return hosts
-  const byId = new Map(hosts.map((h) => [h.id, h]))
+  const byId = new Map(all.map((h) => [h.id, h]))
   return hosts.filter((h) => {
     if (h.id === selfId) return false
     const seen = new Set<number>()
@@ -32,6 +35,7 @@ export function findSavedHost(hosts: Host[], spec: string): Host | undefined {
     const hits = hosts
       .filter(
         (h) =>
+          isSsh(h) &&
           h.address.toLowerCase() === hop.host &&
           (hop.port === null || h.port === hop.port) &&
           (hop.username === null || h.username === hop.username),

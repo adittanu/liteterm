@@ -163,6 +163,8 @@ fn apply_parsed_hosts(
             jump_host_id: None,
             startup_command: h.startup_command.clone(),
             agent_forwarding: None,
+            protocol: h.protocol.clone(),
+            baud_rate: h.baud_rate,
         };
         let host = db::upsert_host(conn, &input).map_err(|e| e.to_string())?;
         host_ids.push(host.id);
@@ -354,6 +356,12 @@ pub fn export_hosts(
         }
         if let Some(cmd) = &h.startup_command {
             obj["startupCommand"] = serde_json::json!(cmd);
+        }
+        if h.protocol != "ssh" {
+            obj["protocol"] = serde_json::json!(h.protocol);
+        }
+        if let Some(baud) = h.baud_rate {
+            obj["baudRate"] = serde_json::json!(baud);
         }
         out_hosts.push(obj);
     }

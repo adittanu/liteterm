@@ -11,6 +11,7 @@ import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
 import { thisComputer, thisComputerLower } from '../utils/platform'
 import { DEFAULT_SOCKS_PORT, FORWARD_KINDS } from '../utils/forwards'
+import { isSsh } from '../utils/hostProtocol'
 import type { ForwardKind, PortForward } from '../types'
 
 const props = defineProps<{ forward: PortForward | null }>()
@@ -29,7 +30,7 @@ const kind = ref<ForwardKind>(f?.kind ?? 'local')
 // dynamic: local_port only.
 const form = reactive({
   name: f?.name ?? '',
-  host_id: f?.host_id ?? hosts.hosts[0]?.id ?? 0,
+  host_id: f?.host_id ?? hosts.hosts.find(isSsh)?.id ?? 0,
   local_port: f ? String(f.local_port) : '',
   remote_host: f?.remote_host || 'localhost',
   remote_port: f && f.kind !== 'dynamic' ? String(f.remote_port) : '',
@@ -42,7 +43,8 @@ const submitted = ref(false)
 const saving = ref(false)
 
 const hostOptions = computed<ComboOption[]>(() =>
-  hosts.hosts.map((h) => ({ value: h.id, label: h.label, hint: h.address })),
+  // Tunnels ride on SSH; a Telnet or serial host can't carry one
+  hosts.hosts.filter(isSsh).map((h) => ({ value: h.id, label: h.label, hint: h.address })),
 )
 const hostLabel = computed(() => hosts.hostById(form.host_id)?.label ?? 'host')
 const kindInfo = computed(() => FORWARD_KINDS.find((k) => k.kind === kind.value)!)

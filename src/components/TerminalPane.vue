@@ -666,7 +666,7 @@ function pasteText(text: string) {
 
 function quotePath(path: string): string {
   if (!/[\s'"()&;$`]/.test(path)) return path
-  if (props.session.kind !== 'ssh' && isWindows) return `"${path}"`
+  if ((props.session.kind === 'local' || props.session.kind === 'herdr') && isWindows) return `"${path}"`
   return `'${path.replace(/'/g, `'\\''`)}'`
 }
 
@@ -675,6 +675,11 @@ async function pasteImage(image: Blob) {
   if (!ext || pastingImage) return
   if (image.size > MAX_PASTE_IMAGE) {
     ui.toast('error', 'That image is larger than 25 MB')
+    return
+  }
+  // No file transfer over Telnet or a serial line: there is nowhere to put it
+  if (props.session.kind === 'telnet' || props.session.kind === 'serial') {
+    ui.toast('info', `Images can't be pasted into a ${props.session.kind === 'telnet' ? 'Telnet' : 'serial'} session`)
     return
   }
   pastingImage = true
@@ -793,7 +798,7 @@ onMounted(() => {
     //   which remote shells treat harmlessly.
     if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       if (!kittyActive) {
-        queueInput(props.session.kind === 'ssh' ? '\n' : '\x1b[13;2u')
+        queueInput(props.session.kind === 'local' || props.session.kind === 'herdr' ? '\x1b[13;2u' : '\n')
         return false
       }
     }
