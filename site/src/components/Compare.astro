@@ -44,7 +44,7 @@ const groups: { name: string; rows: [string, Cell, Cell, Cell][] }[] = [
       ['Agent forwarding', yes('Per host, off until you turn it on'), yes(), yes()],
       ['Telnet and serial consoles', yes(), yes(), yes()],
       ['SSH certificates', yes('Key files and the SSH agent'), yes(), yes()],
-      ['FIDO2 security keys', part('Through the SSH agent'), yes(), yes()],
+      ['FIDO2 security keys', yes('Through the SSH agent'), yes(), yes()],
       ['Mosh', no(), yes(), yes()],
     ],
   },
