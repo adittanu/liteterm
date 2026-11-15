@@ -70,20 +70,6 @@ const groups: { name: string; rows: [string, Cell, Cell, Cell][] }[] = [
 ];
 
 const SR: Record<Kind, string> = { yes: 'Yes', no: 'No', part: 'Partly', text: '', unlisted: '' };
-
-const pickLiteterm = [
-  'You want your hosts on every computer you use without a subscription.',
-  'You’d rather keep passwords in the keychain your OS already protects.',
-  'You keep runbooks next to your servers and want to run them from there.',
-  'You want to read the code you trust with your SSH keys.',
-];
-
-const pickTermius = [
-  'You connect from a phone or a tablet.',
-  'You need Mosh.',
-  'You use FIDO2 hardware keys without an SSH agent.',
-  'Your team shares hosts and credentials from one vault.',
-];
 ---
 
 <section class="section" id="compare" aria-labelledby="compare-title">
@@ -162,21 +148,6 @@ const pickTermius = [
       Termius plans and features as listed on <a href={TERMIUS_PRICING}>termius.com/pricing</a> on {CHECKED}, yearly billing. “Not listed”
       means that page doesn’t mention it.
     </p>
-
-    <div class="fit">
-      <article class="fit-card fit-us">
-        <h3>Pick LiteTerm if</h3>
-        <ul>
-          {pickLiteterm.map((p) => <li>{p}</li>)}
-        </ul>
-      </article>
-      <article class="fit-card">
-        <h3>Pick Termius if</h3>
-        <ul>
-          {pickTermius.map((p) => <li>{p}</li>)}
-        </ul>
-      </article>
-    </div>
 
     <p class="move">
       <strong>Coming from Termius?</strong> Export your data there, then choose Import in LiteTerm. Hosts, groups and the keys inside the export
@@ -334,54 +305,6 @@ const pickTermius = [
     font-size: 0.875rem;
   }
 
-  .fit {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-4);
-    margin-block-start: var(--space-7);
-  }
-
-  .fit-card {
-    display: grid;
-    align-content: start;
-    gap: var(--space-4);
-    padding: var(--space-5);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-  }
-
-  .fit-us {
-    border-color: oklch(0.66 0.16 252 / 0.35);
-  }
-
-  .fit-card ul {
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .fit-card li {
-    position: relative;
-    padding-inline-start: var(--space-5);
-    color: var(--text-2);
-    font-size: 0.9375rem;
-  }
-
-  .fit-card li::before {
-    content: '';
-    position: absolute;
-    inset-inline-start: 0.25rem;
-    inset-block-start: 0.62em;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-3);
-  }
-
-  .fit-us li::before {
-    background: var(--accent);
-  }
-
   .move {
     max-width: 44rem;
     margin-block-start: var(--space-5);
@@ -401,10 +324,6 @@ const pickTermius = [
   }
 
   @media (max-width: 44rem) {
-    .fit {
-      grid-template-columns: minmax(0, 1fr);
-    }
-
     .swipe {
       display: block;
     }
