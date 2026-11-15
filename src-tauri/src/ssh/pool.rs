@@ -1037,16 +1037,29 @@ async fn authenticate_agent(
     username: &str,
 ) -> Result<bool, ConnectError> {
     let mut agent = connect_agent().await.map_err(ConnectError::transient)?;
-    let identities = agent
-        .request_identities()
-        .await
-        .map_err(|e| ConnectError::transient(format!("SSH agent error: {e}")))?;
-    if identities.is_empty() {
+    // Listed by hand: russh's own listing fails as a whole on the first key
+    // it can't read, so one FIDO2 key or certificate in the agent stopped
+    // every other key from being tried
+    let listed = list_agent_keys().await.map_err(ConnectError::transient)?;
+    if listed.keys.is_empty() && listed.skipped.is_empty() {
         return Err(ConnectError::transient(
             "The SSH agent has no keys loaded — add one with ssh-add, or unlock your vault",
         ));
     }
-    for key in identities {
+    if listed.keys.is_empty() {
+        return Err(ConnectError::fatal(format!(
+            "The SSH agent holds only keys LiteTerm can't use yet ({}). \
+             Add an ordinary key with ssh-add, or use a key file",
+            listed.skipped.join(", ")
+        )));
+    }
+    if !listed.skipped.is_empty() {
+        crate::applog::write_throttled(
+            "agent skipped keys",
+            &format!("SSH agent: skipped keys of a type LiteTerm can't use: {}", listed.skipped.join(", ")),
+        );
+    }
+    for key in listed.keys {
         let (returned, result) = handle.authenticate_future(username, key, agent).await;
         agent = returned;
         match result {
@@ -1056,6 +1069,81 @@ async fn authenticate_agent(
         }
     }
     Ok(false)
+}
+
+/// The keys an agent holds, split into those this build can sign with and
+/// the type names of the rest
+struct AgentKeys {
+    keys: Vec<russh::keys::key::PublicKey>,
+    skipped: Vec<String>,
+}
+
+const AGENTC_REQUEST_IDENTITIES: u8 = 11;
+const AGENT_IDENTITIES_ANSWER: u8 = 12;
+/// An answer longer than this is not an identity list
+const MAX_AGENT_REPLY: usize = 256 * 1024;
+
+/// Ask the agent for its keys (draft-miller-ssh-agent, REQUEST_IDENTITIES)
+async fn list_agent_keys() -> Result<AgentKeys, String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut agent = open_agent_stream().await?;
+    let talk = async {
+        agent.write_all(&[0, 0, 0, 1, AGENTC_REQUEST_IDENTITIES]).await?;
+        agent.flush().await?;
+        let mut len = [0u8; 4];
+        agent.read_exact(&mut len).await?;
+        let len = u32::from_be_bytes(len) as usize;
+        if len == 0 || len > MAX_AGENT_REPLY {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "reply of an odd size"));
+        }
+        let mut body = vec![0u8; len];
+        agent.read_exact(&mut body).await?;
+        Ok(body)
+    };
+    let body = tokio::time::timeout(Duration::from_secs(10), talk)
+        .await
+        .map_err(|_| "The SSH agent did not answer".to_string())?
+        .map_err(|e| format!("SSH agent error: {e}"))?;
+    parse_agent_identities(&body)
+}
+
+fn parse_agent_identities(body: &[u8]) -> Result<AgentKeys, String> {
+    fn take<'a>(b: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+        (b.len() >= n).then(|| {
+            let (head, rest) = b.split_at(n);
+            *b = rest;
+            head
+        })
+    }
+    fn u32_of(b: &mut &[u8]) -> Option<u32> {
+        take(b, 4).map(|x| u32::from_be_bytes([x[0], x[1], x[2], x[3]]))
+    }
+    fn string<'a>(b: &mut &'a [u8]) -> Option<&'a [u8]> {
+        let n = u32_of(b)? as usize;
+        take(b, n)
+    }
+
+    let bad = || "SSH agent error: the key list it sent can't be read".to_string();
+    let mut b = body;
+    if take(&mut b, 1) != Some(&[AGENT_IDENTITIES_ANSWER][..]) {
+        return Err("SSH agent error: it refused to list its keys".into());
+    }
+    let count = u32_of(&mut b).ok_or_else(bad)?;
+    let mut out = AgentKeys { keys: Vec::new(), skipped: Vec::new() };
+    for _ in 0..count {
+        let blob = string(&mut b).ok_or_else(bad)?;
+        let _comment = string(&mut b).ok_or_else(bad)?;
+        match russh::keys::key::parse_public_key(blob, Some(russh::keys::key::SignatureHash::SHA2_512)) {
+            Ok(key) => out.keys.push(key),
+            Err(_) => {
+                let mut blob = blob;
+                let kind = string(&mut blob).map(|t| String::from_utf8_lossy(t).into_owned());
+                out.skipped.push(kind.unwrap_or_else(|| "unknown".into()));
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(windows)]
@@ -2995,6 +3083,45 @@ mod tests {
         assert!(pos(&Step::Dir(s(&["b", "deep"]))) < pos(&Step::File(s(&["b", "deep", "two.bin"]), 7)));
         assert!(plan.steps.contains(&Step::Dir(s(&["a"]))), "empty folders come along");
         assert!(plan.steps.contains(&Step::File(s(&["top.txt"]), 5)));
+    }
+
+    #[test]
+    fn agent_keys_this_build_cannot_use_are_skipped_not_fatal() {
+        use ssh_key::{rand_core::OsRng, Algorithm, PrivateKey};
+
+        fn string(out: &mut Vec<u8>, s: &[u8]) {
+            out.extend((s.len() as u32).to_be_bytes());
+            out.extend_from_slice(s);
+        }
+        let ed = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let mut ed_blob = Vec::new();
+        string(&mut ed_blob, b"ssh-ed25519");
+        string(&mut ed_blob, &ed.public_key().key_data().ed25519().unwrap().0);
+        // A YubiKey key: the key, then its application string
+        let mut sk_blob = Vec::new();
+        string(&mut sk_blob, b"sk-ssh-ed25519@openssh.com");
+        string(&mut sk_blob, &ed.public_key().key_data().ed25519().unwrap().0);
+        string(&mut sk_blob, b"ssh:");
+        // A certificate step-ca put there; its body doesn't matter here
+        let mut cert_blob = Vec::new();
+        string(&mut cert_blob, b"ssh-ed25519-cert-v01@openssh.com");
+        string(&mut cert_blob, b"nonce");
+
+        let mut body = vec![AGENT_IDENTITIES_ANSWER];
+        body.extend(3u32.to_be_bytes());
+        for (blob, comment) in [(&sk_blob, "yubikey"), (&ed_blob, "laptop"), (&cert_blob, "step")] {
+            string(&mut body, blob);
+            string(&mut body, comment.as_bytes());
+        }
+        let got = parse_agent_identities(&body).unwrap();
+        assert_eq!(got.keys.len(), 1, "the ordinary key is still offered");
+        assert_eq!(got.skipped, ["sk-ssh-ed25519@openssh.com", "ssh-ed25519-cert-v01@openssh.com"]);
+
+        // A list cut short, or a refusal, is an error rather than "no keys"
+        assert!(parse_agent_identities(&body[..body.len() - 3]).is_err());
+        assert!(parse_agent_identities(&[5]).is_err());
+        let empty = parse_agent_identities(&[AGENT_IDENTITIES_ANSWER, 0, 0, 0, 0]).unwrap();
+        assert!(empty.keys.is_empty() && empty.skipped.is_empty());
     }
 
     #[test]

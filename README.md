@@ -164,6 +164,7 @@ Better to read this before you install than to find out after.
 | **Interrupted transfers start over** | SFTP does not resume a file or folder transfer that broke off. |
 | **Mac updates need the Applications folder** | Started from the disk image, or straight from Downloads, LiteTerm can't replace itself and opens the release page instead. |
 | **No Pageant** | PuTTY's agent isn't read. The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work, for signing in and for agent forwarding. |
+| **No FIDO2 security keys yet** | `ed25519-sk` and `ecdsa-sk` keys (YubiKey and the like) can't sign in, and neither can a certificate that lives only in the agent (`step ssh login`, `tsh login`). An agent holding them still signs in with its other keys. |
 | **Jump hosts need a saved login** | A password with Remember, a key or an agent. |
 | **Sync carries key paths, not key files** | A synced host remembers where its private key is: copy the key to the same place, or use an SSH agent. Images in notes don't sync yet. |
 | **Older versions see every forward as local** | LiteTerm 1.11 and earlier don't know remote and SOCKS forwards. Synced to such a computer, those run there as local forwards. Update every computer that syncs. |
