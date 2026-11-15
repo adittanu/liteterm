@@ -161,18 +161,13 @@ pub struct PortForwardData {
     #[serde(default)]
     pub auto_start: bool,
     /// "local", "remote" or "dynamic" (the `kind` column; `kind` itself is the
-    /// payload tag). Left out for a local forward, so those push the same
-    /// payload as before; a payload without it is local
-    #[serde(default = "local_kind", skip_serializing_if = "is_local_kind")]
-    pub forward_kind: String,
-}
-
-fn local_kind() -> String {
-    "local".into()
-}
-
-fn is_local_kind(kind: &str) -> bool {
-    kind == "local"
+    /// payload tag). This version always sends it. A payload without it comes
+    /// from a LiteTerm older than forward kinds: it can only mean "local", but
+    /// that device can't see the kind at all, so its edit leaves the stored
+    /// kind as it is. (Such a device does run a remote or dynamic forward as
+    /// a local one; nothing on this side can change that.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -410,7 +405,7 @@ fn read_payload(
                         remote_host: r.get(3)?,
                         remote_port: r.get(4)?,
                         auto_start: r.get::<_, i64>(5)? != 0,
-                        forward_kind: r.get(7)?,
+                        forward_kind: Some(r.get(7)?),
                     }),
                     r.get(6)?,
                 ))
@@ -673,22 +668,20 @@ fn apply_upsert(
                 out.skipped += 1;
                 return Ok(());
             };
-            write_row(
-                conn,
-                "port_forwards",
-                existing,
-                sid,
-                m,
-                &[
-                    ("host_id", &host_id),
-                    ("name", &d.name),
-                    ("local_port", &d.local_port),
-                    ("remote_host", &d.remote_host),
-                    ("remote_port", &d.remote_port),
-                    ("auto_start", &d.auto_start),
-                    ("kind", &d.forward_kind),
-                ],
-            )?;
+            let mut cols: Vec<(&str, &dyn ToSql)> = vec![
+                ("host_id", &host_id),
+                ("name", &d.name),
+                ("local_port", &d.local_port),
+                ("remote_host", &d.remote_host),
+                ("remote_port", &d.remote_port),
+                ("auto_start", &d.auto_start),
+            ];
+            // Without a kind this version knows (an older device's edit), the
+            // stored kind stays; a new row gets the column's default, "local"
+            if let Some(kind) = d.forward_kind.as_ref().filter(|k| crate::store::models::FORWARD_KINDS.contains(&k.as_str())) {
+                cols.push(("kind", kind));
+            }
+            write_row(conn, "port_forwards", existing, sid, m, &cols)?;
         }
         Payload::KnownHost(d) => {
             let twin: Option<(i64, String, i64)> = conn
@@ -1056,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn a_forward_kind_syncs_and_old_payloads_read_as_local() {
+    fn a_forward_kind_syncs_and_an_older_devices_edit_keeps_it() {
         let (a, b, mut server) = (Device::new(), Device::new(), Server::default());
         let host = a.add_host("app");
         db::upsert_forward(&a.conn, None, host, "socks", "dynamic", 1080, "", 0, false).unwrap();
@@ -1064,7 +1057,9 @@ mod tests {
         for q in queued(&a.conn, &a.secrets).unwrap() {
             let json = serde_json::to_string(&q.payload).unwrap();
             if json.contains("\"pg\"") {
-                assert!(!json.contains("forward_kind"), "local forwards push what they pushed before: {json}");
+                // Sent for local ones too, or a remote forward made local on
+                // one device would stay remote everywhere else
+                assert!(json.contains(r#""forward_kind":"local""#), "{json}");
             }
         }
         a.sync_with(&mut server);
@@ -1072,14 +1067,20 @@ mod tests {
         assert_eq!(b.val::<String>("SELECT kind FROM port_forwards WHERE name = 'socks'"), "dynamic");
         assert_eq!(b.val::<String>("SELECT kind FROM port_forwards WHERE name = 'pg'"), "local");
 
+        // An older LiteTerm renames the SOCKS forward; its payload has no kind
+        let socks_id: String = b.val("SELECT sync_id FROM port_forwards WHERE name = 'socks'");
         let old: Payload = serde_json::from_str(
-            r#"{"kind":"port_forward","host":"h","name":"n","local_port":1,"remote_host":"x","remote_port":2}"#,
+            r#"{"kind":"port_forward","host":"h","name":"proxy","local_port":1080,"remote_host":"","remote_port":0}"#,
         )
         .unwrap();
-        match old {
-            Payload::PortForward(d) => assert_eq!(d.forward_kind, "local"),
-            other => panic!("{other:?}"),
-        }
+        let Payload::PortForward(mut d) = old else { panic!("not a forward") };
+        assert_eq!(d.forward_kind, None);
+        d.host = b.val("SELECT sync_id FROM hosts WHERE label = 'app'");
+        let tx = b.conn.unchecked_transaction().unwrap();
+        apply(&tx, vec![Incoming { sync_id: socks_id, payload: Some(Payload::PortForward(d)), modified_at: i64::MAX / 2 }])
+            .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(b.val::<String>("SELECT name FROM port_forwards WHERE kind = 'dynamic'"), "proxy");
     }
 
     #[test]
@@ -1342,7 +1343,7 @@ mod tests {
                 remote_host: "localhost".into(),
                 remote_port: 5432,
                 auto_start: false,
-                forward_kind: "local".into(),
+                forward_kind: Some("local".into()),
             })),
             modified_at: 1,
         };

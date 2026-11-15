@@ -93,6 +93,8 @@ pub struct AppState {
     /// Remote forwards (-R) the servers listen for, by (session id, server
     /// port): where a connection the server hands back goes on this side
     pub remote_targets: Mutex<HashMap<(u32, u32), RemoteTarget>>,
+    /// One lock per forward id, held while that forward starts
+    pub forward_starts: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 pub struct HostKeyDecision {
@@ -117,6 +119,9 @@ pub struct RemoteTarget {
     pub port: u16,
     /// Ends the connections already open when the forward stops
     pub cancel: CancellationToken,
+    /// Which start put it here, so a failed or stale one never removes
+    /// another start's target
+    pub start: u64,
 }
 
 /// The address a remote forward asks the server to listen on. Loopback, as
@@ -133,7 +138,11 @@ pub struct SshSession {
     pub label: String,
     #[allow(dead_code)]
     pub address: String,
-    pub handle: Shared<Option<russh::client::Handle<ClientHandler>>>,
+    /// A read lock for what russh lets several callers do at once (opening
+    /// channels), the write lock for the rest. A slow channel open, such as a
+    /// SOCKS request to an unreachable address, then no longer holds up every
+    /// other open on the session.
+    pub handle: Arc<tokio::sync::RwLock<Option<russh::client::Handle<ClientHandler>>>>,
     pub writer: Shared<Option<ChannelWriter>>,
     /// cols, rows, pixel width, pixel height
     pub resize_tx: Shared<Option<mpsc::Sender<(u32, u32, u32, u32)>>>,
@@ -149,6 +158,8 @@ pub struct SshSession {
     pub transfers: Mutex<HashMap<u32, CancellationToken>>,
     /// Skips the backoff wait while auto-reconnecting ("Reconnect now")
     pub reconnect_now: tokio::sync::Notify,
+    /// Cancels the remote-forward retries of the previous reconnect
+    pub renewals: Mutex<CancellationToken>,
 }
 
 // ---------- events ----------
@@ -202,6 +213,9 @@ pub struct TransferEvent {
 pub struct ForwardEvent {
     pub id: i64,
     pub active: bool,
+    /// Stopped events only: why the app stopped it by itself
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -630,6 +644,7 @@ pub fn create_session(
         closed: CancellationToken::new(),
         transfers: Mutex::new(HashMap::new()),
         reconnect_now: tokio::sync::Notify::new(),
+        renewals: Mutex::new(CancellationToken::new()),
     };
     state.sessions.lock().unwrap().insert(id, Arc::new(session));
     id
@@ -670,7 +685,7 @@ async fn reset_transport(session: &SshSession) {
     *session.writer.lock().await = None;
     *session.resize_tx.lock().await = None;
     *session.sftp.lock().await = None;
-    if let Some(handle) = session.handle.lock().await.take() {
+    if let Some(handle) = session.handle.write().await.take() {
         let _ = handle
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await;
@@ -1042,7 +1057,7 @@ async fn stream_session(
         .await
         .map_err(|e| ConnectError::transient(format!("Shell request failed: {e}")))?;
 
-    *session.handle.lock().await = Some(handle);
+    *session.handle.write().await = Some(handle);
     let writer = channel.make_writer();
     *session.writer.lock().await = Some(Box::new(writer));
 
@@ -1264,7 +1279,7 @@ pub async fn disconnect_session(state: &AppState, session_id: u32) {
     let session = { state.sessions.lock().unwrap().get(&session_id).cloned() };
     if let Some(session) = session {
         session.closed.cancel();
-        let mut guard = session.handle.lock().await;
+        let mut guard = session.handle.write().await;
         if let Some(handle) = guard.take() {
             let _ = handle
                 .disconnect(russh::Disconnect::ByApplication, "user disconnect", "en")
@@ -1284,7 +1299,7 @@ pub async fn sftp_open(_state: &AppState, session: &SshSession) -> Result<(), St
             return Ok(());
         }
     }
-    let handle_guard = session.handle.lock().await;
+    let handle_guard = session.handle.read().await;
     let handle = handle_guard
         .as_ref()
         .ok_or_else(|| "Not connected".to_string())?;
@@ -1528,9 +1543,16 @@ fn plan_local(root: &std::path::Path) -> Result<Plan, String> {
     let mut plan = Plan { steps: vec![Step::Dir(Vec::new())], folder: true, skipped: 0 };
     let mut stack = vec![(root.to_path_buf(), Vec::<String>::new())];
     while let Some((dir, rel)) = stack.pop() {
-        let mut entries = std::fs::read_dir(&dir)
-            .and_then(|it| it.collect::<Result<Vec<_>, _>>())
-            .map_err(|e| format!("Could not list {}: {e}", dir.display()))?;
+        let listed = std::fs::read_dir(&dir).and_then(|it| it.collect::<Result<Vec<_>, _>>());
+        let mut entries = match listed {
+            Ok(entries) => entries,
+            // A folder inside that can't be read is skipped, not the whole copy
+            Err(_) if !rel.is_empty() => {
+                plan.skipped += 1;
+                continue;
+            }
+            Err(e) => return Err(format!("Could not list {}: {e}", dir.display())),
+        };
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
             let Ok(name) = entry.file_name().into_string() else {
@@ -1565,23 +1587,42 @@ fn plan_local(root: &std::path::Path) -> Result<Plan, String> {
     Ok(plan)
 }
 
-/// What copying `root` off a server involves; the same rules as [`plan_local`]
-async fn plan_remote(sftp: &russh_sftp::client::SftpSession, root: &str) -> Result<Plan, String> {
+/// What copying `root` off a server involves; the same rules as [`plan_local`].
+/// The SFTP lock is taken per request, so folder listings and other transfers
+/// on the session keep going during a long walk, and Cancel stops it.
+async fn plan_remote(session: &SshSession, root: &str, cancel: &CancellationToken) -> Result<Plan, String> {
     use russh_sftp::protocol::FileType;
 
-    let meta = sftp.metadata(root).await.map_err(|e| format!("Remote stat failed: {e}"))?;
+    let meta = {
+        let guard = session.sftp.lock().await;
+        let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
+        sftp.metadata(root).await
+    }
+    .map_err(|e| format!("Remote stat failed: {e}"))?;
     if !meta.file_type().is_dir() {
         return Ok(Plan { steps: vec![Step::File(Vec::new(), meta.len())], folder: false, skipped: 0 });
     }
     let mut plan = Plan { steps: vec![Step::Dir(Vec::new())], folder: true, skipped: 0 };
     let mut stack = vec![Vec::<String>::new()];
     while let Some(rel) = stack.pop() {
+        if cancel.is_cancelled() {
+            return Err("Cancelled".into());
+        }
         let dir = remote_join(root, &rel);
-        let mut entries: Vec<_> = sftp
-            .read_dir(&dir)
-            .await
-            .map_err(|e| format!("Could not list {dir}: {e}"))?
-            .collect();
+        let listed = {
+            let guard = session.sftp.lock().await;
+            let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
+            sftp.read_dir(&dir).await
+        };
+        let mut entries: Vec<_> = match listed {
+            Ok(it) => it.collect(),
+            // A folder inside that can't be read is skipped, not the whole copy
+            Err(_) if !rel.is_empty() => {
+                plan.skipped += 1;
+                continue;
+            }
+            Err(e) => return Err(format!("Could not list {dir}: {e}")),
+        };
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
             let name = entry.file_name();
@@ -1602,10 +1643,17 @@ async fn plan_remote(sftp: &russh_sftp::client::SftpSession, root: &str) -> Resu
                     let size = entry.metadata().len();
                     plan.steps.push(Step::File(child, size));
                 }
-                FileType::Symlink => match sftp.metadata(remote_join(root, &child)).await {
-                    Ok(m) if m.file_type().is_file() => plan.steps.push(Step::File(child, m.len())),
-                    _ => plan.skipped += 1,
-                },
+                FileType::Symlink => {
+                    let target = {
+                        let guard = session.sftp.lock().await;
+                        let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
+                        sftp.metadata(remote_join(root, &child)).await
+                    };
+                    match target {
+                        Ok(m) if m.file_type().is_file() => plan.steps.push(Step::File(child, m.len())),
+                        _ => plan.skipped += 1,
+                    }
+                }
                 FileType::Other => plan.skipped += 1,
             }
         }
@@ -1668,6 +1716,93 @@ fn at(rel: &[String], e: String) -> String {
     if rel.is_empty() { e } else { format!("{}: {e}", rel.join("/")) }
 }
 
+/// Where each step of a download lands on this computer. Server names are
+/// made safe first ([`safe_local_name`]), and that can turn two names into
+/// one: `a:b` and `a?b` on Windows, or `README` and `readme` where the disk
+/// ignores case (`fold_case`). A later duplicate gets " (2)", " (3)" and so
+/// on, so no file from the copy overwrites another from the same copy.
+fn download_targets(base: &str, steps: &[Step], windows: bool, fold_case: bool) -> Vec<PathBuf> {
+    let key = |n: &str| if fold_case { n.to_lowercase() } else { n.to_string() };
+    let mut dirs: HashMap<Vec<String>, PathBuf> = HashMap::new();
+    let mut taken: HashMap<PathBuf, std::collections::HashSet<String>> = HashMap::new();
+    let mut out = Vec::with_capacity(steps.len());
+    for step in steps {
+        let (rel, is_file) = match step {
+            Step::Dir(rel) => (rel, false),
+            Step::File(rel, _) => (rel, true),
+        };
+        let Some((last, parent_rel)) = rel.split_last() else {
+            dirs.insert(Vec::new(), PathBuf::from(base));
+            out.push(PathBuf::from(base));
+            continue;
+        };
+        let parent = dirs.get(parent_rel).cloned().unwrap_or_else(|| local_join(base, parent_rel, true));
+        let name = safe_local_name(last, windows);
+        let used = taken.entry(parent.clone()).or_default();
+        let mut chosen = name.clone();
+        let mut n = 2;
+        while !used.insert(key(&chosen)) {
+            chosen = numbered_name(&name, n, is_file);
+            n += 1;
+        }
+        let path = parent.join(&chosen);
+        if !is_file {
+            dirs.insert(rel.clone(), path.clone());
+        }
+        out.push(path);
+    }
+    out
+}
+
+/// "report.txt", 2 -> "report (2).txt"; a folder, or a file whose only dot
+/// leads its name (".env"), gets the number on the end
+fn numbered_name(name: &str, n: u32, is_file: bool) -> String {
+    match name.rfind('.').filter(|&i| is_file && i > 0) {
+        Some(i) => format!("{} ({n}){}", &name[..i], &name[i..]),
+        None => format!("{name} ({n})"),
+    }
+}
+
+/// An error that ends the whole transfer: Cancel, or the SFTP channel gone.
+/// Anything else fails one file, and a folder copy carries on past it.
+fn ends_transfer(e: &str, cancel: &CancellationToken) -> bool {
+    cancel.is_cancelled() || e.starts_with("SFTP not open")
+}
+
+/// What went wrong inside one transfer that kept going
+#[derive(Default)]
+struct Failures {
+    files: u32,
+    first: Option<String>,
+    /// Folders that could not be made; nothing inside them is tried
+    dirs: Vec<Vec<String>>,
+}
+
+impl Failures {
+    fn inside_failed_dir(&self, rel: &[String]) -> bool {
+        self.dirs.iter().any(|d| rel.starts_with(d))
+    }
+
+    fn dir(&mut self, rel: &[String], e: String) {
+        self.dirs.push(rel.to_vec());
+        self.first.get_or_insert_with(|| at(rel, e));
+    }
+
+    fn file(&mut self, rel: &[String], e: String) {
+        self.files += 1;
+        self.first.get_or_insert_with(|| at(rel, e));
+    }
+
+    fn into_result(self, folder: bool, files_total: u32) -> Result<(), String> {
+        let Some(first) = self.first else { return Ok(()) };
+        if !folder || self.files == 0 {
+            return Err(first);
+        }
+        let what = if files_total == 1 { "1 file failed".to_string() } else { format!("{} of {files_total} files failed", self.files) };
+        Err(format!("{what}. The first: {first}"))
+    }
+}
+
 /// Running totals for one transfer, sent to the UI as `transfer:progress`
 struct Progress<'a> {
     app: &'a AppHandle,
@@ -1714,6 +1849,8 @@ impl<'a> Progress<'a> {
 
     fn file_done(&mut self) {
         self.files_done += 1;
+        // Small and empty files move no bytes worth an event of their own
+        self.emit(false, None, false);
     }
 
     fn emit(&mut self, done: bool, error: Option<String>, force: bool) {
@@ -1881,23 +2018,37 @@ pub async fn run_upload(
             .await
             .map_err(|e| e.to_string())??;
         p.plan(&plan);
+        let mut failed = Failures::default();
         for step in &plan.steps {
             if cancel.is_cancelled() {
                 return Err("Cancelled".to_string());
             }
             match step {
-                Step::Dir(rel) => ensure_remote_dir(&session, &remote_join(&remote, rel))
-                    .await
-                    .map_err(|e| at(rel, e))?,
+                Step::Dir(rel) => {
+                    if failed.inside_failed_dir(rel) {
+                        continue;
+                    }
+                    if let Err(e) = ensure_remote_dir(&session, &remote_join(&remote, rel)).await {
+                        if rel.is_empty() || ends_transfer(&e, &cancel) {
+                            return Err(at(rel, e));
+                        }
+                        failed.dir(rel, e);
+                    }
+                }
                 Step::File(rel, _) => {
-                    upload_file(&session, &local_join(&local, rel, false), &remote_join(&remote, rel), &cancel, &mut p)
-                        .await
-                        .map_err(|e| at(rel, e))?;
-                    p.file_done();
+                    if failed.inside_failed_dir(rel) {
+                        failed.files += 1;
+                        continue;
+                    }
+                    match upload_file(&session, &local_join(&local, rel, false), &remote_join(&remote, rel), &cancel, &mut p).await {
+                        Ok(()) => p.file_done(),
+                        Err(e) if ends_transfer(&e, &cancel) => return Err(at(rel, e)),
+                        Err(e) => failed.file(rel, e),
+                    }
                 }
             }
         }
-        Ok(())
+        failed.into_result(plan.folder, plan.files())
     }
     .await;
     p.finish(result, &cancel);
@@ -1915,29 +2066,41 @@ pub async fn run_download(
     let cancel = register_transfer(&session, transfer_id);
     let mut p = Progress::new(&state.app, transfer_id, false);
     let result = async {
-        let plan = {
-            let guard = session.sftp.lock().await;
-            let sftp = guard.as_ref().ok_or_else(|| "SFTP not open".to_string())?;
-            plan_remote(sftp, &remote).await?
-        };
+        let plan = plan_remote(&session, &remote, &cancel).await?;
         p.plan(&plan);
-        for step in &plan.steps {
+        let targets = download_targets(&local, &plan.steps, cfg!(windows), cfg!(any(windows, target_os = "macos")));
+        let mut failed = Failures::default();
+        for (step, target) in plan.steps.iter().zip(&targets) {
             if cancel.is_cancelled() {
                 return Err("Cancelled".to_string());
             }
             match step {
-                Step::Dir(rel) => tokio::fs::create_dir_all(local_join(&local, rel, true))
-                    .await
-                    .map_err(|e| at(rel, format!("Could not create local folder: {e}")))?,
+                Step::Dir(rel) => {
+                    if failed.inside_failed_dir(rel) {
+                        continue;
+                    }
+                    if let Err(e) = tokio::fs::create_dir_all(target).await {
+                        let e = format!("Could not create local folder: {e}");
+                        if rel.is_empty() {
+                            return Err(e);
+                        }
+                        failed.dir(rel, e);
+                    }
+                }
                 Step::File(rel, _) => {
-                    download_file(&session, &remote_join(&remote, rel), &local_join(&local, rel, true), &cancel, &mut p)
-                        .await
-                        .map_err(|e| at(rel, e))?;
-                    p.file_done();
+                    if failed.inside_failed_dir(rel) {
+                        failed.files += 1;
+                        continue;
+                    }
+                    match download_file(&session, &remote_join(&remote, rel), target, &cancel, &mut p).await {
+                        Ok(()) => p.file_done(),
+                        Err(e) if ends_transfer(&e, &cancel) => return Err(at(rel, e)),
+                        Err(e) => failed.file(rel, e),
+                    }
                 }
             }
         }
-        Ok(())
+        failed.into_result(plan.folder, plan.files())
     }
     .await;
     p.finish(result, &cancel);
@@ -1961,21 +2124,32 @@ pub async fn run_cross_transfer(
     let dst_root = remote_join(&dst_dir, &[name]);
 
     let result = async {
-        let plan = {
-            let guard = src.sftp.lock().await;
-            let sftp = guard.as_ref().ok_or("SFTP not open (source)")?;
-            plan_remote(sftp, &src_path).await?
-        };
+        let plan = plan_remote(&src, &src_path, &cancel)
+            .await
+            .map_err(|e| if e.starts_with("SFTP not open") { "SFTP not open (source)".to_string() } else { e })?;
         p.plan(&plan);
+        let mut failed = Failures::default();
         for (i, step) in plan.steps.iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err("Cancelled".to_string());
             }
             match step {
-                Step::Dir(rel) => ensure_remote_dir(&dst, &remote_join(&dst_root, rel))
-                    .await
-                    .map_err(|e| at(rel, e))?,
+                Step::Dir(rel) => {
+                    if failed.inside_failed_dir(rel) {
+                        continue;
+                    }
+                    if let Err(e) = ensure_remote_dir(&dst, &remote_join(&dst_root, rel)).await {
+                        if rel.is_empty() || ends_transfer(&e, &cancel) {
+                            return Err(at(rel, e));
+                        }
+                        failed.dir(rel, e);
+                    }
+                }
                 Step::File(rel, _) => {
+                    if failed.inside_failed_dir(rel) {
+                        failed.files += 1;
+                        continue;
+                    }
                     let temp = std::env::temp_dir().join(format!("liteterm_xfer_{transfer_id}_{i}"));
                     let copied = async {
                         download_file(&src, &remote_join(&src_path, rel), &temp, &cancel, &mut p).await?;
@@ -1983,12 +2157,15 @@ pub async fn run_cross_transfer(
                     }
                     .await;
                     let _ = tokio::fs::remove_file(&temp).await;
-                    copied.map_err(|e| at(rel, e))?;
-                    p.file_done();
+                    match copied {
+                        Ok(()) => p.file_done(),
+                        Err(e) if ends_transfer(&e, &cancel) => return Err(at(rel, e)),
+                        Err(e) => failed.file(rel, e),
+                    }
                 }
             }
         }
-        Ok(())
+        failed.into_result(plan.folder, plan.files())
     }
     .await;
     p.finish(result, &cancel);
@@ -2019,6 +2196,11 @@ pub async fn forward_start(
     state: Arc<AppState>,
     forward: models::PortForward,
 ) -> Result<(), String> {
+    // One start per forward at a time. Clicking Start while auto-start is
+    // still bringing the same forward up waits for it, and then finds it
+    // running, instead of racing it for the port.
+    let gate = state.forward_starts.lock().unwrap().entry(forward.id).or_default().clone();
+    let _starting = gate.lock().await;
     {
         let fw = state.forwards.lock().unwrap();
         if fw.contains_key(&forward.id) {
@@ -2124,7 +2306,7 @@ async fn start_listener(
         state2.forwards.lock().unwrap().remove(&fw_id);
         let _ = state2
             .app
-            .emit("forward:stopped", ForwardEvent { id: fw_id, active: false });
+            .emit("forward:stopped", ForwardEvent { id: fw_id, active: false, error: None });
     });
 
     state.forwards.lock().unwrap().insert(
@@ -2138,13 +2320,13 @@ async fn start_listener(
     );
     let _ = state
         .app
-        .emit("forward:started", ForwardEvent { id: forward.id, active: true });
+        .emit("forward:started", ForwardEvent { id: forward.id, active: true, error: None });
     Ok(())
 }
 
 /// Ask the server to listen on `port` for this session's current transport
 async fn request_remote_listen(session: &SshSession, port: u32) -> Result<(), String> {
-    let mut guard = session.handle.lock().await;
+    let mut guard = session.handle.write().await;
     let handle = guard.as_mut().ok_or_else(|| "Not connected".to_string())?;
     match tokio::time::timeout(Duration::from_secs(15), handle.tcpip_forward(REMOTE_BIND, port)).await {
         Ok(Ok(_)) => Ok(()),
@@ -2153,9 +2335,18 @@ async fn request_remote_listen(session: &SshSession, port: u32) -> Result<(), St
              or its sshd does not allow forwarding (AllowTcpForwarding)"
         )),
         Ok(Err(e)) => Err(format!("Could not ask the server to listen on port {port}: {e}")),
-        Err(_) => Err(format!("The server did not answer the request to listen on port {port}")),
+        Err(_) => {
+            // The request already went out. Should the server still say yes,
+            // it would listen with nothing behind it and keep the port; the
+            // cancel queues behind the request, so it undoes that.
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle.cancel_tcpip_forward(REMOTE_BIND, port)).await;
+            Err(format!("The server did not answer the request to listen on port {port}"))
+        }
     }
 }
+
+/// Tells one start's remote target from another's
+static NEXT_REMOTE_START: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 async fn start_remote(
     state: Arc<AppState>,
@@ -2164,27 +2355,33 @@ async fn start_remote(
 ) -> Result<(), String> {
     let server_port = forward.remote_port as u32;
     let key = (session.id, server_port);
+    let cancel = CancellationToken::new();
+    let start = NEXT_REMOTE_START.fetch_add(1, Ordering::Relaxed);
     {
-        let targets = state.remote_targets.lock().unwrap();
+        let mut targets = state.remote_targets.lock().unwrap();
         if let Some(other) = targets.get(&key) {
             if other.forward_id != forward.id {
                 return Err(format!("Another forward already listens on port {server_port} of this server"));
             }
         }
+        // In place before the request: a connection may arrive right after the reply
+        targets.insert(
+            key,
+            RemoteTarget {
+                forward_id: forward.id,
+                host: forward.remote_host.clone(),
+                port: forward.local_port as u16,
+                cancel: cancel.clone(),
+                start,
+            },
+        );
     }
-    let cancel = CancellationToken::new();
-    // In place before the request: a connection may arrive right after the reply
-    state.remote_targets.lock().unwrap().insert(
-        key,
-        RemoteTarget {
-            forward_id: forward.id,
-            host: forward.remote_host.clone(),
-            port: forward.local_port as u16,
-            cancel: cancel.clone(),
-        },
-    );
     if let Err(e) = request_remote_listen(&session, server_port).await {
-        state.remote_targets.lock().unwrap().remove(&key);
+        let mut targets = state.remote_targets.lock().unwrap();
+        // Only the target this call put there
+        if targets.get(&key).is_some_and(|t| t.start == start) {
+            targets.remove(&key);
+        }
         return Err(e);
     }
 
@@ -2203,33 +2400,73 @@ async fn start_remote(
     );
     let _ = state
         .app
-        .emit("forward:started", ForwardEvent { id: forward.id, active: true });
+        .emit("forward:started", ForwardEvent { id: forward.id, active: true, error: None });
     Ok(())
 }
 
 /// After a reconnect: the remote forwards riding on this session were
-/// registered with the transport that died, so ask the new one again. One the
-/// server now refuses (another process took the port) is stopped.
+/// registered with the transport that died, so ask the new one again. Right
+/// after a network drop the old sshd usually still holds the port, so a
+/// refusal is retried for about a minute before the forward is stopped, and
+/// the UI is told why. A later reconnect replaces these retries with its own.
 fn renew_remote_forwards(state: &Arc<AppState>, session: &Arc<SshSession>) {
-    let renew: Vec<(i64, u32)> = state
+    let renewal = {
+        let mut current = session.renewals.lock().unwrap();
+        current.cancel();
+        *current = CancellationToken::new();
+        current.clone()
+    };
+    let renew: Vec<(i64, u32, Option<u64>)> = state
         .forwards
         .lock()
         .unwrap()
         .iter()
         .filter(|(_, h)| h.session_id == session.id)
         .filter_map(|(id, h)| h.remote_port.map(|p| (*id, p)))
+        .map(|(id, port)| (id, port, remote_start_of(state, session.id, port)))
         .collect();
-    for (id, port) in renew {
+    for (id, port, start) in renew {
         let state = state.clone();
         let session = session.clone();
+        let renewal = renewal.clone();
         tokio::spawn(async move {
-            if let Err(e) = request_remote_listen(&session, port).await {
-                crate::applog::write(&format!("remote forward {id} after reconnect: {e}"));
-                forward_stop(state, id).await;
+            const RETRY_SECS: [u64; 6] = [0, 2, 4, 8, 16, 30];
+            let mut last_error = String::new();
+            for wait in RETRY_SECS {
+                tokio::select! {
+                    _ = renewal.cancelled() => return,
+                    _ = session.closed.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(wait)) => {}
+                }
+                // Stopped (or stopped and started again) meanwhile, or the
+                // transport dropped again: the next reconnect renews it, or
+                // the session's end stops it
+                if remote_start_of(&state, session.id, port) != start || session.handle.read().await.is_none() {
+                    return;
+                }
+                match request_remote_listen(&session, port).await {
+                    Ok(()) => return,
+                    Err(e) => last_error = e,
+                }
             }
+            if renewal.is_cancelled() || remote_start_of(&state, session.id, port) != start {
+                return;
+            }
+            crate::applog::write(&format!("remote forward {id} after reconnect: {last_error}"));
+            forward_stop_because(state, id, Some(format!("Stopped after the connection came back: {last_error}"))).await;
         });
     }
 }
+
+/// Which start of a remote forward owns `port` on a session's server now
+fn remote_start_of(state: &AppState, session_id: u32, port: u32) -> Option<u64> {
+    state.remote_targets.lock().unwrap().get(&(session_id, port)).map(|t| t.start)
+}
+
+/// How long a channel open may wait on the server. For a direct-tcpip channel
+/// the server answers only once its own connect to the destination is done,
+/// which for an unreachable address can take minutes.
+const DIRECT_OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Open a direct-tcpip channel from the server to `host:port`
 async fn open_direct(
@@ -2238,11 +2475,14 @@ async fn open_direct(
     port: u32,
     peer: std::net::SocketAddr,
 ) -> Result<russh::Channel<russh::client::Msg>, russh::Error> {
-    let handle_guard = session.handle.lock().await;
+    let handle_guard = session.handle.read().await;
     let handle = handle_guard.as_ref().ok_or(russh::Error::Disconnect)?;
-    handle
-        .channel_open_direct_tcpip(host, port, peer.ip().to_string(), peer.port() as u32)
-        .await
+    let open = handle.channel_open_direct_tcpip(host, port, peer.ip().to_string(), peer.port() as u32);
+    tokio::select! {
+        // Closing the tab must not wait for a slow open to give up
+        _ = session.closed.cancelled() => Err(russh::Error::Disconnect),
+        opened = tokio::time::timeout(DIRECT_OPEN_TIMEOUT, open) => opened.unwrap_or(Err(russh::Error::ConnectionTimeout)),
+    }
 }
 
 async fn pump_connection(
@@ -2307,6 +2547,11 @@ fn remove_remote_targets(state: &AppState, forward_id: i64) -> Vec<(u32, u32)> {
 }
 
 pub async fn forward_stop(state: Arc<AppState>, forward_id: i64) {
+    forward_stop_because(state, forward_id, None).await
+}
+
+/// Stop a forward; `reason` says why when the app stopped it by itself
+async fn forward_stop_because(state: Arc<AppState>, forward_id: i64, reason: Option<String>) {
     let handle = state.forwards.lock().unwrap().remove(&forward_id);
     if let Some(handle) = handle {
         handle.cancel.cancel();
@@ -2316,7 +2561,7 @@ pub async fn forward_stop(state: Arc<AppState>, forward_id: i64) {
     for (session_id, port) in remove_remote_targets(&state, forward_id) {
         let session = { state.sessions.lock().unwrap().get(&session_id).cloned() };
         if let Some(session) = session {
-            let guard = session.handle.lock().await;
+            let guard = session.handle.read().await;
             if let Some(handle) = guard.as_ref() {
                 let _ = tokio::time::timeout(
                     Duration::from_secs(5),
@@ -2328,7 +2573,7 @@ pub async fn forward_stop(state: Arc<AppState>, forward_id: i64) {
     }
     let _ = state
         .app
-        .emit("forward:stopped", ForwardEvent { id: forward_id, active: false });
+        .emit("forward:stopped", ForwardEvent { id: forward_id, active: false, error: reason });
 }
 
 /// Stop every tunnel riding on `session_id`. Called when a session is gone
@@ -2359,7 +2604,7 @@ pub fn stop_forwards_for_session(state: &AppState, session_id: u32) {
         handle.listener.abort();
         let _ = state
             .app
-            .emit("forward:stopped", ForwardEvent { id, active: false });
+            .emit("forward:stopped", ForwardEvent { id, active: false, error: None });
     }
 }
 
@@ -2508,6 +2753,59 @@ mod tests {
         assert!(pos(&Step::Dir(s(&["b", "deep"]))) < pos(&Step::File(s(&["b", "deep", "two.bin"]), 7)));
         assert!(plan.steps.contains(&Step::Dir(s(&["a"]))), "empty folders come along");
         assert!(plan.steps.contains(&Step::File(s(&["top.txt"]), 5)));
+    }
+
+    #[test]
+    fn names_that_become_one_on_this_disk_get_numbered() {
+        let steps = vec![
+            Step::Dir(vec![]),
+            Step::File(s(&["a:b.txt"]), 1),
+            Step::File(s(&["a?b.txt"]), 1),
+            Step::File(s(&["README"]), 1),
+            Step::File(s(&["readme"]), 1),
+            Step::Dir(s(&["x:y"])),
+            Step::Dir(s(&["x?y"])),
+            Step::File(s(&["x?y", "inner.txt"]), 1),
+        ];
+        let names: Vec<String> = download_targets("/dl/site", &steps, true, true)
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "/dl/site",
+                "/dl/site/a_b.txt",
+                "/dl/site/a_b (2).txt",
+                "/dl/site/README",
+                "/dl/site/readme (2)",
+                "/dl/site/x_y",
+                "/dl/site/x_y (2)",
+                "/dl/site/x_y (2)/inner.txt",
+            ]
+        );
+        // A disk that tells case apart keeps both
+        let linux = download_targets("/dl", &steps[3..5], false, false);
+        assert_eq!(linux[1].file_name().unwrap(), "readme");
+        assert_eq!(numbered_name(".env", 2, true), ".env (2)");
+        assert_eq!(numbered_name("v1.2", 3, false), "v1.2 (3)");
+    }
+
+    #[test]
+    fn a_folder_copy_reports_the_files_it_could_not_move() {
+        assert_eq!(Failures::default().into_result(true, 10), Ok(()));
+
+        let mut one = Failures::default();
+        one.file(&[], "Remote write failed: quota".into());
+        assert_eq!(one.into_result(false, 1), Err("Remote write failed: quota".into()));
+
+        let mut some = Failures::default();
+        some.file(&s(&["a", "x.bin"]), "Permission denied".into());
+        some.dir(&s(&["locked"]), "Could not create folder".into());
+        assert!(some.inside_failed_dir(&s(&["locked", "deep", "f"])));
+        assert!(!some.inside_failed_dir(&s(&["lockedness"])));
+        some.files += 2; // two files inside the folder that failed
+        assert_eq!(some.into_result(true, 9), Err("3 of 9 files failed. The first: a/x.bin: Permission denied".into()));
     }
 
     #[test]

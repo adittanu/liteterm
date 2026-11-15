@@ -53,8 +53,14 @@ export const useForwardsStore = defineStore('forwards', () => {
     await listen<{ id: number; active: boolean }>('forward:started', (e) => {
       if (!activeIds.value.includes(e.payload.id)) activeIds.value.push(e.payload.id)
     })
-    await listen<{ id: number; active: boolean }>('forward:stopped', (e) => {
+    await listen<{ id: number; active: boolean; error?: string }>('forward:stopped', (e) => {
       activeIds.value = activeIds.value.filter((x) => x !== e.payload.id)
+      // The app stopped it by itself (a remote forward the server refused
+      // again after a reconnect): say so, or it just goes quiet
+      if (e.payload.error) {
+        const name = forwards.value.find((f) => f.id === e.payload.id)?.name ?? 'A tunnel'
+        useUiStore().toast('error', `“${name}”: ${e.payload.error}`)
+      }
     })
   }
 

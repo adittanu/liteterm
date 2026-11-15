@@ -163,6 +163,7 @@ Better to read this before you install than to find out after.
 | **No agent forwarding, no Pageant** | The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work. |
 | **Jump hosts need a saved login** | A password with Remember, a key or an agent. |
 | **Sync carries key paths, not key files** | A synced host remembers where its private key is: copy the key to the same place, or use an SSH agent. Images in notes don't sync yet. |
+| **Older versions see every forward as local** | LiteTerm 1.11 and earlier don't know remote and SOCKS forwards. Synced to such a computer, those run there as local forwards. Update every computer that syncs. |
 | **macOS and Linux are new** | Those builds come from CI and have had far less testing than Windows. |
 
 <br>
