@@ -16,6 +16,7 @@ import DownloadButton from './DownloadButton.astro';
 
     <nav class="links" aria-label="Sections">
       <a href="#features">Features</a>
+      <a href="#compare">Compare</a>
       <a href="#platforms">Platforms</a>
       <a href="#limits">Limits</a>
       <a href="#faq">FAQ</a>
@@ -115,7 +116,8 @@ import DownloadButton from './DownloadButton.astro';
     display: none;
   }
 
-  @media (min-width: 52rem) {
+  /* Five section links fit beside the brand and the actions from about 880px */
+  @media (min-width: 56rem) {
     .links {
       display: flex;
     }

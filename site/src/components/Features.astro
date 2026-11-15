@@ -1,22 +1,26 @@
 ---
-import { ArrowRight, CheckCircle2, Lock, Play, Server, ShieldAlert, StickyNote } from 'lucide-react';
+import { ArrowRight, Bell, CheckCircle2, KeyRound, Lock, Play, Server, ShieldAlert, StickyNote } from 'lucide-react';
 
 const ICON = { size: 16, strokeWidth: 1.5, 'aria-hidden': true } as const;
 
 // What the quick-connect box turns a typed address into (src/utils/parseTarget.ts in the app)
 const targets = [
   { typed: 'ops@203.0.113.7:2222', result: 'ops on 203.0.113.7, port 2222' },
-  { typed: '10.0.4.12', result: '10.0.4.12, your usual user' },
+  { typed: 'ssh -p 2222 -J bastion deploy@10.0.4.12', result: 'port 2222, through bastion' },
   { typed: 'https://git.example.com/team', result: 'git.example.com' },
 ];
 
 const also = [
   'Auto-reconnect',
   'Find in terminal, with regex',
-  'Snippets',
+  'Snippets with {{placeholders}}',
+  'A startup command per host',
+  'Privacy mode for screenshots',
+  'Paste a screenshot into an agent CLI',
+  'Keeps your computer awake while a command runs',
   'SSH agent: 1Password, Bitwarden, KeePassXC',
   'Import from ~/.ssh/config or a Termius export',
-  'Light and dark themes',
+  'Nine terminal themes',
   'Local terminal',
 ];
 ---
@@ -35,7 +39,7 @@ const also = [
           <h3>Quick connect from the keyboard</h3>
           <p>
             Press <kbd class="key">Ctrl</kbd> <kbd class="key">K</kbd> (<kbd class="key">⌘</kbd> <kbd class="key">K</kbd> on a Mac), type a few letters of a
-            host name and press Enter. Or paste an address and LiteTerm connects to it.
+            host name and press Enter. Or paste an address, or a whole <code>ssh</code> command with its port, key and jump host.
           </p>
         </div>
         <ul class="visual targets" aria-hidden="true">
@@ -113,6 +117,57 @@ const also = [
         </div>
       </article>
 
+      <article class="tile tile-split">
+        <div class="copy">
+          <h3>Two panes in one tab</h3>
+          <p>
+            Split right with <kbd class="key">Ctrl</kbd> <kbd class="key">Shift</kbd> <kbd class="key">D</kbd> or down with <kbd class="key">E</kbd>. Tail a
+            log on the left while you work on the right, then drag the line between them.
+          </p>
+        </div>
+        <div class="visual panes" aria-hidden="true">
+          <div class="pane">
+            <span class="pane-host">prod-api</span>
+            <code>tail -f app.log</code>
+          </div>
+          <div class="pane pane-focus">
+            <span class="pane-host">prod-api</span>
+            <code>systemctl restart api</code>
+          </div>
+        </div>
+      </article>
+
+      <article class="tile tile-keys">
+        <div class="copy">
+          <h3>Make a key and install it</h3>
+          <p>
+            Generate an Ed25519 key from the Keychain page, then install it on a host in one step. LiteTerm adds it to <code>authorized_keys</code> and can switch
+            the host to log in with it.
+          </p>
+        </div>
+        <ul class="visual steps" aria-hidden="true">
+          <li><KeyRound {...ICON} /> <code>~/.ssh/liteterm_ed25519</code></li>
+          <li class="step-done"><CheckCircle2 {...ICON} /> Installed on prod-api</li>
+        </ul>
+      </article>
+
+      <article class="tile tile-suggest">
+        <div class="copy">
+          <h3>A terminal that remembers</h3>
+          <p>
+            Grey suggestions come from the server’s own shell history; press <kbd class="key">→</kbd> to take one. When a long command finishes in another tab,
+            LiteTerm tells you.
+          </p>
+        </div>
+        <div class="visual suggest" aria-hidden="true">
+          <div class="prompt">
+            <span class="ps">$</span>
+            <code>docker compose <span class="ghost-text">logs -f api</span></code>
+          </div>
+          <div class="notice"><Bell {...ICON} /> <span>staging finished a command after 2m 14s</span> <b>Show</b></div>
+        </div>
+      </article>
+
       <article class="tile tile-secrets">
         <div class="copy">
           <h3>Secrets and host keys stay in their place</h3>
@@ -177,7 +232,10 @@ const also = [
   .tile-jump,
   .tile-sftp,
   .tile-fwd,
-  .tile-notes {
+  .tile-notes,
+  .tile-split,
+  .tile-keys,
+  .tile-suggest {
     grid-column: span 2;
   }
 
@@ -232,8 +290,12 @@ const also = [
   }
 
   .targets code {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
     color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .targets svg {
@@ -242,6 +304,8 @@ const also = [
   }
 
   .targets span {
+    flex: 1 1 auto;
+    min-width: 6rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -443,6 +507,154 @@ const also = [
     font-weight: 600;
   }
 
+  /* ---- split panes ---- */
+  .panes {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--line);
+  }
+
+  .pane {
+    display: grid;
+    align-content: start;
+    gap: var(--space-2);
+    min-width: 0;
+    min-height: 5.5rem;
+    padding: var(--space-3);
+    border-radius: calc(var(--radius-md) - 2px);
+    background: oklch(0.13 0.012 260);
+    font-size: 0.8125rem;
+  }
+
+  .pane:first-child {
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
+  }
+
+  .pane:last-child {
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
+  }
+
+  .pane-focus {
+    outline: 1px solid oklch(0.66 0.16 252 / 0.6);
+    outline-offset: -1px;
+  }
+
+  .pane-host {
+    color: var(--text-3);
+    font-size: 0.75rem;
+  }
+
+  .pane code {
+    overflow: hidden;
+    color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- keys ---- */
+  .steps {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .steps li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    padding: 0.55rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--bg);
+    color: var(--text-2);
+    font-size: 0.875rem;
+  }
+
+  .steps svg {
+    flex: none;
+    color: var(--accent-text);
+  }
+
+  .steps code {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 0.8125rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .steps .step-done svg {
+    color: var(--success);
+  }
+
+  /* ---- suggestions and notices ---- */
+  .suggest {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .prompt {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-width: 0;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: oklch(0.13 0.012 260);
+    font-size: 0.8125rem;
+  }
+
+  .ps {
+    color: var(--success);
+    font-family: var(--font-mono);
+  }
+
+  .prompt code {
+    overflow: hidden;
+    color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ghost-text {
+    color: var(--text-3);
+  }
+
+  .notice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 0.8125rem;
+  }
+
+  .notice svg {
+    flex: none;
+    color: var(--accent-text);
+  }
+
+  .notice span {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .notice b {
+    flex: none;
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+
   /* ---- secrets ---- */
   .secrets {
     display: grid;
@@ -564,11 +776,15 @@ const also = [
     .tile-jump,
     .tile-sftp,
     .tile-fwd,
-    .tile-notes {
+    .tile-notes,
+    .tile-split,
+    .tile-keys {
       grid-column: span 3;
     }
 
-    .tile-quick {
+    /* Seven small tiles leave one over in a two column grid: give it the row */
+    .tile-quick,
+    .tile-suggest {
       grid-column: span 6;
     }
 
@@ -587,6 +803,9 @@ const also = [
     .tile-sftp,
     .tile-fwd,
     .tile-notes,
+    .tile-split,
+    .tile-keys,
+    .tile-suggest,
     .tile-secrets {
       grid-column: auto;
     }

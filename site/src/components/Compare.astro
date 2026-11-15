@@ -1,0 +1,425 @@
+---
+import { Check, Minus, X } from 'lucide-react';
+
+// Termius facts come from the plan matrix on termius.com/pricing, read on the
+// date below. "Not listed" means that page doesn't mention the feature: it is
+// not a claim that Termius lacks it. Re-check the page before changing a row.
+const CHECKED = '15 November 2026';
+const TERMIUS_PRICING = 'https://termius.com/pricing';
+
+type Kind = 'yes' | 'no' | 'part' | 'text' | 'unlisted';
+interface Cell {
+  kind: Kind;
+  text?: string;
+}
+
+const yes = (text?: string): Cell => ({ kind: 'yes', text });
+const no = (text?: string): Cell => ({ kind: 'no', text });
+const part = (text: string): Cell => ({ kind: 'part', text });
+const text = (t: string): Cell => ({ kind: 'text', text: t });
+const unlisted: Cell = { kind: 'unlisted', text: 'Not listed' };
+
+// One row: what is compared, then LiteTerm, Termius Starter, Termius Pro
+const groups: { name: string; rows: [string, Cell, Cell, Cell][] }[] = [
+  {
+    name: 'Price and code',
+    rows: [
+      ['Price', text('Free'), text('Free'), text('$10 a month, paid yearly')],
+      ['Source code', yes('Open, MIT license'), no('Closed'), no('Closed')],
+    ],
+  },
+  {
+    name: 'Sync and secrets',
+    rows: [
+      ['Sync between your computers', yes('End to end encrypted'), no('One device'), yes('End to end encrypted, phones too')],
+      ['Where saved passwords live', text('Your OS keychain'), text('Termius vault'), text('Termius vault')],
+    ],
+  },
+  {
+    name: 'Connecting',
+    rows: [
+      ['SSH, SFTP and a local terminal', yes(), yes(), yes()],
+      ['Jump hosts', yes(), yes(), yes()],
+      ['Port forwarding', part('Local (-L) only'), yes(), yes()],
+      ['Agent forwarding', no(), yes(), yes()],
+      ['Mosh, Telnet and serial', no(), yes(), yes()],
+      ['SSH certificates and FIDO2 keys', no(), yes(), yes()],
+    ],
+  },
+  {
+    name: 'In the terminal',
+    rows: [
+      ['Split panes', yes('Two per tab'), yes(), yes()],
+      ['Command suggestions', yes('From the host’s own history'), yes('AI autocomplete'), yes('AI autocomplete')],
+      ['Snippets', yes('With fill in placeholders'), yes(), yes()],
+      ['Startup command per host', yes(), no(), yes('Startup snippets')],
+      ['Runbook notes with a Run button', yes(), unlisted, unlisted],
+      ['Privacy mode for screenshots', yes(), unlisted, unlisted],
+    ],
+  },
+  {
+    name: 'Devices and teams',
+    rows: [
+      ['Windows, macOS and Linux', yes(), yes(), yes()],
+      ['iPhone, iPad and Android', no(), yes(), yes()],
+      ['Shared team vaults', no(), no(), no('Team plan, $20 a seat')],
+    ],
+  },
+];
+
+const SR: Record<Kind, string> = { yes: 'Yes', no: 'No', part: 'Partly', text: '', unlisted: '' };
+
+const pickLiteterm = [
+  'You want your hosts on every computer you use without a subscription.',
+  'You’d rather keep passwords in the keychain your OS already protects.',
+  'You keep runbooks next to your servers and want to run them from there.',
+  'You want to read the code you trust with your SSH keys.',
+];
+
+const pickTermius = [
+  'You connect from a phone or a tablet.',
+  'You need Mosh, Telnet, serial, agent forwarding, or remote and dynamic forwards.',
+  'You log in with SSH certificates or FIDO2 hardware keys.',
+  'Your team shares hosts and credentials from one vault.',
+];
+---
+
+<section class="section" id="compare" aria-labelledby="compare-title">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow"><b>02</b> · Compare</p>
+      <h2 id="compare-title">LiteTerm and Termius, side by side.</h2>
+      <p class="lede">
+        Termius covers more ground, especially on phones and in teams. LiteTerm gives you sync between computers, a startup command per host and
+        runbook notes for free.
+      </p>
+    </div>
+
+    <p class="swipe" aria-hidden="true">Swipe the table sideways to see both Termius plans.</p>
+
+    <div class="scroller" role="region" aria-labelledby="compare-title" tabindex="0">
+      <table>
+        <caption class="sr-only">LiteTerm compared with the Termius Starter and Pro plans</caption>
+        <colgroup>
+          <col class="col-feature" />
+          <col class="col-us" />
+          <col class="col-them" />
+          <col class="col-them" />
+        </colgroup>
+        <thead>
+          <tr>
+            <td></td>
+            <th scope="col" class="us">
+              <span class="plan">LiteTerm</span>
+            </th>
+            <th scope="col">
+              <span class="plan">Termius Starter</span>
+            </th>
+            <th scope="col">
+              <span class="plan">Termius Pro</span>
+            </th>
+          </tr>
+        </thead>
+        {
+          groups.map((g) => (
+            <tbody>
+              <tr class="group">
+                <th scope="colgroup" colspan="4">
+                  <span>{g.name}</span>
+                </th>
+              </tr>
+              {g.rows.map(([label, ...cells]) => (
+                <tr>
+                  <th scope="row">{label}</th>
+                  {cells.map((c, i) => (
+                    <td class:list={[`k-${c.kind}`, { us: i === 0 }]}>
+                      <span class="cell">
+                        {c.kind === 'yes' && <Check size={16} strokeWidth={2.25} aria-hidden="true" />}
+                        {c.kind === 'no' && <X size={16} strokeWidth={2.25} aria-hidden="true" />}
+                        {c.kind === 'part' && <Minus size={16} strokeWidth={2.25} aria-hidden="true" />}
+                        {c.text ? (
+                          <span>
+                            {SR[c.kind] && <span class="sr-only">{SR[c.kind]}: </span>}
+                            {c.text}
+                          </span>
+                        ) : (
+                          <span class="sr-only">{SR[c.kind]}</span>
+                        )}
+                      </span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          ))
+        }
+      </table>
+    </div>
+
+    <p class="source">
+      Termius plans and features as listed on <a href={TERMIUS_PRICING}>termius.com/pricing</a> on {CHECKED}, yearly billing. “Not listed”
+      means that page doesn’t mention it.
+    </p>
+
+    <div class="fit">
+      <article class="fit-card fit-us">
+        <h3>Pick LiteTerm if</h3>
+        <ul>
+          {pickLiteterm.map((p) => <li>{p}</li>)}
+        </ul>
+      </article>
+      <article class="fit-card">
+        <h3>Pick Termius if</h3>
+        <ul>
+          {pickTermius.map((p) => <li>{p}</li>)}
+        </ul>
+      </article>
+    </div>
+
+    <p class="move">
+      <strong>Coming from Termius?</strong> Export your data there, then choose Import in LiteTerm. Hosts, groups and the keys inside the export
+      come along.
+    </p>
+  </div>
+</section>
+
+<style>
+  /* The table keeps its columns on a phone and scrolls sideways instead,
+     with the feature names pinned on the left */
+  .scroller {
+    /* Positioned, so the absolutely placed screen reader labels in the cells
+       stay inside it and can't widen the page */
+    position: relative;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    overscroll-behavior-x: contain;
+  }
+
+  table {
+    width: 100%;
+    min-width: 40rem;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.9375rem;
+  }
+
+  .col-feature {
+    width: 31%;
+  }
+
+  .col-us,
+  .col-them {
+    width: 23%;
+  }
+
+  th,
+  td {
+    padding: 0.7rem var(--space-4);
+    border-block-end: 1px solid var(--line);
+    text-align: start;
+    vertical-align: top;
+  }
+
+  thead td {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: 1;
+  }
+
+  thead th,
+  thead td {
+    padding-block: var(--space-4);
+    border-block-end-color: var(--line-strong);
+    background: var(--surface);
+    vertical-align: bottom;
+  }
+
+  .plan {
+    display: block;
+    color: var(--text);
+    font-size: var(--step-0);
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+
+
+  tbody th[scope='row'] {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: 1;
+    background: var(--surface);
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .group th {
+    padding-block: var(--space-5) var(--space-2);
+    color: var(--text-3);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  tbody:first-of-type .group th {
+    padding-block-start: var(--space-4);
+  }
+
+  /* The group name stays in view while the table scrolls sideways */
+  .group span {
+    position: sticky;
+    inset-inline-start: var(--space-4);
+  }
+
+  tbody:last-of-type tr:last-child > * {
+    border-block-end: 0;
+  }
+
+  /* LiteTerm's column: a tint, so the eye can follow it down the table */
+  .us {
+    background: oklch(0.66 0.16 252 / 0.07);
+  }
+
+  thead .us {
+    background: oklch(0.235 0.03 255);
+  }
+
+  thead .us .plan {
+    color: var(--accent-text);
+  }
+
+  .cell {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    color: var(--text-2);
+  }
+
+  .cell svg {
+    flex: none;
+    margin-block-start: 0.2em;
+  }
+
+  .k-yes svg {
+    color: var(--success);
+  }
+
+  .k-no svg {
+    color: var(--text-3);
+  }
+
+  .k-no .cell {
+    color: var(--text-3);
+  }
+
+  .k-part svg {
+    color: var(--warn);
+  }
+
+  .k-text .cell {
+    color: var(--text);
+  }
+
+  .k-unlisted .cell {
+    color: var(--text-3);
+  }
+
+  .source {
+    margin-block-start: var(--space-3);
+    color: var(--text-3);
+    font-size: 0.875rem;
+  }
+
+  .fit {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+    margin-block-start: var(--space-7);
+  }
+
+  .fit-card {
+    display: grid;
+    align-content: start;
+    gap: var(--space-4);
+    padding: var(--space-5);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+  }
+
+  .fit-us {
+    border-color: oklch(0.66 0.16 252 / 0.35);
+  }
+
+  .fit-card ul {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .fit-card li {
+    position: relative;
+    padding-inline-start: var(--space-5);
+    color: var(--text-2);
+    font-size: 0.9375rem;
+  }
+
+  .fit-card li::before {
+    content: '';
+    position: absolute;
+    inset-inline-start: 0.25rem;
+    inset-block-start: 0.62em;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-3);
+  }
+
+  .fit-us li::before {
+    background: var(--accent);
+  }
+
+  .move {
+    max-width: 44rem;
+    margin-block-start: var(--space-5);
+    color: var(--text-2);
+  }
+
+  .move strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .swipe {
+    display: none;
+    margin-block-end: var(--space-3);
+    color: var(--text-3);
+    font-size: 0.875rem;
+  }
+
+  @media (max-width: 44rem) {
+    .fit {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .swipe {
+      display: block;
+    }
+
+    table {
+      min-width: 34rem;
+      font-size: 0.875rem;
+    }
+
+    th,
+    td {
+      padding-inline: var(--space-3);
+    }
+
+    /* Narrow screens: shrink the pinned column so the next plan peeks in */
+    .col-feature {
+      width: 8.5rem;
+    }
+  }
+</style>

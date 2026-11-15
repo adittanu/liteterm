@@ -3,6 +3,7 @@ import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
 import Hero from '../components/Hero.astro';
 import Features from '../components/Features.astro';
+import Compare from '../components/Compare.astro';
 import Platforms from '../components/Platforms.astro';
 import Limits from '../components/Limits.astro';
 import Faq from '../components/Faq.astro';
@@ -11,7 +12,7 @@ import Footer from '../components/Footer.astro';
 
 const title = 'LiteTerm: lightweight SSH client for Windows, macOS and Linux';
 const description =
-  'LiteTerm is a small, fast SSH client: terminal, SFTP, port forwarding and notes in one window. Passwords stay in your OS keychain. Windows, macOS and Linux.';
+  'A small, free and open source SSH client for Windows, macOS and Linux: terminal, SFTP, port forwarding and notes in one window. A Termius alternative.';
 ---
 
 <Layout title={title} description={description}>
@@ -19,6 +20,7 @@ const description =
   <main id="main">
     <Hero />
     <Features />
+    <Compare />
     <Platforms />
     <Limits />
     <Faq />
