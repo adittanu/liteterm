@@ -27,4 +27,4 @@ One-time: **Settings > Pages > Build and deployment > Source: GitHub Actions**. 
 
 ## Copy rules
 
-Every claim on the page is checked against the app's code or README: features, limits, where secrets live, how updates work. Keep it that way when the app changes, especially the **Limits** and **FAQ** sections.
+Every claim on the page is checked against the app's code or README: features, where secrets live, how updates work. Keep it that way when the app changes, especially the **Compare** and **FAQ** sections.
