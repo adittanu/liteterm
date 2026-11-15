@@ -85,11 +85,13 @@
 
 **Connect**
 
-- **Quick connect** with <kbd>Ctrl</kbd> <kbd>K</kbd> (<kbd>⌘</kbd> <kbd>K</kbd> on a Mac). Type a host name, or paste `user@host:port`, an IP or even a URL.
+- **Quick connect** with <kbd>Ctrl</kbd> <kbd>K</kbd> (<kbd>⌘</kbd> <kbd>K</kbd> on a Mac). Type a host name, or paste `user@host:port`, an IP, a URL or a whole `ssh` command (`-p`, `-l`, `-i`, `-J`). An address on the clipboard is offered, and a typo gets a "did you mean" from your saved hosts.
 - **Hosts** in groups, with search.
 - **Sign in** with a password, a private key (Ed25519, ECDSA, RSA) or an **SSH agent**: the OpenSSH agent, 1Password, Bitwarden or KeePassXC.
 - **Jump hosts** (ProxyJump), chained through as many bastions as you need.
 - **Host keys** checked on first use, for every hop. A key that changes is a hard stop.
+- **Keys**: generate an Ed25519 key, then install it on a host in one step (like `ssh-copy-id`) and switch the host to log in with it.
+- **Startup command** per host, typed after every login and reconnect.
 
 </td>
     <td valign="top" width="33%">
@@ -97,10 +99,14 @@
 **Work**
 
 - **Terminal** tabs on xterm.js, with find (match case, regex) on <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd>.
+- **Split a tab** into two panes: right with <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>D</kbd>, down with <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>E</kbd>.
+- **Suggestions** in grey from the host's own shell history; <kbd>→</kbd> takes one.
+- **Notices** when a long command finishes or a program rings the bell in a tab you aren't looking at, and the computer stays awake while a command runs.
+- **Paste a screenshot**: it goes to the server's `/tmp` and its path is pasted, for agent CLIs such as opencode.
 - **Auto-reconnect** after a Wi-Fi switch or a sleeping laptop, in the same tab, scrollback kept.
 - **SFTP** in two panes: this computer and a host, or two hosts. Progress and cancel.
 - **Port forwarding** (`-L`) you start and stop from a list, or that starts with its host.
-- **Snippets**: run in one click, or Shift+click to insert.
+- **Snippets**: run in one click, or Shift+click to insert. `{{name}}` placeholders are asked for first.
 - **Local terminal** next to your sessions.
 
 </td>
@@ -112,8 +118,9 @@
 - **Passwords** in the OS keychain, never in LiteTerm's database.
 - **Sync** between your computers, if you sign in: end-to-end encrypted with a master password the server never sees.
 - **Import** from `~/.ssh/config` and `known_hosts`, or a Termius export. Export and import LiteTerm's own file.
+- **Privacy mode** swaps host names and addresses for stand-ins, so screenshots are safe to share.
 - **Shortcuts** you can rebind.
-- **Light and dark** themes.
+- **Light and dark** themes, and nine terminal themes.
 
 </td>
   </tr>
