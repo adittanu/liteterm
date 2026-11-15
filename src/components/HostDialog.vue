@@ -105,6 +105,13 @@ const selectedCred = computed(() => {
 const teamId = ref<string | null>(null)
 const inVault = (x: { team_id: string | null }) => x.team_id === teamId.value
 
+// "+ New credential" with a key: "Store the key in LiteTerm", always on in a
+// team, which has no use for a file on this computer
+const storeKey = ref(false)
+watch(teamId, (t) => {
+  if (t !== null) storeKey.value = true
+})
+
 const groupOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No group', muted: true },
   ...hosts.groups.filter(inVault).map((g) => ({ value: g.id, label: g.name })),
@@ -171,7 +178,11 @@ function validate(): boolean {
     if (form.auth_method === 'key' && !form.key_path.trim()) { errors.key_path = 'Choose a private key file'; ok = false }
   } else if (credentialChoice.value === '') {
     if (!form.username.trim()) { errors.username = 'Username is required'; ok = false }
-    if (form.auth_method === 'key' && !form.key_path.trim()) { errors.key_path = 'Choose a private key file'; ok = false }
+    if (form.auth_method === 'key' && teamId.value !== null) {
+      // Nobody else in the team has the file
+      errors.key_path = 'In a team, pick + New credential: the key is stored with it, so everyone can sign in'
+      ok = false
+    } else if (form.auth_method === 'key' && !form.key_path.trim()) { errors.key_path = 'Choose a private key file'; ok = false }
   }
   return ok
 }
@@ -242,6 +253,7 @@ watch(open, (o) => {
   }
   // A quick-connect jump host or a group of another vault doesn't come along
   dropOtherVaults()
+  storeKey.value = teamId.value !== null
   errors.label = errors.address = errors.port = errors.baud = errors.username = errors.key_path = errors.cred_name = undefined
 })
 
@@ -324,6 +336,7 @@ async function save() {
           save_password: form.auth_method === 'agent' ? false : form.save_password,
           key_path: form.auth_method === 'key' ? form.key_path.trim() : null,
           key_passphrase: form.key_passphrase ? form.key_passphrase : null,
+          store_key: form.auth_method === 'key' ? storeKey.value : null,
         },
       }
     } else {
@@ -587,7 +600,7 @@ async function save() {
         </div>
         <div class="cred-detail-row">
           <dt>Auth</dt>
-          <dd>{{ selectedCred.auth_method === 'key' ? 'Private key' : selectedCred.auth_method === 'agent' ? 'SSH agent' : 'Password' }}<template v-if="selectedCred.auth_method === 'key'"> · <span class="mono">{{ selectedCred.key_path }}</span></template></dd>
+          <dd>{{ selectedCred.auth_method === 'key' ? 'Private key' : selectedCred.auth_method === 'agent' ? 'SSH agent' : 'Password' }}<template v-if="selectedCred.auth_method === 'key' && selectedCred.key_stored"> · stored in LiteTerm</template><template v-else-if="selectedCred.auth_method === 'key'"> · <span class="mono">{{ selectedCred.key_path }}</span></template></dd>
         </div>
         <div class="cred-detail-row">
           <dt>Password</dt>
@@ -709,7 +722,17 @@ async function save() {
               <button type="button" class="btn btn-secondary" @click="browseKey">Browse…</button>
             </div>
             <span v-if="errors.key_path" class="field-error">{{ errors.key_path }}</span>
-            <span v-else class="field-hint">A certificate next to it (<span class="mono">id_ed25519-cert.pub</span>) is offered first.</span>
+            <span v-else-if="!(credentialChoice === 'new' && storeKey)" class="field-hint">A certificate next to it (<span class="mono">id_ed25519-cert.pub</span>) is offered first.</span>
+          </div>
+          <div v-if="credentialChoice === 'new'" class="field">
+            <label class="check">
+              <input v-model="storeKey" type="checkbox" :disabled="teamId !== null" />
+              Store the key in LiteTerm
+            </label>
+            <span class="field-hint">
+              <template v-if="teamId !== null">A team credential carries its key, so everyone in the team can sign in with it.</template>
+              <template v-else>The key syncs with the credential, encrypted, so it works on your other computers too.</template>
+            </span>
           </div>
           <div class="field">
             <label class="field-label" for="hf-keypass">Key passphrase</label>
@@ -721,6 +744,9 @@ async function save() {
               placeholder="Leave empty if the key has none"
               autocomplete="new-password"
             />
+            <span v-if="credentialChoice === 'new' && storeKey" class="field-hint">
+              Unlocks the key once, before it's stored. It isn't kept.
+            </span>
           </div>
         </template>
       </template>

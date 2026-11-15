@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { KeyRound, Fingerprint } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import VaultField from './VaultField.vue'
@@ -32,6 +32,13 @@ const errors = reactive<{ name?: string; username?: string; key_path?: string }>
 const saving = ref(false)
 // The vault a new credential goes in; an existing one stays where it is
 const teamId = ref<string | null>(null)
+const inTeam = computed(() => (props.credential ? props.credential.team_id : teamId.value) !== null)
+
+// "Store the key in LiteTerm": always on in a team, which has no use for a
+// file on this computer
+const storeKey = ref(false)
+// Editing one whose key is stored already: kept unless replaced
+const keepStored = ref(false)
 
 watch(
   () => props.credential,
@@ -43,7 +50,17 @@ watch(
     form.save_password = c?.password_saved ?? true
     form.key_path = c?.key_path ?? ''
     form.key_passphrase = ''
+    storeKey.value = c?.key_stored ?? false
+    keepStored.value = c?.key_stored ?? false
     errors.name = errors.username = errors.key_path = undefined
+  },
+  { immediate: true },
+)
+
+watch(
+  inTeam,
+  (team) => {
+    if (team) storeKey.value = true
   },
   { immediate: true },
 )
@@ -52,7 +69,10 @@ function validate(): boolean {
   let ok = true
   if (!form.name.trim()) { errors.name = 'Name this credential'; ok = false }
   if (!form.username.trim()) { errors.username = 'Username is required'; ok = false }
-  if (form.auth_method === 'key' && !form.key_path.trim()) { errors.key_path = 'Choose a private key file'; ok = false }
+  if (form.auth_method === 'key' && !keepStored.value && !form.key_path.trim()) {
+    errors.key_path = storeKey.value ? 'Choose the private key file to store' : 'Choose a private key file'
+    ok = false
+  }
   return ok
 }
 
@@ -64,10 +84,25 @@ async function browseKey() {
   if (path) form.key_path = path
 }
 
+/** Store another key file in place of the stored one */
+async function replaceStored() {
+  await browseKey()
+  if (!form.key_path.trim()) return
+  keepStored.value = false
+  storeKey.value = true
+}
+
+function useFile() {
+  keepStored.value = false
+  storeKey.value = false
+  form.key_path = ''
+}
+
 async function save() {
   if (!validate()) return
   saving.value = true
   try {
+    const key = form.auth_method === 'key'
     await credentials.save(props.credential?.id ?? null, {
       name: form.name.trim(),
       username: form.username.trim(),
@@ -75,8 +110,10 @@ async function save() {
       password: form.password ? form.password : null,
       // Agent auth stores no secret — dropping the flag clears an old password
       save_password: form.auth_method === 'agent' ? false : form.save_password,
-      key_path: form.auth_method === 'key' ? form.key_path.trim() : null,
-      key_passphrase: form.key_passphrase ? form.key_passphrase : null,
+      key_path: key && !keepStored.value ? form.key_path.trim() : null,
+      key_passphrase: key && !keepStored.value && form.key_passphrase ? form.key_passphrase : null,
+      // Left out while the stored key stays as it is
+      store_key: key && !keepStored.value ? storeKey.value : null,
       team_id: teamId.value,
     })
     emit('close')
@@ -189,34 +226,61 @@ async function save() {
       </template>
 
       <template v-else-if="form.auth_method === 'key'">
-        <div class="field">
-          <label class="field-label" for="cf-key">Private key file</label>
-          <div class="key-row">
-            <input
-              id="cf-key"
-              v-model="form.key_path"
-              class="field-input mono"
-              :class="{ invalid: errors.key_path }"
-              type="text"
-              placeholder="C:\Users\you\.ssh\id_ed25519"
-              spellcheck="false"
-            />
-            <button type="button" class="btn btn-secondary" @click="browseKey">Browse…</button>
+        <!-- Stored in LiteTerm already: kept unless replaced -->
+        <div v-if="keepStored" class="field">
+          <span class="field-label">Private key</span>
+          <div class="stored-key">
+            <KeyRound :size="14" :stroke-width="1.5" class="stored-icon" aria-hidden="true" />
+            <span class="stored-text">Stored in LiteTerm</span>
+            <button type="button" class="btn btn-secondary" @click="replaceStored">Replace…</button>
+            <button v-if="!inTeam" type="button" class="btn btn-ghost" @click="useFile">Use a key file</button>
           </div>
-          <span v-if="errors.key_path" class="field-error">{{ errors.key_path }}</span>
-          <span v-else class="field-hint">A certificate next to it (<span class="mono">id_ed25519-cert.pub</span>) is offered first.</span>
+          <span class="field-hint">
+            It syncs with the credential, encrypted, so it works on every computer{{ inTeam ? ' and for everyone in the team' : '' }}.
+          </span>
         </div>
-        <div class="field">
-          <label class="field-label" for="cf-keypass">Key passphrase</label>
-          <input
-            id="cf-keypass"
-            v-model="form.key_passphrase"
-            class="field-input"
-            type="password"
-            placeholder="Leave empty if the key has none"
-            autocomplete="new-password"
-          />
-        </div>
+
+        <template v-else>
+          <div class="field">
+            <label class="field-label" for="cf-key">Private key file</label>
+            <div class="key-row">
+              <input
+                id="cf-key"
+                v-model="form.key_path"
+                class="field-input mono"
+                :class="{ invalid: errors.key_path }"
+                type="text"
+                placeholder="C:\Users\you\.ssh\id_ed25519"
+                spellcheck="false"
+              />
+              <button type="button" class="btn btn-secondary" @click="browseKey">Browse…</button>
+            </div>
+            <span v-if="errors.key_path" class="field-error">{{ errors.key_path }}</span>
+            <span v-else-if="!storeKey" class="field-hint">A certificate next to it (<span class="mono">id_ed25519-cert.pub</span>) is offered first.</span>
+          </div>
+          <div class="field">
+            <label class="check">
+              <input v-model="storeKey" type="checkbox" :disabled="inTeam" />
+              Store the key in LiteTerm
+            </label>
+            <span class="field-hint">
+              <template v-if="inTeam">A team credential carries its key, so everyone in the team can sign in with it.</template>
+              <template v-else>The key syncs with the credential, encrypted, so it works on your other computers too.</template>
+            </span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="cf-keypass">Key passphrase</label>
+            <input
+              id="cf-keypass"
+              v-model="form.key_passphrase"
+              class="field-input"
+              type="password"
+              placeholder="Leave empty if the key has none"
+              autocomplete="new-password"
+            />
+            <span v-if="storeKey" class="field-hint">Unlocks the key once, before it's stored. It isn't kept.</span>
+          </div>
+        </template>
       </template>
 
       <footer class="form-actions">
@@ -243,6 +307,28 @@ async function save() {
 .key-row {
   display: flex;
   gap: var(--space-2);
+}
+
+.stored-key {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+}
+
+.stored-icon {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.stored-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--text-1);
 }
 
 .key-row .field-input {

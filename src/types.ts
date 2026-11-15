@@ -78,6 +78,7 @@ export interface Credential {
   has_password: boolean
   key_path: string | null
   team_id: string | null
+  key_stored: boolean // its private key is stored in LiteTerm; key_path is then unused
 }
 
 export interface CredentialInput {
@@ -89,6 +90,9 @@ export interface CredentialInput {
   key_path?: string | null
   key_passphrase?: string | null
   team_id?: string | null // the vault a new credential goes in; ignored on an update
+  // true: read key_path and store the key in LiteTerm · false: drop a stored
+  // key · left out: keep what it has
+  store_key?: boolean | null
 }
 
 export interface KeyDefaults {

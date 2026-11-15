@@ -227,6 +227,15 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             PRIMARY KEY (team_id, user_id)
         );",
     )?;
+    // Private keys stored in LiteTerm, sealed with this device's key (see
+    // stored_keys.rs). They sync inside their credential's payload, so this
+    // table has no triggers of its own.
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS credential_keys (
+            credential_id INTEGER PRIMARY KEY REFERENCES credentials(id) ON DELETE CASCADE,
+            sealed        TEXT NOT NULL
+        );",
+    )?;
     tx.commit()
 }
 

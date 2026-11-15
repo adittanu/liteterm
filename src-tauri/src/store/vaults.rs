@@ -111,6 +111,8 @@ impl Moved {
 ///
 /// A host left behind can't jump through a moved one, so that is refused. A
 /// moved host whose jump host stays behind connects directly from then on.
+/// Into a team, a key file on this computer can't come along: a credential
+/// has to carry its key (stored in LiteTerm) first.
 /// Notes linked to a moved host stay where they are, unlinked: what someone
 /// wrote down for themselves isn't shared by moving a host.
 ///
@@ -191,6 +193,34 @@ pub fn move_hosts(
             "“{label}” jumps through a host you're moving. Move them together, or change its jump host first."
         ));
     }
+    // A team can't use a key file on this computer: the key has to travel
+    if target.is_some() {
+        for r in &rows {
+            let (inline_key, file_cred): (bool, Option<String>) = conn
+                .query_row(
+                    "SELECT h.credential_id IS NULL AND h.auth_method = 'key', \
+                     CASE WHEN c.auth_method = 'key' AND NOT EXISTS \
+                       (SELECT 1 FROM credential_keys k WHERE k.credential_id = c.id) THEN c.name END \
+                     FROM hosts h LEFT JOIN credentials c ON c.id = h.credential_id WHERE h.id = ?1",
+                    [r.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(sql)?;
+            if let Some(name) = file_cred {
+                return Err(format!(
+                    "Credential “{name}” signs in with a key file on this computer. Store the key in LiteTerm \
+                     first (Keychain, Edit), so the team gets it."
+                ));
+            }
+            if inline_key {
+                return Err(format!(
+                    "“{}” signs in with a key file on this computer. Give it a credential with the key stored \
+                     in LiteTerm first, so the team gets it.",
+                    r.label
+                ));
+            }
+        }
+    }
 
     let mut out = Moved::default();
 
@@ -220,6 +250,12 @@ pub fn move_hosts(
         )
         .map_err(sql)?;
         let copy = conn.last_insert_rowid();
+        // A key stored in LiteTerm goes along, sealed as it is
+        conn.execute(
+            "INSERT INTO credential_keys (credential_id, sealed) SELECT ?2, sealed FROM credential_keys WHERE credential_id = ?1",
+            params![c, copy],
+        )
+        .map_err(sql)?;
         creds.insert(c, copy);
     }
 
@@ -484,6 +520,27 @@ mod tests {
         assert_eq!(out.hosts, 2);
         assert_eq!(val::<i64>(&conn, "SELECT count(*) FROM hosts WHERE team_id IS NOT NULL"), 0);
         assert_eq!(val::<i64>(&conn, "SELECT count(*) FROM credentials WHERE team_id IS NULL"), 1);
+    }
+
+    #[test]
+    fn a_key_file_stays_out_of_a_team_and_a_stored_key_goes_in() {
+        let conn = open("editor");
+        let ops = cred(&conn, "ops");
+        conn.execute("UPDATE credentials SET auth_method = 'key', key_path = '/home/me/.ssh/id' WHERE id = ?1", [ops])
+            .unwrap();
+        let web = host(&conn, "web", Some(ops), None, None);
+        let err = moved(&conn, &[web], None, Some(TEAM)).unwrap_err();
+        assert!(err.contains("“ops”") && err.contains("Store the key"), "{err}");
+
+        let inline = host(&conn, "inline", None, None, None);
+        conn.execute("UPDATE hosts SET auth_method = 'key', key_path = '/k' WHERE id = ?1", [inline]).unwrap();
+        assert!(moved(&conn, &[inline], None, Some(TEAM)).unwrap_err().contains("“inline”"));
+
+        conn.execute("INSERT INTO credential_keys (credential_id, sealed) VALUES (?1, 'SEALED')", [ops]).unwrap();
+        moved(&conn, &[web], None, Some(TEAM)).unwrap();
+        let copy: i64 = val(&conn, &format!("SELECT id FROM credentials WHERE team_id = '{TEAM}'"));
+        assert_eq!(val::<String>(&conn, &format!("SELECT sealed FROM credential_keys WHERE credential_id = {copy}")), "SEALED");
+        assert_eq!(val::<i64>(&conn, "SELECT count(*) FROM credential_keys"), 1, "the original went with its credential");
     }
 
     #[test]

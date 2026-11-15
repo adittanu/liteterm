@@ -94,6 +94,7 @@ pub fn run() {
             commands::credentials::list_credentials,
             commands::credentials::upsert_credential,
             commands::credentials::delete_credential,
+            commands::credentials::credential_public_key,
             commands::import::import_ssh_preview,
             commands::import::import_ssh_apply,
             commands::import::import_file_preview,

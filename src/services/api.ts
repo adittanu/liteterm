@@ -91,6 +91,8 @@ export const api = {
   upsertCredential: (id: number | null, input: CredentialInput): Promise<Credential> =>
     invoke('upsert_credential', { id, input }),
   deleteCredential: (id: number): Promise<void> => invoke('delete_credential', { id }),
+  /** The public half of a credential's stored key */
+  credentialPublicKey: (id: number): Promise<string> => invoke('credential_public_key', { id }),
 
   // ---- snippets ----
   listSnippets: (): Promise<Snippet[]> => invoke('list_snippets'),

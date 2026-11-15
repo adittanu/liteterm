@@ -1,7 +1,7 @@
 //! The SSH client paths against a real SSH server on localhost (russh's own
 //! server), so an upgrade of russh is checked end to end: sign-in with a
-//! password, a key file and a certificate, a shell channel, and a
-//! direct-tcpip channel like a port forward opens.
+//! password, a key file and a certificate, a key stored in LiteTerm, a shell
+//! channel, and a direct-tcpip channel like a port forward opens.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use russh::server::{self, Auth, Msg, Session};
 use russh::{Channel, ChannelId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{authenticate, AuthSpec, ConnParams};
+use super::{authenticate, AuthSpec, ConnParams, KeySource};
 
 #[derive(Clone)]
 struct TestServer {
@@ -190,9 +190,19 @@ async fn a_key_file_signs_in() {
     let port = start_server(TestServer { user_key: Some(key.public_key().clone()), ca: None }).await;
     let (dir, path) = key_files("key", &key, None);
     let mut handle = dial(port).await;
-    let signed_in = authenticate(&mut handle, &hop(AuthSpec::Key { path, passphrase: None })).await.ok();
+    let signed_in = authenticate(&mut handle, &hop(AuthSpec::Key { source: KeySource::File(path), passphrase: None })).await.ok();
     std::fs::remove_dir_all(dir).unwrap();
     assert_eq!(signed_in, Some(true));
+}
+
+#[tokio::test]
+async fn a_key_stored_in_liteterm_signs_in() {
+    let key = new_key();
+    let port = start_server(TestServer { user_key: Some(key.public_key().clone()), ca: None }).await;
+    let text = key.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap();
+    let mut handle = dial(port).await;
+    let auth = AuthSpec::Key { source: KeySource::Stored(text), passphrase: None };
+    assert_eq!(authenticate(&mut handle, &hop(auth)).await.ok(), Some(true));
 }
 
 #[tokio::test]
@@ -204,14 +214,14 @@ async fn a_certificate_next_to_the_key_signs_in_where_the_key_alone_would_not() 
     let cert = sign(&ca, &key, now() - 60, now() + 3600);
     let (dir, path) = key_files("cert", &key, Some(&cert));
     let mut handle = dial(port).await;
-    let signed_in = authenticate(&mut handle, &hop(AuthSpec::Key { path: path.clone(), passphrase: None })).await.ok();
+    let signed_in = authenticate(&mut handle, &hop(AuthSpec::Key { source: KeySource::File(path.clone()), passphrase: None })).await.ok();
     assert_eq!(signed_in, Some(true));
 
     // Expired: skipped, the plain key is refused, and the error names the file
     let old = sign(&ca, &key, now() - 7200, now() - 3600);
     std::fs::write(std::path::Path::new(&path).with_file_name("id_ed25519-cert.pub"), old.to_openssh().unwrap()).unwrap();
     let mut handle = dial(port).await;
-    let err = authenticate(&mut handle, &hop(AuthSpec::Key { path, passphrase: None })).await.err().map(|e| e.msg);
+    let err = authenticate(&mut handle, &hop(AuthSpec::Key { source: KeySource::File(path), passphrase: None })).await.err().map(|e| e.msg);
     std::fs::remove_dir_all(dir).unwrap();
     assert!(err.as_deref().is_some_and(|m| m.contains("id_ed25519-cert.pub")), "{err:?}");
 }

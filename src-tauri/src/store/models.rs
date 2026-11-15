@@ -79,6 +79,8 @@ pub struct Credential {
     pub has_password: bool,
     pub key_path: Option<String>,
     pub team_id: Option<String>,
+    /// Its private key is stored in LiteTerm (then `key_path` is unused)
+    pub key_stored: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +95,13 @@ pub struct CredentialInput {
     /// The vault a new credential goes in (None: personal); ignored on an update
     #[serde(default)]
     pub team_id: Option<String>,
+    /// Some(true): read `key_path` and store the key in LiteTerm. Some(false):
+    /// drop a stored key. None: leave it as it is.
+    #[serde(default)]
+    pub store_key: Option<bool>,
+    /// The unlocked key to store, read by stored_keys::prepare; never sent
+    #[serde(skip)]
+    pub key_text: Option<zeroize::Zeroizing<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

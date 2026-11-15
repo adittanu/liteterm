@@ -42,7 +42,7 @@
     read-only state for viewers.
   - _Requirements: 4.1–4.6_
 
-- [ ] 7b. Embedded private keys
+- [x] 7b. Embedded private keys
   - `credential_keys` table sealed with a per-device key, the key in the
     credential payload, `AuthSpec::Key` from embedded text, "Store the key in
     LiteTerm" in the credential dialog (always on for team credentials).

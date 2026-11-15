@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 use super::models::*;
+use super::stored_keys;
 use super::sync;
 use super::vaults::WRITABLE;
 
@@ -512,7 +513,8 @@ pub fn delete_group(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
 
 // ---------- credentials ----------
 
-const CRED_COLS: &str = "id, name, username, auth_method, password_saved, key_path, team_id";
+const CRED_COLS: &str = "id, name, username, auth_method, password_saved, key_path, team_id, \
+    EXISTS (SELECT 1 FROM credential_keys k WHERE k.credential_id = credentials.id)";
 
 fn row_to_credential(row: &rusqlite::Row) -> rusqlite::Result<Credential> {
     Ok(Credential {
@@ -524,6 +526,7 @@ fn row_to_credential(row: &rusqlite::Row) -> rusqlite::Result<Credential> {
         has_password: false, // filled by caller via keyring check
         key_path: row.get(5)?,
         team_id: row.get(6)?,
+        key_stored: row.get(7)?,
     })
 }
 
@@ -567,6 +570,8 @@ fn upsert_credential_in(
     team_id: Option<&str>,
 ) -> Result<Credential, rusqlite::Error> {
     let save_pw = input.save_password.unwrap_or(false);
+    // A stored key replaces the file: its path means nothing elsewhere
+    let key_path = if input.key_text.is_some() { None } else { input.key_path.clone() };
     let id = match id {
         Some(id) => {
             conn.execute(
@@ -578,7 +583,7 @@ fn upsert_credential_in(
                     input.username.trim(),
                     input.auth_method,
                     save_pw as i64,
-                    input.key_path,
+                    key_path,
                 ],
             )?;
             id
@@ -592,7 +597,7 @@ fn upsert_credential_in(
                     input.username.trim(),
                     input.auth_method,
                     save_pw as i64,
-                    input.key_path,
+                    key_path,
                     team_id,
                 ],
             )?;
@@ -607,11 +612,26 @@ fn upsert_credential_in(
             secret_saved = true;
         }
     }
-    if let Some(pp) = &input.key_passphrase {
-        if !pp.is_empty() {
-            keyring_set(&cred_keypass_entry(id), pp);
+    match &input.key_text {
+        Some(text) => {
+            stored_keys::store(conn, &crate::cloud::items::Keyring, id, text)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+            // Stored unlocked: there is no passphrase to keep
+            keyring_delete(&cred_keypass_entry(id));
             secret_saved = true;
         }
+        None => {
+            if let Some(pp) = &input.key_passphrase {
+                if !pp.is_empty() {
+                    keyring_set(&cred_keypass_entry(id), pp);
+                    secret_saved = true;
+                }
+            }
+        }
+    }
+    // Dropping a stored key is a change the row doesn't show either
+    if (input.auth_method != "key" || input.store_key == Some(false)) && stored_keys::forget(conn, id)? {
+        secret_saved = true;
     }
     if !save_pw {
         keyring_delete(&cred_password_entry(id));

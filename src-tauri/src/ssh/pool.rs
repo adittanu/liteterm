@@ -682,12 +682,21 @@ async fn open_agent_stream() -> Result<AgentStream, String> {
 pub enum AuthSpec {
     Password(String),
     Key {
-        path: String,
+        source: KeySource,
         passphrase: Option<String>,
     },
     /// Keys held by the running SSH agent (Windows OpenSSH agent pipe,
     /// or whatever SSH_AUTH_SOCK names — 1Password, Bitwarden, KeePassXC)
     Agent,
+}
+
+/// Where a private key comes from
+#[derive(Clone)]
+pub enum KeySource {
+    /// A key file on this computer; a `<file>-cert.pub` next to it is offered first
+    File(String),
+    /// A key stored in LiteTerm, unlocked (see store/stored_keys.rs)
+    Stored(zeroize::Zeroizing<String>),
 }
 
 pub struct ConnParams {
@@ -909,12 +918,16 @@ async fn authenticate<H: russh::client::Handler>(
                 Ok(authenticate_keyboard_interactive(handle, &hop.username, pw).await)
             }
         }
-        AuthSpec::Key { path, passphrase } => {
-            let key = Arc::new(
-                russh::keys::load_secret_key(path, passphrase.as_deref())
-                    .map_err(|e| ConnectError::fatal(format!("Could not load key: {e}")))?,
-            );
-            let cert = key_certificate(path);
+        AuthSpec::Key { source, passphrase } => {
+            let loaded = match source {
+                KeySource::File(path) => russh::keys::load_secret_key(path, passphrase.as_deref()),
+                KeySource::Stored(text) => russh::keys::decode_secret_key(text, None),
+            };
+            let key = Arc::new(loaded.map_err(|e| ConnectError::fatal(format!("Could not load key: {e}")))?);
+            let cert = match source {
+                KeySource::File(path) => key_certificate(path),
+                KeySource::Stored(_) => KeyCert::None,
+            };
             if let KeyCert::Usable(cert) = &cert {
                 // Servers that trust a CA (step-ca, Vault, Teleport) want the
                 // certificate; one that doesn't still takes the plain key below

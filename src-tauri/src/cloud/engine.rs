@@ -916,7 +916,7 @@ impl Cloud {
             }
             let applied = with_db(app, |c| {
                 let tx = c.unchecked_transaction()?;
-                let applied = items::apply(&tx, &Vault::Personal, incoming)?;
+                let applied = items::apply(&tx, &Keyring, &Vault::Personal, incoming)?;
                 put(&tx, S_CURSOR, Some(&after.to_string()))?;
                 tx.commit()?;
                 Ok(applied)
@@ -1101,7 +1101,7 @@ impl Cloud {
             }
             let applied = with_db(app, |c| {
                 let tx = c.unchecked_transaction()?;
-                let applied = items::apply(&tx, &vault, incoming)?;
+                let applied = items::apply(&tx, &Keyring, &vault, incoming)?;
                 tx.execute("UPDATE teams SET cursor = ?1 WHERE id = ?2", params![after, team_id])?;
                 tx.commit()?;
                 Ok(applied)

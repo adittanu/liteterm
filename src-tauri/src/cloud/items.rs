@@ -5,6 +5,7 @@
 //! target by sync_id, never by the integer id, which differs per device. A
 //! host's or credential's saved password and key passphrase ride along: they
 //! live in the OS keyring here, and the item is encrypted before it leaves.
+//! So does a private key stored in LiteTerm (store/stored_keys.rs).
 //!
 //! Applying follows the rules in `store/sync.rs`: every write sets
 //! `modified_at` itself, so the change-tracking triggers stay quiet and
@@ -20,6 +21,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::store::db;
+use crate::store::stored_keys;
 use crate::store::sync::{self, SyncedTable};
 
 /// Where saved passwords and key passphrases live: the OS keyring in the app,
@@ -131,6 +133,14 @@ pub struct CredentialData {
     pub password: Option<Secret>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_passphrase: Option<Secret>,
+    /// Whether the private key is stored in LiteTerm. This version always
+    /// sends it; without it (an older LiteTerm, which can't see the key) a
+    /// key stored here stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_stored: Option<bool>,
+    /// The stored private key, unlocked OpenSSH text
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_pem: Option<Secret>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -383,7 +393,8 @@ fn read_payload(
         "credential" => {
             let row = conn
                 .query_row(
-                    "SELECT id, name, username, auth_method, key_path, password_saved, modified_at \
+                    "SELECT id, name, username, auth_method, key_path, password_saved, modified_at, \
+                     EXISTS (SELECT 1 FROM credential_keys k WHERE k.credential_id = credentials.id) \
                      FROM credentials WHERE sync_id = ?1",
                     [sync_id],
                     |r| {
@@ -395,6 +406,8 @@ fn read_payload(
                             password_saved: r.get::<_, i64>(5)? != 0,
                             password: None,
                             key_passphrase: None,
+                            key_stored: Some(r.get(7)?),
+                            key_pem: None,
                         };
                         Ok((r.get::<_, i64>(0)?, data, r.get::<_, i64>(6)?))
                     },
@@ -405,6 +418,11 @@ fn read_payload(
                     d.password = secrets.get(&db::cred_password_entry(id)).map(Secret);
                 }
                 d.key_passphrase = secrets.get(&db::cred_keypass_entry(id)).map(Secret);
+                if d.key_stored == Some(true) {
+                    // Unreadable here (its keyring entry is gone): sent without
+                    // it, and the others keep theirs
+                    d.key_pem = stored_keys::load(conn, secrets, id).ok().flatten().map(|k| Secret(k.to_string()));
+                }
                 (Payload::Credential(d), modified_at)
             })
         }
@@ -525,7 +543,13 @@ impl Applied {
 
 /// Apply a pull of `vault`. Run it inside a transaction, together with moving
 /// the pull cursor; then [`Applied::write_secrets`] after the commit.
-pub fn apply(conn: &Connection, vault: &Vault, items: Vec<Incoming>) -> Result<Applied, rusqlite::Error> {
+/// `secrets` seals stored private keys with this device's key.
+pub fn apply(
+    conn: &Connection,
+    secrets: &dyn Secrets,
+    vault: &Vault,
+    items: Vec<Incoming>,
+) -> Result<Applied, rusqlite::Error> {
     let mut out = Applied::default();
     let (mut upserts, deletes): (Vec<Incoming>, Vec<Incoming>) =
         items.into_iter().partition(|i| i.payload.is_some());
@@ -534,7 +558,7 @@ pub fn apply(conn: &Connection, vault: &Vault, items: Vec<Incoming>) -> Result<A
     upserts.sort_by_key(|i| i.payload.as_ref().map_or(ORDER.len(), |p| order_of(p.table().kind)));
     let mut jumps = Vec::new();
     for item in upserts {
-        apply_upsert(conn, vault, item, &mut out, &mut jumps)?;
+        apply_upsert(conn, secrets, vault, item, &mut out, &mut jumps)?;
     }
     // A host can jump through one that came later in the same pull
     for (sync_id, jump, modified_at) in jumps {
@@ -614,6 +638,7 @@ fn decide(conn: &Connection, vault: &Vault, table: &SyncedTable, sync_id: &str, 
 
 fn apply_upsert(
     conn: &Connection,
+    secrets: &dyn Secrets,
     vault: &Vault,
     item: Incoming,
     out: &mut Applied,
@@ -657,6 +682,20 @@ fn apply_upsert(
             )?;
             out.secret(db::cred_password_entry(id), d.password.as_ref(), d.password_saved);
             out.secret(db::cred_keypass_entry(id), d.key_passphrase.as_ref(), false);
+            // The stored key goes in the database (sealed), not the keyring, so
+            // it rolls back with the rest of the pull
+            match (&d.key_pem, d.key_stored) {
+                (Some(key), _) => {
+                    if let Err(e) = stored_keys::store(conn, secrets, id, &key.0) {
+                        crate::applog::write(&format!("credential “{}”: its key could not be stored: {e}", d.name));
+                    }
+                }
+                (None, Some(false)) => {
+                    stored_keys::forget(conn, id)?;
+                }
+                // Sent by an older LiteTerm, or by a device that couldn't read it
+                (None, _) => {}
+            }
         }
         Payload::Host(d) => {
             let group_id = resolve(conn, &sync::GROUPS, d.group.as_deref())?;
@@ -1030,7 +1069,7 @@ mod tests {
     // The personal vault, as most tests here exercise it; team tests call
     // the vault-taking versions directly
     fn apply(conn: &Connection, items: Vec<Incoming>) -> Result<Applied, rusqlite::Error> {
-        super::apply(conn, &Vault::Personal, items)
+        super::apply(conn, &MemSecrets::default(), &Vault::Personal, items)
     }
     fn queued(conn: &Connection, secrets: &dyn Secrets) -> Result<Vec<Queued>, rusqlite::Error> {
         super::queued(conn, secrets, &Vault::Personal)
@@ -1092,7 +1131,7 @@ mod tests {
 
         fn sync_with(&self, server: &mut Server) -> Applied {
             let tx = self.conn.unchecked_transaction().unwrap();
-            let applied = apply(&tx, server.pull()).unwrap();
+            let applied = super::apply(&tx, &self.secrets, &Vault::Personal, server.pull()).unwrap();
             tx.commit().unwrap();
             applied.write_secrets(&self.secrets);
             let q = queued(&self.conn, &self.secrets).unwrap();
@@ -1142,7 +1181,7 @@ mod tests {
         fn sync_team(&self, server: &mut Server, team: &str) -> Applied {
             let vault = Vault::Team(team.to_string());
             let tx = self.conn.unchecked_transaction().unwrap();
-            let applied = super::apply(&tx, &vault, server.pull()).unwrap();
+            let applied = super::apply(&tx, &self.secrets, &vault, server.pull()).unwrap();
             tx.commit().unwrap();
             applied.write_secrets(&self.secrets);
             let q = super::queued(&self.conn, &self.secrets, &vault).unwrap();
@@ -1322,6 +1361,48 @@ mod tests {
         assert_eq!(a.secrets.get(&db::cred_password_entry(cred)), None);
         assert_eq!(a.secrets.get(&db::password_entry(mine)).as_deref(), Some("mine-pw"), "personal ones stay");
         assert_eq!(a.val::<i64>(&format!("SELECT count(*) FROM hosts WHERE id = {mine}")), 1);
+    }
+
+    #[test]
+    fn a_stored_key_travels_sealed_again_on_each_device_and_an_older_edit_keeps_it() {
+        let (a, b, mut server) = (Device::new(), Device::new(), Server::default());
+        a.conn
+            .execute("INSERT INTO credentials (name, username, auth_method) VALUES ('ops', 'deploy', 'key')", [])
+            .unwrap();
+        let cred = a.conn.last_insert_rowid();
+        stored_keys::store(&a.conn, &a.secrets, cred, "THE KEY").unwrap();
+        sync::mark_changed(&a.conn, &sync::CREDENTIALS, cred).unwrap();
+        a.sync_with(&mut server);
+        b.sync_with(&mut server);
+
+        let on_b: i64 = b.val("SELECT id FROM credentials WHERE name = 'ops'");
+        let key_on_b = || stored_keys::load(&b.conn, &b.secrets, on_b).unwrap().map(|k| k.to_string());
+        assert_eq!(key_on_b().as_deref(), Some("THE KEY"));
+        assert_ne!(
+            a.val::<String>("SELECT sealed FROM credential_keys"),
+            b.val::<String>("SELECT sealed FROM credential_keys"),
+            "each computer seals it with its own key"
+        );
+
+        // An older LiteTerm edits the credential: it knows nothing of the key
+        let sid = a.sid("credentials", cred);
+        let (payload, m) = server.0.get(&sid).cloned().unwrap();
+        let Some(Payload::Credential(mut older)) = payload else { panic!("not a credential") };
+        older.name = "ops-renamed".into();
+        older.key_stored = None;
+        older.key_pem = None;
+        server.0.insert(sid, (Some(Payload::Credential(older)), m + 10));
+        b.sync_with(&mut server);
+        assert_eq!(b.val::<String>(&format!("SELECT name FROM credentials WHERE id = {on_b}")), "ops-renamed");
+        assert_eq!(key_on_b().as_deref(), Some("THE KEY"), "the key stays");
+
+        // Dropped on A: dropped on B
+        a.sync_with(&mut server);
+        stored_keys::forget(&a.conn, cred).unwrap();
+        sync::mark_changed(&a.conn, &sync::CREDENTIALS, cred).unwrap();
+        a.sync_with(&mut server);
+        b.sync_with(&mut server);
+        assert_eq!(key_on_b(), None);
     }
 
     /// Device A with one of everything, related the way the app relates them

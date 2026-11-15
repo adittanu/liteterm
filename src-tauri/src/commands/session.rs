@@ -3,8 +3,9 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tauri::State;
 
-use crate::ssh::pool::{self, AuthSpec, ConnParams, AppState, SshSession};
-use crate::store::db;
+use crate::cloud::items::Keyring;
+use crate::ssh::pool::{self, AuthSpec, ConnParams, AppState, KeySource, SshSession};
+use crate::store::{db, stored_keys};
 use crate::Db;
 
 /// Build the auth for one saved host. `password` is a secret the user just
@@ -25,6 +26,14 @@ fn resolve_auth(
             .ok_or("The linked credential no longer exists")?;
         let auth = match cred.auth_method.as_str() {
             "agent" => AuthSpec::Agent,
+            // Stored in LiteTerm: unlocked already, no file to find
+            "key" if cred.key_stored => {
+                let text = stored_keys::load(conn, &Keyring, cred_id)?.ok_or(stored_keys::NO_DEVICE_KEY)?;
+                if let Err(e) = russh::keys::decode_secret_key(&text, None) {
+                    return Err(format!("Could not load the stored key: {e}"));
+                }
+                AuthSpec::Key { source: KeySource::Stored(text), passphrase: None }
+            }
             "key" => {
                 let key_path = crate::paths::expand_home(
                     cred.key_path.as_deref().ok_or("Credential has no key file configured")?,
@@ -38,7 +47,7 @@ fn resolve_auth(
                     }
                     return Err(format!("Could not load key: {e}"));
                 }
-                AuthSpec::Key { path: key_path, passphrase }
+                AuthSpec::Key { source: KeySource::File(key_path), passphrase }
             }
             _ => {
                 let pw = match password
@@ -68,7 +77,7 @@ fn resolve_auth(
                 }
                 return Err(format!("Could not load key: {e}"));
             }
-            AuthSpec::Key { path: key_path, passphrase }
+            AuthSpec::Key { source: KeySource::File(key_path), passphrase }
         }
         _ => {
             let pw = match password

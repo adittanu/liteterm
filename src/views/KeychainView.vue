@@ -58,6 +58,7 @@ function keyFile(c: Credential): string {
 }
 
 function secretState(c: Credential): { label: string; tone: 'success' | 'warning' | '' } {
+  if (c.auth_method === 'key' && c.key_stored) return { label: 'Key stored in LiteTerm', tone: 'success' }
   if (c.auth_method === 'key') return { label: keyFile(c) || 'Private key', tone: '' }
   if (c.auth_method === 'agent') return { label: 'SSH agent', tone: '' }
   return c.has_password
@@ -80,7 +81,7 @@ function openEdit(cred: Credential) {
 function openMenu(cred: Credential, e: MouseEvent) {
   const readOnly = !teams.canEdit(cred.team_id)
   const keyItems: MenuItem[] =
-    cred.auth_method === 'key' && cred.key_path
+    cred.auth_method === 'key' && (cred.key_path || cred.key_stored)
       ? [
           { label: 'Copy public key', icon: Copy, action: () => void copyPublicKey(cred) },
           { label: 'Install on a host…', icon: Upload, action: () => void installCredential(cred) },
@@ -109,7 +110,7 @@ function openInstall(source: KeySource, keyName: string) {
 
 async function publicKeyFor(cred: Credential): Promise<string | null> {
   try {
-    return await api.publicKeyOf(cred.key_path!)
+    return cred.key_stored ? await api.credentialPublicKey(cred.id) : await api.publicKeyOf(cred.key_path!)
   } catch (e) {
     ui.toast('error', errorText(e))
     return null
@@ -124,7 +125,9 @@ async function copyPublicKey(cred: Credential) {
 async function installCredential(cred: Credential) {
   const key = await publicKeyFor(cred)
   if (!key) return
-  openInstall({ publicKey: key, keyPath: cred.key_path!, credentialId: cred.id }, keyFile(cred) || cred.name)
+  // A stored key has no file: hosts switch to it through the credential
+  const keyPath = cred.key_stored ? '' : cred.key_path!
+  openInstall({ publicKey: key, keyPath, credentialId: cred.id }, keyFile(cred) || cred.name)
 }
 
 async function remove(cred: Credential) {
@@ -225,9 +228,9 @@ async function remove(cred: Credential) {
             <span
               class="chip text-ellipsis"
               :class="secretState(cred).tone"
-              :title="cred.auth_method === 'key' && !pv.blur ? pv.t(cred.key_path ?? '') : undefined"
+              :title="cred.auth_method === 'key' && !cred.key_stored && !pv.blur ? pv.t(cred.key_path ?? '') : undefined"
             >
-              <span v-if="cred.auth_method === 'key'" class="mono pv">{{ secretState(cred).label }}</span>
+              <span v-if="cred.auth_method === 'key' && !cred.key_stored" class="mono pv">{{ secretState(cred).label }}</span>
               <template v-else>{{ secretState(cred).label }}</template>
             </span>
             <VaultChip :team-id="cred.team_id" />

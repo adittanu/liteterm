@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::store::models::{Host, HostGroup, HostInput, HOST_PROTOCOLS};
 use crate::store::db;
+use crate::store::stored_keys;
 use crate::store::vaults::{self, Teamed};
 use crate::Db;
 
@@ -18,11 +19,30 @@ pub fn list_groups(db: State<Db>) -> Result<Vec<HostGroup>, String> {
 }
 
 #[tauri::command]
-pub fn upsert_host(db: State<Db>, input: HostInput) -> Result<Host, String> {
+pub fn upsert_host(db: State<Db>, mut input: HostInput) -> Result<Host, String> {
     let conn = db.0.lock().map_err(|_| "database busy")?;
     match input.id {
-        Some(id) => vaults::check_row(&conn, Teamed::Hosts, id)?,
+        Some(id) => {
+            vaults::check_row(&conn, Teamed::Hosts, id)?;
+            // A host stays in its vault, and so does a credential made with it
+            if let Some(host) = db::get_host(&conn, id).map_err(|e| e.to_string())? {
+                input.team_id = host.team_id;
+            }
+        }
         None => vaults::check(&conn, input.team_id.as_deref())?,
+    }
+    let in_team = input.team_id.is_some();
+    if let Some(cred) = input.create_credential.as_mut() {
+        stored_keys::prepare(cred, in_team, false)?;
+    } else if in_team
+        && input.credential_id.is_none()
+        && input.auth_method == "key"
+        && input.protocol.as_deref().unwrap_or("ssh") == "ssh"
+    {
+        // The other members don't have the file
+        return Err("A team host can't sign in with a key file on this computer. Pick a credential that \
+                    stores its key, or make one with + New credential."
+            .into());
     }
     // A caller that leaves the protocol out keeps the stored one
     let stored = match (input.id, &input.protocol) {

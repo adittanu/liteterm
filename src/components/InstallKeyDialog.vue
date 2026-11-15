@@ -56,12 +56,12 @@ async function install() {
       ui.toast('error', `Could not connect to ${h.label}, so the key was not installed`)
       return
     }
-    if (switchTo) await switchHostToKey(h.id, source)
+    const switched = switchTo && (await switchHostToKey(h.id, source))
     ui.toast(
       'success',
       result === 'added'
-        ? `Key added to ${h.label}${switchTo ? ', which now logs in with it' : ''}`
-        : `${h.label} already had this key${switchTo ? '; it now logs in with it' : ''}`,
+        ? `Key added to ${h.label}${switched ? ', which now logs in with it' : ''}`
+        : `${h.label} already had this key${switched ? '; it now logs in with it' : ''}`,
     )
   } catch (e) {
     ui.toast('error', `Could not install the key on ${h.label}: ${errorText(e)}`)

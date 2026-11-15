@@ -41,16 +41,18 @@ export async function installKeyOn(hostId: number, publicKey: string): Promise<'
   }
 }
 
-/** From now on the host logs in with this key, as the same user. */
-export async function switchHostToKey(hostId: number, key: KeySource) {
+/** From now on the host logs in with this key, as the same user. False when
+ *  it can't: a key stored in LiteTerm comes only through its credential. */
+export async function switchHostToKey(hostId: number, key: KeySource): Promise<boolean> {
   const hosts = useHostsStore()
   const credentials = useCredentialsStore()
   const host = hosts.hostById(hostId)
-  if (!host) return
+  if (!host) return false
   // The key's credential fits only when it logs in as the host's user, from
   // the host's own vault
   const cred = credentials.byId(key.credentialId ?? null)
   const viaCredential = cred && cred.username === host.username && cred.team_id === host.team_id ? cred : undefined
+  if (!viaCredential && !key.keyPath) return false
   const input: HostInput = {
     id: host.id,
     group_id: host.group_id,
@@ -68,4 +70,5 @@ export async function switchHostToKey(hostId: number, key: KeySource) {
     startup_command: host.startup_command,
   }
   await hosts.saveHost(input)
+  return true
 }
