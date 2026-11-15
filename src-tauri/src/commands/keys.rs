@@ -153,13 +153,7 @@ pub fn public_key_of(path: String) -> Result<String, String> {
         }
         other => format!("Could not read the key: {other}"),
     })?;
-    use russh::keys::PublicKeyBase64;
-    let public = pair.clone_public_key().map_err(|e| e.to_string())?;
-    let algo = match public.name() {
-        n if n.starts_with("rsa-sha2") => "ssh-rsa",
-        n => n,
-    };
-    Ok(format!("{algo} {}", public.public_key_base64()))
+    pair.public_key().to_openssh().map_err(|e| e.to_string())
 }
 
 /// Add `public_key` to ~/.ssh/authorized_keys on the server behind this
@@ -244,7 +238,7 @@ mod tests {
             // The SSH client (russh) must accept what we write
             let loaded = russh::keys::decode_secret_key(&pem, pass).unwrap();
             use russh::keys::PublicKeyBase64;
-            assert_eq!(key_data(&public), Some(loaded.clone_public_key().unwrap().public_key_base64().as_str()));
+            assert_eq!(key_data(&public), Some(loaded.public_key_base64().as_str()));
             // and the public half stays readable without the passphrase (the
             // comment sits in the encrypted part, so only the key is compared)
             let read_back = PrivateKey::from_openssh(&*pem).unwrap().public_key().to_openssh().unwrap();

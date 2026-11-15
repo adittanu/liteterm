@@ -229,7 +229,7 @@ pub fn import_ssh_apply(
             // known_hosts carries no fingerprint; derive it from the key so the
             // Known Hosts page does not show "No fingerprint"
             let fingerprint = russh::keys::parse_public_key_base64(&entry.public_key)
-                .map(|key| key.fingerprint())
+                .map(|key| crate::ssh::pool::host_key_fingerprint(&key))
                 .unwrap_or_default();
             if db::remember_host_key(
                 &conn,

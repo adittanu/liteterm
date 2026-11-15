@@ -30,9 +30,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-async-trait = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
-russh = "0.45"
+# ring, not the default aws-lc-rs: no CMake or NASM needed to build
+russh = { version = "0.65", default-features = false, features = ["flate2", "ring", "rsa"] }
 russh-sftp = "2"
 # Serial-console hosts (src/stream.rs). Without libudev: Linux lists ports
 # from /sys/class/tty, so building needs no extra system package
@@ -67,6 +67,10 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 [patch.crates-io]
 # Local fork: ConPTY passthrough (see vendor/.../psuedocon.rs).
 portable-pty = { path = "vendor/portable-pty" }
+
+[dev-dependencies]
+# The SSH end-to-end tests feed russh's agent server a stream of connections
+futures = "0.3"
 
 [features]
 # Diagnostic installer: `pnpm tauri build --features diag` keeps the WebView

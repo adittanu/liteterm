@@ -41,8 +41,8 @@ const STDOUT_FLUSH: Duration = Duration::from_millis(8);
 const STDOUT_FLUSH_BYTES: usize = 32 * 1024;
 
 /// Answer keyboard-interactive prompts with the password (up to 3 rounds).
-async fn authenticate_keyboard_interactive(
-    handle: &mut russh::client::Handle<ClientHandler>,
+async fn authenticate_keyboard_interactive<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
     username: &str,
     password: &str,
 ) -> bool {
@@ -59,7 +59,7 @@ async fn authenticate_keyboard_interactive(
     for _ in 0..3 {
         match response {
             R::Success => return true,
-            R::Failure => return false,
+            R::Failure { .. } => return false,
             R::InfoRequest { prompts, .. } => {
                 // One response per prompt; password prompts expect the secret,
                 // anything else (e.g. TOTP with empty prompt set) gets the
@@ -408,46 +408,57 @@ pub struct ClientHandler {
     /// This hop asked to forward the agent (the target hop of a host with
     /// agent forwarding on); any other refuses agent channels
     pub agent_forward: bool,
-    /// Open agent channels: where the server's bytes for each go
-    pub agent_channels: HashMap<russh::ChannelId, mpsc::UnboundedSender<Vec<u8>>>,
-    /// Cancelled when this handler is dropped, which happens when its
-    /// connection ends. Agent channels stop then, before a reconnect could
-    /// reuse their channel numbers on the new connection.
-    pub alive: CancellationToken,
 }
 
-impl Drop for ClientHandler {
-    fn drop(&mut self) {
-        self.alive.cancel();
+/// A host key's fingerprint as `ssh-keygen -l` prints it (SHA256:…), so it
+/// can be checked against what the server's admin reads out
+pub fn host_key_fingerprint(key: &russh::keys::PublicKey) -> String {
+    key.fingerprint(russh::keys::HashAlg::Sha256).to_string()
+}
+
+/// Whether two stored key types name the same kind of key. Older versions
+/// stored an RSA host key under the signature it was used with
+/// (rsa-sha2-256, rsa-sha2-512); the key itself is ssh-rsa either way, and a
+/// different RSA key must still count as "changed".
+fn same_key_family(a: &str, b: &str) -> bool {
+    fn family(t: &str) -> &str {
+        if t == "ssh-rsa" || t.starts_with("rsa-sha2-") { "ssh-rsa" } else { t }
     }
+    family(a) == family(b)
 }
 
-#[async_trait::async_trait]
 impl russh::client::Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::key::PublicKey,
+        server_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         use russh::keys::PublicKeyBase64;
 
-        let fingerprint = server_public_key.fingerprint();
+        // A host certificate is trusted on its key, the same way a plain key is
+        let server_public_key = match server_key {
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
+            russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
+                russh::keys::PublicKey::from(cert.public_key().clone())
+            }
+        };
+        let fingerprint = host_key_fingerprint(&server_public_key);
         let key_str = server_public_key.public_key_base64();
-        let key_type = server_public_key.name().to_string();
+        let key_type = server_public_key.algorithm().as_str().to_string();
 
         if !self.known_keys.is_empty() {
             let exact = self
                 .known_keys
                 .iter()
-                .any(|(t, k)| t == &key_type && k == &key_str);
+                .any(|(t, k)| same_key_family(t, &key_type) && k == &key_str);
             if exact {
                 return Ok(true);
             }
             let same_type_differs = self
                 .known_keys
                 .iter()
-                .any(|(t, _)| t == &key_type);
+                .any(|(t, _)| same_key_family(t, &key_type));
 
             if same_type_differs {
                 // Same key type, different bytes — this is what a MITM or a
@@ -491,7 +502,7 @@ impl russh::client::Handler for ClientHandler {
             models::HostKeyEvent {
                 session_id: self.session_id,
                 fingerprint,
-                key_type,
+                key_type: key_type.clone(),
                 address: self.host_tag.clone(),
             },
         );
@@ -506,9 +517,9 @@ impl russh::client::Handler for ClientHandler {
                             let _ = db::remember_host_key(
                                 &conn,
                                 &self.host_tag,
-                                server_public_key.name(),
+                                &key_type,
                                 &key_str,
-                                &server_public_key.fingerprint(),
+                                &host_key_fingerprint(&server_public_key),
                             );
                         }
                     }
@@ -531,8 +542,11 @@ impl russh::client::Handler for ClientHandler {
         connected_port: u32,
         _originator_address: &str,
         _originator_port: u32,
+        reply: russh::client::ChannelOpenHandle,
         _session: &mut russh::client::Session,
     ) -> Result<(), Self::Error> {
+        use russh::ChannelOpenFailure;
+
         let target = self
             .state
             .remote_targets
@@ -543,13 +557,15 @@ impl russh::client::Handler for ClientHandler {
         // Never wait here: this runs inside the SSH session's own loop
         tokio::spawn(async move {
             let Some(target) = target else {
-                let _ = channel.close().await;
+                reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
                 return;
             };
             let tcp = tokio::select! {
                 _ = target.cancel.cancelled() => None,
                 tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port)) => tcp.ok(),
             };
+            // Accepted only once this side is reached, as OpenSSH does: the
+            // program on the server sees a refused connection, not a dead one
             let Some(mut tcp) = tcp else {
                 crate::applog::write_throttled(
                     "remote forward connect",
@@ -558,9 +574,10 @@ impl russh::client::Handler for ClientHandler {
                         target.forward_id, target.host, target.port
                     ),
                 );
-                let _ = channel.close().await;
+                reply.reject(ChannelOpenFailure::ConnectFailed).await;
                 return;
             };
+            reply.accept().await;
             let mut stream = channel.into_stream();
             tokio::select! {
                 _ = target.cancel.cancelled() => {}
@@ -575,63 +592,33 @@ impl russh::client::Handler for ClientHandler {
     /// a server must not reach the agent just by opening the channel.
     async fn server_channel_open_agent_forward(
         &mut self,
-        channel: russh::ChannelId,
-        session: &mut russh::client::Session,
+        channel: russh::Channel<russh::client::Msg>,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
     ) -> Result<(), Self::Error> {
+        use russh::ChannelOpenFailure;
+
         if !self.agent_forward {
-            session.close(channel);
+            reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
             return Ok(());
         }
         // A local pipe or socket: connecting is immediate, so it is done
-        // here, and a missing agent closes the channel at once instead of
+        // here, and a missing agent refuses the channel at once instead of
         // leaving the program on the server waiting for a reply
         match open_agent_stream().await {
-            Ok(agent) => {
-                let (tx, rx) = mpsc::unbounded_channel();
-                self.agent_channels.insert(channel, tx);
-                tokio::spawn(pump_agent(self.state.clone(), self.session_id, channel, agent, rx, self.alive.clone()));
+            Ok(mut agent) => {
+                reply.accept().await;
+                // Ends when either side closes, or with the connection
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut agent).await;
+                });
             }
             Err(e) => {
                 crate::applog::write_throttled("agent forward", &format!("agent forwarding: {e}"));
-                session.close(channel);
+                reply.reject(ChannelOpenFailure::ConnectFailed).await;
             }
         }
-        Ok(())
-    }
-
-    /// Bytes on a channel the server opened. Only agent channels are ours to
-    /// route; the rest (the shell, SFTP) have their own Channel objects.
-    async fn data(
-        &mut self,
-        channel: russh::ChannelId,
-        data: &[u8],
-        session: &mut russh::client::Session,
-    ) -> Result<(), Self::Error> {
-        if let Some(tx) = self.agent_channels.get(&channel) {
-            if tx.send(data.to_vec()).is_err() {
-                // The local agent went away
-                self.agent_channels.remove(&channel);
-                session.close(channel);
-            }
-        }
-        Ok(())
-    }
-
-    async fn channel_eof(
-        &mut self,
-        channel: russh::ChannelId,
-        _session: &mut russh::client::Session,
-    ) -> Result<(), Self::Error> {
-        self.agent_channels.remove(&channel);
-        Ok(())
-    }
-
-    async fn channel_close(
-        &mut self,
-        channel: russh::ChannelId,
-        _session: &mut russh::client::Session,
-    ) -> Result<(), Self::Error> {
-        self.agent_channels.remove(&channel);
         Ok(())
     }
 }
@@ -651,13 +638,31 @@ fn windows_agent_pipe() -> String {
         .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".to_string())
 }
 
+/// Open the agent's named pipe. While the agent is still setting up the pipe
+/// for the next client, Windows says "all pipe instances are busy" (231); that
+/// clears within milliseconds, so it is retried for a moment.
+#[cfg(windows)]
+async fn open_windows_pipe(path: &str) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let mut tries = 0;
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(path) {
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 40 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// A raw connection to this computer's SSH agent, for a forwarded channel
 async fn open_agent_stream() -> Result<AgentStream, String> {
     #[cfg(windows)]
     {
         let path = windows_agent_pipe();
-        let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(&path)
+        let pipe = open_windows_pipe(&path)
+            .await
             .map_err(|e| format!("no SSH agent at {path}: {e}"))?;
         Ok(Box::new(pipe))
     }
@@ -668,60 +673,6 @@ async fn open_agent_stream() -> Result<AgentStream, String> {
             .await
             .map_err(|e| format!("no SSH agent at {}: {e}", std::path::Path::new(&path).display()))?;
         Ok(Box::new(sock))
-    }
-}
-
-/// Carry one forwarded agent channel: what the server sends goes to the
-/// agent, and the agent's replies go back on the same channel
-async fn pump_agent(
-    state: Arc<AppState>,
-    session_id: u32,
-    channel: russh::ChannelId,
-    agent: AgentStream,
-    mut from_server: mpsc::UnboundedReceiver<Vec<u8>>,
-    alive: CancellationToken,
-) {
-    use tokio::io::AsyncReadExt;
-
-    let Some(session) = state.sessions.lock().unwrap().get(&session_id).cloned() else { return };
-    let (mut agent_rd, mut agent_wr) = tokio::io::split(agent);
-    let to_agent = async {
-        while let Some(chunk) = from_server.recv().await {
-            if agent_wr.write_all(&chunk).await.is_err() {
-                break;
-            }
-        }
-    };
-    let to_server = async {
-        let mut buf = vec![0u8; 16 * 1024];
-        loop {
-            let n = match agent_rd.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => n,
-            };
-            // The shell stores the handle right after asking for it; a
-            // .bashrc that uses the agent may get here first
-            let mut sent = false;
-            for _ in 0..50 {
-                if alive.is_cancelled() {
-                    break;
-                }
-                if let Some(handle) = session.handle.read().await.as_ref() {
-                    sent = handle.data(channel, russh::CryptoVec::from_slice(&buf[..n])).await.is_ok();
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if !sent {
-                break;
-            }
-        }
-    };
-    tokio::select! {
-        _ = to_agent => {}
-        _ = to_server => {}
-        _ = alive.cancelled() => {}
-        _ = session.closed.cancelled() => {}
     }
 }
 
@@ -938,8 +889,8 @@ pub async fn run_session(state: Arc<AppState>, session: Arc<SshSession>, params:
 }
 
 /// Answer the server's auth challenge for one hop.
-async fn authenticate(
-    handle: &mut russh::client::Handle<ClientHandler>,
+async fn authenticate<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
     hop: &ConnParams,
 ) -> Result<bool, ConnectError> {
     match &hop.auth {
@@ -947,7 +898,8 @@ async fn authenticate(
             let by_password = handle
                 .authenticate_password(&hop.username, pw)
                 .await
-                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?;
+                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?
+                .success();
             // Many servers (shared hosts like Hostinger, some cloud images)
             // disable the "password" method but accept the same secret via
             // keyboard-interactive. Answer its prompts with the password.
@@ -970,14 +922,17 @@ async fn authenticate(
                     .authenticate_openssh_cert(&hop.username, key.clone(), cert.clone())
                     .await
                     .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?
+                    .success()
                 {
                     return Ok(true);
                 }
             }
+            let hash = rsa_hash_for(handle, &key.algorithm()).await;
             let accepted = handle
-                .authenticate_publickey(&hop.username, key)
+                .authenticate_publickey(&hop.username, russh::keys::key::PrivateKeyWithHashAlg::new(key, hash))
                 .await
-                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?;
+                .map_err(|e| ConnectError::transient(format!("Auth error: {e}")))?
+                .success();
             match cert {
                 KeyCert::Expired(file) if !accepted => Err(ConnectError::fatal(format!(
                     "Authentication failed. The certificate {file} is outside its validity period: get a new one signed"
@@ -993,7 +948,7 @@ async fn authenticate(
 /// one: `<key>-cert.pub` next to the key file
 enum KeyCert {
     None,
-    Usable(ssh_key::Certificate),
+    Usable(russh::keys::Certificate),
     /// Its file name: expired, or not valid yet
     Expired(String),
 }
@@ -1032,23 +987,22 @@ fn cert_valid_at(after: u64, before: u64, now: u64) -> bool {
 /// A missing or empty agent is transient: after sleep, KeePassXC/Bitwarden
 /// hold no keys until their vault is unlocked again — worth retrying for a
 /// session that was live (a first connect still reports it straight away).
-async fn authenticate_agent(
-    handle: &mut russh::client::Handle<ClientHandler>,
+async fn authenticate_agent<H: russh::client::Handler>(
+    handle: &mut russh::client::Handle<H>,
     username: &str,
 ) -> Result<bool, ConnectError> {
     let mut agent = connect_agent().await.map_err(ConnectError::transient)?;
-    // Listed by hand: russh's own listing fails as a whole on the first key
-    // it can't read, so one FIDO2 key or certificate in the agent stopped
-    // every other key from being tried
+    // Listed by hand: one key of a type it can't decode must not stop the
+    // others from being tried (russh 0.45's listing failed as a whole)
     let listed = list_agent_keys().await.map_err(ConnectError::transient)?;
-    if listed.keys.is_empty() && listed.skipped.is_empty() {
+    if listed.identities.is_empty() && listed.skipped.is_empty() {
         return Err(ConnectError::transient(
             "The SSH agent has no keys loaded — add one with ssh-add, or unlock your vault",
         ));
     }
-    if listed.keys.is_empty() {
+    if listed.identities.is_empty() {
         return Err(ConnectError::fatal(format!(
-            "The SSH agent holds only keys LiteTerm can't use yet ({}). \
+            "The SSH agent holds only keys LiteTerm can't use ({}). \
              Add an ordinary key with ssh-add, or use a key file",
             listed.skipped.join(", ")
         )));
@@ -1059,22 +1013,55 @@ async fn authenticate_agent(
             &format!("SSH agent: skipped keys of a type LiteTerm can't use: {}", listed.skipped.join(", ")),
         );
     }
-    for key in listed.keys {
-        let (returned, result) = handle.authenticate_future(username, key, agent).await;
-        agent = returned;
+    // A signing failure (a security key nobody touched, an agent that
+    // declined) moves on to the next key; it is reported only if none works
+    let mut sign_error = None;
+    for identity in listed.identities {
+        use russh::keys::agent::AgentIdentity;
+        let result = match &identity {
+            AgentIdentity::Certificate { certificate, .. } => {
+                let hash = rsa_hash_for(handle, &certificate.algorithm()).await;
+                handle
+                    .authenticate_certificate_with(username, certificate.clone(), hash, &mut agent)
+                    .await
+            }
+            AgentIdentity::PublicKey { key, .. } => {
+                let hash = rsa_hash_for(handle, &key.algorithm()).await;
+                handle.authenticate_publickey_with(username, key.clone(), hash, &mut agent).await
+            }
+        };
         match result {
-            Ok(true) => return Ok(true),
-            Ok(false) => continue,
-            Err(e) => return Err(ConnectError::transient(format!("SSH agent signing failed: {e}"))),
+            Ok(r) if r.success() => return Ok(true),
+            Ok(_) => continue,
+            Err(e) => sign_error = Some(e.to_string()),
         }
     }
-    Ok(false)
+    match sign_error {
+        Some(e) => Err(ConnectError::transient(format!("SSH agent signing failed: {e}"))),
+        None => Ok(false),
+    }
 }
 
-/// The keys an agent holds, split into those this build can sign with and
-/// the type names of the rest
+/// The hash for an RSA signature: the best the server lists, else
+/// rsa-sha2-512. Other key types have none. Asked only for RSA keys, since
+/// the server may take up to a second to say.
+async fn rsa_hash_for<H: russh::client::Handler>(
+    handle: &russh::client::Handle<H>,
+    algorithm: &russh::keys::Algorithm,
+) -> Option<russh::keys::HashAlg> {
+    if !matches!(algorithm, russh::keys::Algorithm::Rsa { .. }) {
+        return None;
+    }
+    match handle.best_supported_rsa_hash().await {
+        Ok(Some(hash)) => hash,
+        _ => Some(russh::keys::HashAlg::Sha512),
+    }
+}
+
+/// The keys an agent holds, in the order to try them, and the type names of
+/// the ones this build can't use
 struct AgentKeys {
-    keys: Vec<russh::keys::key::PublicKey>,
+    identities: Vec<russh::keys::agent::AgentIdentity>,
     skipped: Vec<String>,
 }
 
@@ -1130,20 +1117,47 @@ fn parse_agent_identities(body: &[u8]) -> Result<AgentKeys, String> {
         return Err("SSH agent error: it refused to list its keys".into());
     }
     let count = u32_of(&mut b).ok_or_else(bad)?;
-    let mut out = AgentKeys { keys: Vec::new(), skipped: Vec::new() };
+    let mut certs = Vec::new();
+    let mut keys = Vec::new();
+    let mut security_keys = Vec::new();
+    let mut skipped = Vec::new();
     for _ in 0..count {
+        use russh::keys::agent::AgentIdentity;
+        use russh::keys::{Algorithm, Certificate, PublicKey};
+
         let blob = string(&mut b).ok_or_else(bad)?;
-        let _comment = string(&mut b).ok_or_else(bad)?;
-        match russh::keys::key::parse_public_key(blob, Some(russh::keys::key::SignatureHash::SHA2_512)) {
-            Ok(key) => out.keys.push(key),
-            Err(_) => {
-                let mut blob = blob;
-                let kind = string(&mut blob).map(|t| String::from_utf8_lossy(t).into_owned());
-                out.skipped.push(kind.unwrap_or_else(|| "unknown".into()));
+        let comment = String::from_utf8_lossy(string(&mut b).ok_or_else(bad)?).into_owned();
+        let kind = {
+            let mut head = blob;
+            string(&mut head).map(|t| String::from_utf8_lossy(t).into_owned()).unwrap_or_else(|| "unknown".into())
+        };
+        // A FIDO2 key asks for a touch: tried after the keys that don't
+        let needs_touch = |a: &Algorithm| matches!(a, Algorithm::SkEd25519 | Algorithm::SkEcdsaSha2NistP256);
+        if kind.ends_with("-cert-v01@openssh.com") {
+            match Certificate::from_bytes(blob) {
+                Ok(c) if !matches!(c.algorithm(), Algorithm::Other(_)) => {
+                    let touch = needs_touch(&c.algorithm());
+                    let identity = AgentIdentity::Certificate { certificate: c, comment };
+                    if touch { security_keys.push(identity) } else { certs.push(identity) }
+                }
+                _ => skipped.push(kind),
             }
+            continue;
+        }
+        match PublicKey::from_bytes(blob) {
+            Ok(k) if !matches!(k.algorithm(), Algorithm::Other(_)) => {
+                let touch = needs_touch(&k.algorithm());
+                let identity = AgentIdentity::PublicKey { key: k, comment };
+                if touch { security_keys.push(identity) } else { keys.push(identity) }
+            }
+            _ => skipped.push(kind),
         }
     }
-    Ok(out)
+    // A certificate first: a server that trusts its CA may not know the key.
+    // Security keys last, so a key that needs no touch gets its turn first.
+    certs.extend(keys);
+    certs.extend(security_keys);
+    Ok(AgentKeys { identities: certs, skipped })
 }
 
 #[cfg(windows)]
@@ -1152,8 +1166,8 @@ async fn connect_agent() -> Result<
     String,
 > {
     let path = windows_agent_pipe();
-    let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
-        .open(&path)
+    let pipe = open_windows_pipe(&path)
+        .await
         .map_err(|e| {
             format!(
                 "No SSH agent at {path} ({e}). Start the “OpenSSH Authentication Agent” \
@@ -1219,8 +1233,6 @@ async fn open_hop(
         state: state.clone(),
         prompting: prompting.clone(),
         agent_forward,
-        agent_channels: HashMap::new(),
-        alive: CancellationToken::new(),
     };
 
     let dial = async {
@@ -3086,42 +3098,74 @@ mod tests {
     }
 
     #[test]
-    fn agent_keys_this_build_cannot_use_are_skipped_not_fatal() {
-        use ssh_key::{rand_core::OsRng, Algorithm, PrivateKey};
+    fn agent_keys_are_tried_certificates_first_and_security_keys_last() {
+        use russh::keys::agent::AgentIdentity;
+        use ssh_key::{certificate, rand_core::OsRng, Algorithm, PrivateKey};
 
         fn string(out: &mut Vec<u8>, s: &[u8]) {
             out.extend((s.len() as u32).to_be_bytes());
             out.extend_from_slice(s);
         }
         let ed = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let raw = ed.public_key().key_data().ed25519().unwrap().0;
         let mut ed_blob = Vec::new();
         string(&mut ed_blob, b"ssh-ed25519");
-        string(&mut ed_blob, &ed.public_key().key_data().ed25519().unwrap().0);
+        string(&mut ed_blob, &raw);
         // A YubiKey key: the key, then its application string
         let mut sk_blob = Vec::new();
         string(&mut sk_blob, b"sk-ssh-ed25519@openssh.com");
-        string(&mut sk_blob, &ed.public_key().key_data().ed25519().unwrap().0);
+        string(&mut sk_blob, &raw);
         string(&mut sk_blob, b"ssh:");
-        // A certificate step-ca put there; its body doesn't matter here
-        let mut cert_blob = Vec::new();
-        string(&mut cert_blob, b"ssh-ed25519-cert-v01@openssh.com");
-        string(&mut cert_blob, b"nonce");
+        // A certificate as step-ca puts it in the agent
+        let ca = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let mut b = certificate::Builder::new_with_random_nonce(&mut OsRng, ed.public_key().key_data().clone(), now - 60, now + 3600)
+            .unwrap();
+        b.serial(1).unwrap();
+        b.key_id("step").unwrap();
+        b.cert_type(certificate::CertType::User).unwrap();
+        b.valid_principal("ops").unwrap();
+        let cert_blob = b.sign(&ca).unwrap().to_bytes().unwrap();
+        // One that is cut short, and a type nobody knows
+        let mut broken_cert = Vec::new();
+        string(&mut broken_cert, b"ssh-ed25519-cert-v01@openssh.com");
+        string(&mut broken_cert, b"nonce");
+        let mut unknown = Vec::new();
+        string(&mut unknown, b"x-quantum@example.com");
+        string(&mut unknown, b"??");
 
+        let blobs = [(&sk_blob, "yubikey"), (&ed_blob, "laptop"), (&broken_cert, "old"), (&cert_blob, "step"), (&unknown, "odd")];
         let mut body = vec![AGENT_IDENTITIES_ANSWER];
-        body.extend(3u32.to_be_bytes());
-        for (blob, comment) in [(&sk_blob, "yubikey"), (&ed_blob, "laptop"), (&cert_blob, "step")] {
+        body.extend((blobs.len() as u32).to_be_bytes());
+        for (blob, comment) in blobs {
             string(&mut body, blob);
             string(&mut body, comment.as_bytes());
         }
         let got = parse_agent_identities(&body).unwrap();
-        assert_eq!(got.keys.len(), 1, "the ordinary key is still offered");
-        assert_eq!(got.skipped, ["sk-ssh-ed25519@openssh.com", "ssh-ed25519-cert-v01@openssh.com"]);
+        let order: Vec<&str> = got
+            .identities
+            .iter()
+            .map(|i| match i {
+                AgentIdentity::Certificate { comment, .. } | AgentIdentity::PublicKey { comment, .. } => comment.as_str(),
+            })
+            .collect();
+        assert_eq!(order, ["step", "laptop", "yubikey"]);
+        assert_eq!(got.skipped, ["ssh-ed25519-cert-v01@openssh.com", "x-quantum@example.com"]);
 
         // A list cut short, or a refusal, is an error rather than "no keys"
         assert!(parse_agent_identities(&body[..body.len() - 3]).is_err());
         assert!(parse_agent_identities(&[5]).is_err());
         let empty = parse_agent_identities(&[AGENT_IDENTITIES_ANSWER, 0, 0, 0, 0]).unwrap();
-        assert!(empty.keys.is_empty() && empty.skipped.is_empty());
+        assert!(empty.identities.is_empty() && empty.skipped.is_empty());
+    }
+
+    #[test]
+    fn rsa_host_keys_stored_under_their_signature_name_still_match() {
+        assert!(same_key_family("rsa-sha2-512", "ssh-rsa"));
+        assert!(same_key_family("rsa-sha2-256", "rsa-sha2-512"));
+        assert!(same_key_family("ssh-ed25519", "ssh-ed25519"));
+        assert!(!same_key_family("ssh-ed25519", "ssh-rsa"));
+        assert!(!same_key_family("ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384"));
     }
 
     #[test]
@@ -3230,3 +3274,7 @@ mod tests {
         assert!(plan_local(std::path::Path::new("Z:/surely/not/here")).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "e2e_tests.rs"]
+mod e2e_tests;
