@@ -56,13 +56,17 @@ set local role authenticated;
 
 -- ---- account keys and creating a team ----
 select pg_temp.as_user('alice');
-select pg_temp.expect_error($$select public.create_team('Ops', 'wrapped-a1')$$, 'P0002',
+select pg_temp.expect_error($$select public.create_team('7ea70000-0000-4000-8000-000000000001', 'Ops', 'wrapped-a1')$$, 'P0002',
   'a team needs an account key first');
 select public.put_account_key('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=', 'sealed-a');
 select public.put_account_key('ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ=', 'sealed-other');
 select pg_temp.expect((select public_key from public.account_keys
   where user_id = 'a11ce000-0000-4000-8000-000000000001') like 'AAAA%', 'the first account key stays');
-select set_config('test.team', public.create_team('  Ops  ', 'wrapped-a1')::text, true);
+select public.reseal_account_key('sealed-a2');
+select pg_temp.expect((select public_key || ' ' || private_key_sealed from public.account_keys
+  where user_id = 'a11ce000-0000-4000-8000-000000000001') = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= sealed-a2',
+  'resealing changes only the sealed half');
+select set_config('test.team', public.create_team('7ea70000-0000-4000-8000-000000000001', '  Ops  ', 'wrapped-a1')::text, true);
 select pg_temp.expect((select name from public.teams) = 'Ops', 'the name is trimmed');
 select pg_temp.expect((select role from public.team_members) = 'owner', 'the creator owns the team');
 

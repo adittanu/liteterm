@@ -15,6 +15,7 @@
 //! applying it in one transaction keeps relations whole even when a target
 //! arrives after the row that points at it.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -25,14 +26,16 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use zeroize::Zeroizing;
 
-use super::api::{Api, ApiError, PullItem, PushItem, Session, VaultRow};
-use super::items::{self, Incoming, Keyring, Payload, Queued};
+use super::api::{Api, ApiError, PullItem, PushItem, RewriteItem, Session, TeamPullItem, VaultRow};
+use super::items::{self, Incoming, Keyring, Payload, Queued, Vault};
+use super::team_crypto::{AccountKey, TeamKey};
 use super::vault::{self, RecoveryKey, VaultError, VaultKey};
 use crate::store::db;
 use crate::Db;
 
 const KEYRING_REFRESH: &str = "cloud:refresh-token";
 const KEYRING_VAULT_KEY: &str = "cloud:vault-key";
+const KEYRING_ACCOUNT_KEY: &str = "cloud:account-key";
 
 const S_EMAIL: &str = "cloud.email";
 const S_USER: &str = "cloud.userId";
@@ -109,6 +112,12 @@ struct Inner {
     /// Token and when it expires, ms since epoch
     access: Option<(Zeroizing<String>, i64)>,
     key: Option<Arc<VaultKey>>,
+    /// This account's team key pair, once opened
+    account: Option<Arc<AccountKey>>,
+    /// Checked against the server since the last start or vault change
+    account_checked: bool,
+    /// Team keys by (team id, epoch)
+    team_keys: HashMap<(String, i64), Arc<TeamKey>>,
     syncing: bool,
     error: Option<String>,
     failures: u32,
@@ -166,6 +175,9 @@ impl Cloud {
             inner.refresh = db::keyring_get(KEYRING_REFRESH).map(Zeroizing::new);
             inner.key = db::keyring_get(KEYRING_VAULT_KEY)
                 .and_then(|text| VaultKey::import(&Zeroizing::new(text)).ok())
+                .map(Arc::new);
+            inner.account = db::keyring_get(KEYRING_ACCOUNT_KEY)
+                .and_then(|text| AccountKey::import(&Zeroizing::new(text)).ok())
                 .map(Arc::new);
         }
         Arc::new(Self {
@@ -285,7 +297,38 @@ impl Cloud {
 
     fn forget_key(&self) {
         db::keyring_delete(KEYRING_VAULT_KEY);
-        self.inner().key = None;
+        let mut inner = self.inner();
+        inner.key = None;
+        // Whether the account key still opens is checked again under the next key
+        inner.account_checked = false;
+    }
+
+    /// Another account, or none: this computer keeps nothing of the old
+    /// account's teams, not even their saved passwords
+    fn forget_teams(&self, app: &AppHandle) -> Result<(), Error> {
+        db::keyring_delete(KEYRING_ACCOUNT_KEY);
+        {
+            let mut inner = self.inner();
+            inner.account = None;
+            inner.account_checked = false;
+            inner.team_keys.clear();
+        }
+        let applied = with_db(app, |c| {
+            let tx = c.unchecked_transaction()?;
+            let teams: Vec<String> =
+                tx.prepare("SELECT id FROM teams")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+            let mut all = items::Applied::default();
+            for team in teams {
+                let applied = items::forget_team(&tx, &team)?;
+                all.kinds.extend(applied.kinds);
+                all.secrets.extend(applied.secrets);
+            }
+            tx.commit()?;
+            Ok(all)
+        })?;
+        applied.write_secrets(&Keyring);
+        emit_changed(app, &applied);
+        Ok(())
     }
 
     /// Match what the server has: a vault this device does not know (or none
@@ -310,11 +353,12 @@ impl Cloud {
             let tx = c.unchecked_transaction()?;
             put(&tx, S_VAULT, Some(vault_id))?;
             put(&tx, S_CURSOR, Some("0"))?;
-            items::queue_all(&tx)?;
+            items::queue_all(&tx, &Vault::Personal)?;
             tx.commit()
         })?;
         let mut inner = self.inner();
         inner.key = Some(Arc::new(key));
+        inner.account_checked = false;
         inner.error = None;
         inner.failures = 0;
         drop(inner);
@@ -358,6 +402,7 @@ impl Cloud {
         if previous.as_deref() != Some(user_id.as_str()) {
             // Another account: nothing this device knew about a vault applies
             self.forget_key();
+            self.forget_teams(app)?;
             with_db(app, |c| {
                 put(c, S_VAULT, None)?;
                 put(c, S_CURSOR, None)?;
@@ -492,6 +537,7 @@ impl Cloud {
         }
         self.end_session();
         self.forget_key();
+        self.forget_teams(app)?;
         with_db(app, |c| {
             put(c, S_USER, None)?;
             put(c, S_VAULT, None)?;
@@ -576,7 +622,7 @@ impl Cloud {
             }
             let applied = with_db(app, |c| {
                 let tx = c.unchecked_transaction()?;
-                let applied = items::apply(&tx, incoming)?;
+                let applied = items::apply(&tx, &Vault::Personal, incoming)?;
                 put(&tx, S_CURSOR, Some(&after.to_string()))?;
                 tx.commit()?;
                 Ok(applied)
@@ -585,36 +631,267 @@ impl Cloud {
             if applied.skipped > 0 {
                 crate::applog::write(&format!("cloud sync: {} item(s) had nowhere to go", applied.skipped));
             }
-            if !applied.kinds.is_empty() {
-                let mut kinds: Vec<&str> = applied.kinds.iter().copied().collect();
-                kinds.sort_unstable();
-                let _ = app.emit("cloud:changed", kinds);
-            }
+            emit_changed(app, &applied);
         }
 
         // ---- push ----
-        let queued = with_db(app, |c| items::queued(c, &Keyring))?;
+        let queued = with_db(app, |c| items::queued(c, &Keyring, &Vault::Personal))?;
         let encrypted: Vec<PushItem> = queued.iter().map(|q| encrypt(&key, q)).collect();
-        let mut start = 0;
-        while start < encrypted.len() {
-            let mut end = start;
-            let mut bytes = 0;
-            while end < encrypted.len() && end - start < PUSH_MAX_ITEMS {
-                let size = encrypted[end].data.as_ref().map_or(0, String::len) + 128;
-                if end > start && bytes + size > PUSH_MAX_BYTES {
-                    break;
-                }
-                bytes += size;
-                end += 1;
-            }
+        for (start, end) in batches(&encrypted) {
             let batch = &encrypted[start..end];
             self.authed(|t| async move { self.api.push(&t, batch).await }).await?;
             with_db(app, |c| items::clear_pushed(c, &queued[start..end]))?;
-            start = end;
         }
+
+        // ---- teams ----
+        self.sync_teams(app, &key).await?;
 
         with_db(app, |c| put(c, S_LAST_SYNC, Some(&now_ms().to_string())))?;
         Ok(())
+    }
+
+    // ---- team vaults ----
+
+    /// This account's team key pair: from memory, or from the server opened
+    /// with the vault key, or made now if the account has none. After a vault
+    /// reset the server's copy is sealed under the old vault key; a computer
+    /// that still holds the key seals it again under the new one.
+    async fn account_key(&self, vault_key: &VaultKey, user_id: &str) -> Result<Arc<AccountKey>, Error> {
+        let cached = {
+            let inner = self.inner();
+            if inner.account_checked {
+                if let Some(k) = &inner.account {
+                    return Ok(k.clone());
+                }
+            }
+            inner.account.clone()
+        };
+        let row = self.authed(|t| async move { self.api.account_key(&t, user_id).await }).await?;
+        let key = match row {
+            Some(row) => match AccountKey::open(vault_key, user_id, &row.private_key_sealed, &row.public_key) {
+                Ok(key) => Arc::new(key),
+                Err(_) => match cached.filter(|c| c.public_key() == row.public_key) {
+                    Some(key) => {
+                        let sealed = key.seal(vault_key, user_id);
+                        let sealed = &sealed;
+                        self.authed(|t| async move { self.api.reseal_account_key(&t, sealed).await }).await?;
+                        key
+                    }
+                    None => {
+                        return Err(msg(
+                            "Your team key was sealed with a cloud vault that has been reset since, and no \
+                             computer of yours still holds it. Team vaults can't be opened on this account.",
+                        ))
+                    }
+                },
+            },
+            None => {
+                let fresh = cached.unwrap_or_else(|| Arc::new(AccountKey::generate()));
+                let (public, sealed) = (fresh.public_key(), fresh.seal(vault_key, user_id));
+                let (public, sealed) = (&public, &sealed);
+                self.authed(|t| async move { self.api.put_account_key(&t, public, sealed).await }).await?;
+                // Another computer of this account may have set one first: use that
+                let row = self
+                    .authed(|t| async move { self.api.account_key(&t, user_id).await })
+                    .await?
+                    .ok_or_else(|| msg("The server did not keep the team key"))?;
+                Arc::new(AccountKey::open(vault_key, user_id, &row.private_key_sealed, &row.public_key)?)
+            }
+        };
+        db::keyring_set(KEYRING_ACCOUNT_KEY, &key.export());
+        let mut inner = self.inner();
+        inner.account = Some(key.clone());
+        inner.account_checked = true;
+        Ok(key)
+    }
+
+    /// Bring every team vault this account is in up to date, and drop the
+    /// ones it left
+    async fn sync_teams(&self, app: &AppHandle, vault_key: &VaultKey) -> Result<(), Error> {
+        let user_id = self.user_id(app)?;
+        let uid = user_id.as_str();
+        let memberships = self.authed(|t| async move { self.api.memberships(&t, uid).await }).await?;
+        let local: Vec<String> = with_db(app, |c| {
+            c.prepare("SELECT id FROM teams")?.query_map([], |r| r.get(0))?.collect()
+        })?;
+
+        // Teams this account is no longer in
+        for gone in local.iter().filter(|id| !memberships.iter().any(|m| &m.team_id == *id)) {
+            let applied = with_db(app, |c| {
+                let tx = c.unchecked_transaction()?;
+                let applied = items::forget_team(&tx, gone)?;
+                tx.commit()?;
+                Ok(applied)
+            })?;
+            applied.write_secrets(&Keyring);
+            self.inner().team_keys.retain(|(team, _), _| team != gone);
+            emit_changed(app, &applied);
+        }
+        if memberships.is_empty() {
+            return Ok(());
+        }
+
+        let account = self.account_key(vault_key, uid).await?;
+        let wrapped = self.authed(|t| async move { self.api.team_keys(&t, uid).await }).await?;
+        {
+            let mut inner = self.inner();
+            for w in wrapped {
+                let id = (w.team_id.clone(), w.epoch);
+                if inner.team_keys.contains_key(&id) {
+                    continue;
+                }
+                match TeamKey::open(&account, &w.team_id, w.epoch, uid, &w.wrapped_key) {
+                    Ok(k) => {
+                        inner.team_keys.insert(id, Arc::new(k));
+                    }
+                    Err(_) => crate::applog::write(&format!(
+                        "team {}: the key of epoch {} could not be opened",
+                        w.team_id, w.epoch
+                    )),
+                }
+            }
+        }
+
+        let mut first_error = None;
+        for m in &memberships {
+            with_db(app, |c| {
+                c.execute(
+                    "INSERT INTO teams (id, name, role, epoch) VALUES (?1, ?2, ?3, ?4) \
+                     ON CONFLICT(id) DO UPDATE SET name = excluded.name, role = excluded.role, epoch = excluded.epoch",
+                    params![m.team_id, m.teams.name, m.role, m.teams.epoch],
+                )
+                .map(drop)
+            })?;
+            // One team's trouble doesn't hold up the others
+            if let Err(e) = self.sync_team(app, &m.team_id, &m.role, m.teams.rev, m.teams.epoch).await {
+                crate::applog::write(&format!("team {}: {e}", m.team_id));
+                first_error.get_or_insert(e);
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    fn team_key(&self, team_id: &str, epoch: i64) -> Option<Arc<TeamKey>> {
+        self.inner().team_keys.get(&(team_id.to_string(), epoch)).cloned()
+    }
+
+    async fn sync_team(&self, app: &AppHandle, team_id: &str, role: &str, rev: i64, epoch: i64) -> Result<(), Error> {
+        let vault = Vault::Team(team_id.to_string());
+
+        // ---- pull ----
+        let cursor: i64 = with_db(app, |c| {
+            c.query_row("SELECT cursor FROM teams WHERE id = ?1", [team_id], |r| r.get(0))
+        })?;
+        if rev > cursor {
+            let mut after = cursor;
+            let mut pulled = Vec::new();
+            while after < rev {
+                let page = self
+                    .authed(|t| async move { self.api.pull_team(&t, team_id, after, PULL_PAGE).await })
+                    .await?;
+                let Some(last) = page.last() else { break };
+                after = last.rev;
+                pulled.extend(page);
+            }
+            let (incoming, unreadable) = self.decrypt_team(team_id, pulled);
+            if unreadable > 0 {
+                crate::applog::write(&format!("team {team_id}: {unreadable} item(s) could not be read and were skipped"));
+            }
+            let applied = with_db(app, |c| {
+                let tx = c.unchecked_transaction()?;
+                let applied = items::apply(&tx, &vault, incoming)?;
+                tx.execute("UPDATE teams SET cursor = ?1 WHERE id = ?2", params![after, team_id])?;
+                tx.commit()?;
+                Ok(applied)
+            })?;
+            applied.write_secrets(&Keyring);
+            emit_changed(app, &applied);
+        }
+
+        // ---- push ----
+        if role == "viewer" {
+            // The server would refuse; the app doesn't offer edits to viewers
+            let dropped = with_db(app, |c| c.execute("DELETE FROM sync_outbox WHERE team_id = ?1", [team_id]))?;
+            if dropped > 0 {
+                crate::applog::write(&format!("team {team_id}: {dropped} change(s) by a viewer were not sent"));
+            }
+            return Ok(());
+        }
+        let key = self
+            .team_key(team_id, epoch)
+            .ok_or_else(|| msg("This computer doesn't have the team's current key yet. Try again in a moment."))?;
+        let queued = with_db(app, |c| items::queued(c, &Keyring, &vault))?;
+        let encrypted: Vec<PushItem> = queued.iter().map(|q| encrypt_team(&key, team_id, q)).collect();
+        for (start, end) in batches(&encrypted) {
+            let batch = &encrypted[start..end];
+            self.authed(|t| async move { self.api.push_team(&t, team_id, epoch, batch).await }).await?;
+            with_db(app, |c| items::clear_pushed(c, &queued[start..end]))?;
+        }
+
+        // ---- finish a key change someone started ----
+        if role == "owner" || role == "admin" {
+            self.rewrite_stale(team_id, epoch, &key).await?;
+        }
+        Ok(())
+    }
+
+    /// Re-encrypt items still on an older team key with the current one, a
+    /// page at a time. Whoever administers the team and syncs next carries
+    /// on where an interrupted change stopped.
+    async fn rewrite_stale(&self, team_id: &str, epoch: i64, key: &TeamKey) -> Result<(), Error> {
+        const PAGE: usize = 200;
+        let mut left = i64::MAX;
+        for _ in 0..50 {
+            let stale = self
+                .authed(|t| async move { self.api.stale_team_items(&t, team_id, epoch, PAGE).await })
+                .await?;
+            if stale.is_empty() {
+                return Ok(());
+            }
+            let rewritten: Vec<RewriteItem> = stale
+                .iter()
+                .filter(|s| !s.deleted)
+                .filter_map(|s| {
+                    let old = self.team_key(team_id, s.epoch)?;
+                    let plain = old.decrypt_item(team_id, &s.id, s.data.as_deref()?).ok()?;
+                    Some(RewriteItem { id: s.id.clone(), data: key.encrypt_item(team_id, &s.id, &plain), modified_at: s.modified_at })
+                })
+                .collect();
+            let rewritten = &rewritten;
+            let now_left = self
+                .authed(|t| async move { self.api.rewrite_team(&t, team_id, epoch, rewritten).await })
+                .await?;
+            // Nothing moved: items this computer can't read; leave them for another
+            if now_left == 0 || now_left >= left {
+                return Ok(());
+            }
+            left = now_left;
+        }
+        Ok(())
+    }
+
+    /// Like [`decrypt_all`], with the key of each item's epoch
+    fn decrypt_team(&self, team_id: &str, pulled: Vec<TeamPullItem>) -> (Vec<Incoming>, usize) {
+        let mut out = Vec::with_capacity(pulled.len());
+        let mut unreadable = 0;
+        for p in pulled {
+            if p.deleted {
+                out.push(Incoming { sync_id: p.id, payload: None, modified_at: p.modified_at });
+                continue;
+            }
+            let payload = self.team_key(team_id, p.epoch).and_then(|key| {
+                let plain = key.decrypt_item(team_id, &p.id, p.data.as_deref()?).ok()?;
+                serde_json::from_slice::<Payload>(&plain).ok()
+            });
+            match payload {
+                Some(payload) => out.push(Incoming { sync_id: p.id, payload: Some(payload), modified_at: p.modified_at }),
+                None => unreadable += 1,
+            }
+        }
+        (out, unreadable)
     }
 
     /// Run the background loop: sync on start, a few seconds after local
@@ -665,6 +942,45 @@ fn encrypt(key: &VaultKey, q: &Queued) -> PushItem {
         key.encrypt_item(&q.sync_id, &json)
     });
     PushItem { id: q.sync_id.clone(), deleted: data.is_none(), data, modified_at: q.modified_at }
+}
+
+fn encrypt_team(key: &TeamKey, team_id: &str, q: &Queued) -> PushItem {
+    let data = q.payload.as_ref().map(|payload| {
+        let json = Zeroizing::new(serde_json::to_vec(payload).expect("items serialize"));
+        key.encrypt_item(team_id, &q.sync_id, &json)
+    });
+    PushItem { id: q.sync_id.clone(), deleted: data.is_none(), data, modified_at: q.modified_at }
+}
+
+/// (start, end) ranges of at most PUSH_MAX_ITEMS items and about
+/// PUSH_MAX_BYTES each
+fn batches(items: &[PushItem]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < items.len() {
+        let mut end = start;
+        let mut bytes = 0;
+        while end < items.len() && end - start < PUSH_MAX_ITEMS {
+            let size = items[end].data.as_ref().map_or(0, String::len) + 128;
+            if end > start && bytes + size > PUSH_MAX_BYTES {
+                break;
+            }
+            bytes += size;
+            end += 1;
+        }
+        out.push((start, end));
+        start = end;
+    }
+    out
+}
+
+/// Tell the UI which kinds of rows changed, so it reloads them
+fn emit_changed(app: &AppHandle, applied: &items::Applied) {
+    if !applied.kinds.is_empty() {
+        let mut kinds: Vec<&str> = applied.kinds.iter().copied().collect();
+        kinds.sort_unstable();
+        let _ = app.emit("cloud:changed", kinds);
+    }
 }
 
 /// Items this version cannot read (damaged, or a kind from a newer version)

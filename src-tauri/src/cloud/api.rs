@@ -91,6 +91,86 @@ pub struct PullItem {
 
 const VAULT_COLS: &str = "vault_id,kdf,wrapped_key,wrapped_key_recovery,rev";
 
+#[derive(Debug, Deserialize)]
+pub struct AccountKeyRow {
+    pub user_id: String,
+    pub public_key: String,
+    pub private_key_sealed: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublicKeyRow {
+    pub user_id: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamInfo {
+    pub name: String,
+    pub rev: i64,
+    pub epoch: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Membership {
+    pub team_id: String,
+    pub role: String,
+    pub teams: TeamInfo,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamKeyRow {
+    pub team_id: String,
+    pub epoch: i64,
+    pub wrapped_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberRow {
+    pub user_id: String,
+    pub role: String,
+    pub email: String,
+    pub added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteRow {
+    pub id: String,
+    pub team_id: String,
+    pub email: String,
+    pub role: String,
+    pub team_name: String,
+    pub invited_by_email: String,
+    pub expires_at: String,
+    #[serde(default)]
+    pub accepted_by: Option<String>,
+    #[serde(default)]
+    pub accepted_public_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamPullItem {
+    pub id: String,
+    pub data: Option<String>,
+    pub deleted: bool,
+    pub modified_at: i64,
+    pub rev: i64,
+    pub epoch: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RewriteItem {
+    pub id: String,
+    pub data: String,
+    pub modified_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WrappedFor {
+    pub user_id: String,
+    pub wrapped_key: String,
+}
+
 pub struct Api {
     http: reqwest::Client,
 }
@@ -222,6 +302,160 @@ impl Api {
         parse(value)
     }
 
+    // ---- team vaults ----
+
+    /// Call one of the team functions (`/rest/v1/rpc/<name>`)
+    async fn rpc(&self, access: &str, name: &str, args: Value) -> Result<Value, ApiError> {
+        self.call(reqwest::Method::POST, &format!("/rest/v1/rpc/{name}"), Some(access), Some(args)).await
+    }
+
+    async fn get(&self, access: &str, path: &str) -> Result<Value, ApiError> {
+        self.call(reqwest::Method::GET, path, Some(access), None).await
+    }
+
+    pub async fn account_key(&self, access: &str, user_id: &str) -> Result<Option<AccountKeyRow>, ApiError> {
+        let value = self
+            .get(access, &format!("/rest/v1/account_keys?user_id=eq.{user_id}&select=user_id,public_key,private_key_sealed"))
+            .await?;
+        let mut rows: Vec<AccountKeyRow> = parse(value)?;
+        Ok(rows.pop())
+    }
+
+    /// Public keys of teammates (RLS shows only those)
+    pub async fn public_keys(&self, access: &str, user_ids: &[String]) -> Result<Vec<PublicKeyRow>, ApiError> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let list = user_ids.join(",");
+        parse(self.get(access, &format!("/rest/v1/account_keys?user_id=in.({list})&select=user_id,public_key")).await?)
+    }
+
+    pub async fn put_account_key(&self, access: &str, public_key: &str, private_key_sealed: &str) -> Result<(), ApiError> {
+        self.rpc(access, "put_account_key", json!({ "public_key": public_key, "private_key_sealed": private_key_sealed }))
+            .await
+            .map(drop)
+    }
+
+    /// Re-seal the private half under a new personal vault key (after a vault
+    /// reset). The public half can't change.
+    pub async fn reseal_account_key(&self, access: &str, private_key_sealed: &str) -> Result<(), ApiError> {
+        self.rpc(access, "reseal_account_key", json!({ "private_key_sealed": private_key_sealed })).await.map(drop)
+    }
+
+    /// The teams this account is in
+    pub async fn memberships(&self, access: &str, user_id: &str) -> Result<Vec<Membership>, ApiError> {
+        parse(
+            self.get(access, &format!("/rest/v1/team_members?user_id=eq.{user_id}&select=team_id,role,teams(name,rev,epoch)"))
+                .await?,
+        )
+    }
+
+    /// This account's sealed copies of team keys, every team and epoch
+    pub async fn team_keys(&self, access: &str, user_id: &str) -> Result<Vec<TeamKeyRow>, ApiError> {
+        parse(self.get(access, &format!("/rest/v1/team_keys?user_id=eq.{user_id}&select=team_id,epoch,wrapped_key")).await?)
+    }
+
+    pub async fn team_members(&self, access: &str, team_id: &str) -> Result<Vec<MemberRow>, ApiError> {
+        parse(
+            self.get(access, &format!("/rest/v1/team_members?team_id=eq.{team_id}&select=user_id,role,email,added_at&order=added_at"))
+                .await?,
+        )
+    }
+
+    /// Invites addressed to this account, and those of teams it administers
+    pub async fn invites(&self, access: &str) -> Result<Vec<InviteRow>, ApiError> {
+        parse(
+            self.get(
+                access,
+                "/rest/v1/team_invites?select=id,team_id,email,role,team_name,invited_by_email,expires_at,accepted_by,accepted_public_key&order=created_at",
+            )
+            .await?,
+        )
+    }
+
+    /// `team_id` is chosen by the app: the creator's key copy is sealed to it
+    pub async fn create_team(&self, access: &str, team_id: &str, name: &str, wrapped_key: &str) -> Result<String, ApiError> {
+        parse(self.rpc(access, "create_team", json!({ "team_id": team_id, "name": name, "wrapped_key": wrapped_key })).await?)
+    }
+
+    pub async fn rename_team(&self, access: &str, team_id: &str, name: &str) -> Result<(), ApiError> {
+        self.rpc(access, "rename_team", json!({ "team_id": team_id, "name": name })).await.map(drop)
+    }
+
+    pub async fn delete_team(&self, access: &str, team_id: &str) -> Result<(), ApiError> {
+        self.rpc(access, "delete_team", json!({ "team_id": team_id })).await.map(drop)
+    }
+
+    pub async fn invite_member(&self, access: &str, team_id: &str, email: &str, role: &str) -> Result<String, ApiError> {
+        parse(self.rpc(access, "invite_member", json!({ "team_id": team_id, "email": email, "role": role })).await?)
+    }
+
+    pub async fn accept_invite(&self, access: &str, invite_id: &str) -> Result<(), ApiError> {
+        self.rpc(access, "accept_invite", json!({ "invite_id": invite_id })).await.map(drop)
+    }
+
+    pub async fn cancel_invite(&self, access: &str, invite_id: &str) -> Result<(), ApiError> {
+        self.rpc(access, "cancel_invite", json!({ "invite_id": invite_id })).await.map(drop)
+    }
+
+    pub async fn admit_member(&self, access: &str, invite_id: &str, epoch: i64, wrapped_key: &str) -> Result<(), ApiError> {
+        self.rpc(access, "admit_member", json!({ "invite_id": invite_id, "epoch": epoch, "wrapped_key": wrapped_key }))
+            .await
+            .map(drop)
+    }
+
+    pub async fn set_member_role(&self, access: &str, team_id: &str, user_id: &str, role: &str) -> Result<(), ApiError> {
+        self.rpc(access, "set_member_role", json!({ "team_id": team_id, "user_id": user_id, "role": role }))
+            .await
+            .map(drop)
+    }
+
+    /// `wrapped`: the new epoch's key sealed to each remaining member
+    pub async fn remove_member(
+        &self,
+        access: &str,
+        team_id: &str,
+        user_id: &str,
+        new_epoch: i64,
+        wrapped: &[WrappedFor],
+    ) -> Result<(), ApiError> {
+        let args = json!({ "team_id": team_id, "user_id": user_id, "new_epoch": new_epoch, "wrapped": wrapped });
+        self.rpc(access, "remove_member", args).await.map(drop)
+    }
+
+    pub async fn leave_team(&self, access: &str, team_id: &str, new_epoch: i64, wrapped: &[WrappedFor]) -> Result<(), ApiError> {
+        self.rpc(access, "leave_team", json!({ "team_id": team_id, "new_epoch": new_epoch, "wrapped": wrapped }))
+            .await
+            .map(drop)
+    }
+
+    /// Returns the team's rev after the push
+    pub async fn push_team(&self, access: &str, team_id: &str, epoch: i64, items: &[PushItem]) -> Result<i64, ApiError> {
+        parse(self.rpc(access, "push_team_items", json!({ "team_id": team_id, "epoch": epoch, "items": items })).await?)
+    }
+
+    pub async fn pull_team(&self, access: &str, team_id: &str, after_rev: i64, limit: usize) -> Result<Vec<TeamPullItem>, ApiError> {
+        let path = format!(
+            "/rest/v1/team_items?team_id=eq.{team_id}&select=id,data,deleted,modified_at,rev,epoch\
+             &rev=gt.{after_rev}&order=rev.asc&limit={limit}"
+        );
+        parse(self.get(access, &path).await?)
+    }
+
+    /// Items still encrypted with a key older than `epoch`
+    pub async fn stale_team_items(&self, access: &str, team_id: &str, epoch: i64, limit: usize) -> Result<Vec<TeamPullItem>, ApiError> {
+        let path = format!(
+            "/rest/v1/team_items?team_id=eq.{team_id}&epoch=lt.{epoch}&select=id,data,deleted,modified_at,rev,epoch\
+             &order=rev.asc&limit={limit}"
+        );
+        parse(self.get(access, &path).await?)
+    }
+
+    /// Returns how many items still use an older key
+    pub async fn rewrite_team(&self, access: &str, team_id: &str, epoch: i64, items: &[RewriteItem]) -> Result<i64, ApiError> {
+        parse(self.rpc(access, "rewrite_team_items", json!({ "team_id": team_id, "epoch": epoch, "items": items })).await?)
+    }
+
     // ---- plumbing ----
 
     async fn call(
@@ -269,7 +503,7 @@ impl Api {
         if status == 401 && access.is_some() && !path.starts_with("/auth/") {
             return Err(ApiError::Unauthorized);
         }
-        let message = friendly(status, &code, message);
+        let message = friendly(path, status, &code, message);
         Err(ApiError::Refused { status, code, message })
     }
 }
@@ -296,8 +530,11 @@ fn error_of(value: &Value) -> (String, String) {
     (code, message)
 }
 
-/// The server's wording where it is fine for people, ours where it is not
-fn friendly(status: u16, code: &str, message: String) -> String {
+/// The server's wording where it is fine for people, ours where it is not.
+/// The team functions word their own errors; the codes below mean something
+/// else there.
+fn friendly(path: &str, status: u16, code: &str, message: String) -> String {
+    let personal_vault = path.starts_with("/rest/v1/vaults") || path.starts_with("/rest/v1/rpc/push_items");
     match (status, code) {
         (_, "otp_expired") => "That code is wrong or has expired. Request a new one.".into(),
         (429, _) | (_, "over_email_send_rate_limit") | (_, "over_request_rate_limit") => {
@@ -306,9 +543,18 @@ fn friendly(status: u16, code: &str, message: String) -> String {
         (_, "email_address_invalid") | (_, "validation_failed") => {
             "That email address doesn't look right.".into()
         }
-        (_, "23505") => "This account already has a cloud vault.".into(),
-        (_, "P0002") => "The cloud vault no longer exists.".into(),
+        (_, "23505") if personal_vault => "This account already has a cloud vault.".into(),
+        (_, "P0002") if personal_vault => "The cloud vault no longer exists.".into(),
         (s, _) if s >= 500 => "The sync server had a problem. Try again in a moment.".into(),
+        _ => capitalized(message),
+    }
+}
+
+/// "the team key changed" -> "The team key changed"
+fn capitalized(message: String) -> String {
+    let mut chars = message.chars();
+    match chars.next() {
+        Some(first) if first.is_lowercase() => first.to_uppercase().chain(chars).collect(),
         _ => message,
     }
 }

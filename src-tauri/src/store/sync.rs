@@ -36,12 +36,16 @@ pub struct SyncedTable {
     pub kind: &'static str,
     /// Columns whose change is an edit worth syncing
     content: &'static [&'static str],
+    /// Rows can belong to a team vault (`team_id`); known hosts can't, each
+    /// member trusts a server's key on their own
+    pub teamed: bool,
 }
 
 pub const GROUPS: SyncedTable = SyncedTable {
     table: "groups",
     kind: "group",
     content: &["name", "sort"],
+    teamed: true,
 };
 
 pub const HOSTS: SyncedTable = SyncedTable {
@@ -64,36 +68,42 @@ pub const HOSTS: SyncedTable = SyncedTable {
         "baud_rate",
         "sort",
     ],
+    teamed: true,
 };
 
 pub const CREDENTIALS: SyncedTable = SyncedTable {
     table: "credentials",
     kind: "credential",
     content: &["name", "username", "auth_method", "password_saved", "key_path"],
+    teamed: true,
 };
 
 pub const SNIPPETS: SyncedTable = SyncedTable {
     table: "snippets",
     kind: "snippet",
     content: &["name", "command", "sort"],
+    teamed: true,
 };
 
 pub const NOTES: SyncedTable = SyncedTable {
     table: "notes",
     kind: "note",
     content: &["title", "body", "pinned", "tags", "host_id", "sort", "archived"],
+    teamed: true,
 };
 
 pub const PORT_FORWARDS: SyncedTable = SyncedTable {
     table: "port_forwards",
     kind: "port_forward",
     content: &["host_id", "name", "local_port", "remote_host", "remote_port", "auto_start", "kind"],
+    teamed: true,
 };
 
 pub const KNOWN_HOSTS: SyncedTable = SyncedTable {
     table: "known_hosts",
     kind: "known_host",
     content: &["host", "key_type", "public_key", "fingerprint"],
+    teamed: false,
 };
 
 pub const SYNCED: [&SyncedTable; 7] = [
@@ -113,7 +123,7 @@ const UUID_V4: &str = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || 
     substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || \
     substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))";
 
-/// Bring the database to the current schema (v4) and (re)create the triggers.
+/// Bring the database to the current schema (v5) and (re)create the triggers.
 /// The triggers are rebuilt on every start, so they always match the column
 /// lists above.
 pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -174,11 +184,90 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         )?;
     }
 
+    // v5: team vaults. A row with a team_id belongs to that team's vault
+    // (NULL: the personal one), and so does its outbox entry, tombstones
+    // included. Adding nullable columns fires no trigger, so nothing is queued.
+    if version < 5 {
+        for t in SYNCED.into_iter().filter(|t| t.teamed) {
+            add_column_if_missing(&tx, t.table, "team_id", "TEXT")?;
+            tx.execute_batch(&format!(
+                "CREATE INDEX IF NOT EXISTS {0}_team ON {0}(team_id)",
+                t.table
+            ))?;
+        }
+        add_column_if_missing(&tx, "sync_outbox", "team_id", "TEXT")?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS teams (
+                id     TEXT PRIMARY KEY NOT NULL,
+                name   TEXT NOT NULL,
+                role   TEXT NOT NULL,
+                epoch  INTEGER NOT NULL DEFAULT 1,
+                cursor INTEGER NOT NULL DEFAULT 0
+            );",
+        )?;
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES ('schemaVersion', '5') \
+             ON CONFLICT(key) DO UPDATE SET value = '5'",
+            [],
+        )?;
+    }
+
     for t in SYNCED {
         tx.execute_batch(&triggers_sql(t))?;
     }
+    tx.execute_batch(SAME_VAULT_TRIGGERS)?;
     tx.commit()
 }
+
+/// A team host can't use a personal credential, group or jump host (other
+/// members don't have it), and the other way round; nor can a forward or a
+/// note hang off a host of another vault. Applying a pull never trips these:
+/// it only resolves relations inside the item's own vault.
+const SAME_VAULT_TRIGGERS: &str = "
+    DROP TRIGGER IF EXISTS hosts_same_vault_insert;
+    DROP TRIGGER IF EXISTS hosts_same_vault_update;
+    DROP TRIGGER IF EXISTS port_forwards_same_vault_insert;
+    DROP TRIGGER IF EXISTS port_forwards_same_vault_update;
+    DROP TRIGGER IF EXISTS notes_same_vault_insert;
+    DROP TRIGGER IF EXISTS notes_same_vault_update;
+
+    CREATE TRIGGER hosts_same_vault_insert BEFORE INSERT ON hosts
+    WHEN (NEW.credential_id IS NOT NULL AND (SELECT team_id FROM credentials WHERE id = NEW.credential_id) IS NOT NEW.team_id)
+      OR (NEW.group_id IS NOT NULL AND (SELECT team_id FROM groups WHERE id = NEW.group_id) IS NOT NEW.team_id)
+      OR (NEW.jump_host_id IS NOT NULL AND (SELECT team_id FROM hosts WHERE id = NEW.jump_host_id) IS NOT NEW.team_id)
+    BEGIN
+        SELECT RAISE(ABORT, 'A host and its credential, group and jump host must be in the same vault');
+    END;
+    CREATE TRIGGER hosts_same_vault_update BEFORE UPDATE OF credential_id, group_id, jump_host_id, team_id ON hosts
+    WHEN (NEW.credential_id IS NOT NULL AND (SELECT team_id FROM credentials WHERE id = NEW.credential_id) IS NOT NEW.team_id)
+      OR (NEW.group_id IS NOT NULL AND (SELECT team_id FROM groups WHERE id = NEW.group_id) IS NOT NEW.team_id)
+      OR (NEW.jump_host_id IS NOT NULL AND (SELECT team_id FROM hosts WHERE id = NEW.jump_host_id) IS NOT NEW.team_id)
+    BEGIN
+        SELECT RAISE(ABORT, 'A host and its credential, group and jump host must be in the same vault');
+    END;
+
+    CREATE TRIGGER port_forwards_same_vault_insert BEFORE INSERT ON port_forwards
+    WHEN (SELECT team_id FROM hosts WHERE id = NEW.host_id) IS NOT NEW.team_id
+    BEGIN
+        SELECT RAISE(ABORT, 'A port forward must be in the same vault as its host');
+    END;
+    CREATE TRIGGER port_forwards_same_vault_update BEFORE UPDATE OF host_id, team_id ON port_forwards
+    WHEN (SELECT team_id FROM hosts WHERE id = NEW.host_id) IS NOT NEW.team_id
+    BEGIN
+        SELECT RAISE(ABORT, 'A port forward must be in the same vault as its host');
+    END;
+
+    CREATE TRIGGER notes_same_vault_insert BEFORE INSERT ON notes
+    WHEN NEW.host_id IS NOT NULL AND (SELECT team_id FROM hosts WHERE id = NEW.host_id) IS NOT NEW.team_id
+    BEGIN
+        SELECT RAISE(ABORT, 'A note must be in the same vault as its host');
+    END;
+    CREATE TRIGGER notes_same_vault_update BEFORE UPDATE OF host_id, team_id ON notes
+    WHEN NEW.host_id IS NOT NULL AND (SELECT team_id FROM hosts WHERE id = NEW.host_id) IS NOT NEW.team_id
+    BEGIN
+        SELECT RAISE(ABORT, 'A note must be in the same vault as its host');
+    END;
+";
 
 fn add_column_if_missing(
     conn: &Connection,
@@ -197,18 +286,21 @@ fn add_column_if_missing(
     Ok(())
 }
 
-/// Queue a row of `table` (by rowid) for the next push
+/// Queue a row of `table` (by rowid) for the next push, in its row's vault
 fn enqueue_sql(t: &SyncedTable, rowid: &str) -> String {
     let (table, kind) = (t.table, t.kind);
+    let team = if t.teamed { "team_id" } else { "NULL" };
     format!(
-        "INSERT INTO sync_outbox (sync_id, kind, deleted, changed_at) \
-         SELECT sync_id, '{kind}', 0, modified_at FROM {table} WHERE rowid = {rowid} \
-         ON CONFLICT(sync_id) DO UPDATE SET deleted = 0, changed_at = excluded.changed_at"
+        "INSERT INTO sync_outbox (sync_id, kind, deleted, changed_at, team_id) \
+         SELECT sync_id, '{kind}', 0, modified_at, {team} FROM {table} WHERE rowid = {rowid} \
+         ON CONFLICT(sync_id) DO UPDATE SET deleted = 0, changed_at = excluded.changed_at, \
+         team_id = excluded.team_id"
     )
 }
 
 fn triggers_sql(t: &SyncedTable) -> String {
     let (table, kind) = (t.table, t.kind);
+    let old_team = if t.teamed { "OLD.team_id" } else { "NULL" };
     let changed = t
         .content
         .iter()
@@ -240,9 +332,10 @@ fn triggers_sql(t: &SyncedTable) -> String {
          CREATE TRIGGER {table}_sync_delete AFTER DELETE ON {table}
          WHEN OLD.sync_id IS NOT NULL
          BEGIN
-             INSERT INTO sync_outbox (sync_id, kind, deleted, changed_at)
-                 VALUES (OLD.sync_id, '{kind}', 1, max(OLD.modified_at + 1, {NOW_MS}))
-                 ON CONFLICT(sync_id) DO UPDATE SET deleted = 1, changed_at = excluded.changed_at;
+             INSERT INTO sync_outbox (sync_id, kind, deleted, changed_at, team_id)
+                 VALUES (OLD.sync_id, '{kind}', 1, max(OLD.modified_at + 1, {NOW_MS}), {old_team})
+                 ON CONFLICT(sync_id) DO UPDATE SET deleted = 1, changed_at = excluded.changed_at,
+                 team_id = excluded.team_id;
          END;"
     )
 }
@@ -534,7 +627,7 @@ mod tests {
         let version: String = conn
             .query_row("SELECT value FROM settings WHERE key = 'schemaVersion'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, "4");
+        assert_eq!(version, "5");
 
         // The next start changes nothing
         db::migrate(&conn).unwrap();
@@ -543,6 +636,48 @@ mod tests {
             .query_row("SELECT count(*) FROM sync_outbox", [], |r| r.get(0))
             .unwrap();
         assert_eq!(again, 6);
+    }
+
+    #[test]
+    fn a_v4_database_gets_team_columns_without_queueing_anything() {
+        let conn = open();
+        let host = add_host(&conn, "web");
+        // Wind the database back to v4: no team columns, no teams table
+        for t in SYNCED {
+            for op in ["insert", "update", "delete"] {
+                conn.execute_batch(&format!("DROP TRIGGER {}_sync_{op};", t.table)).unwrap();
+            }
+        }
+        conn.execute_batch(SAME_VAULT_TRIGGERS.split("CREATE TRIGGER").next().unwrap()).unwrap();
+        for t in SYNCED.into_iter().filter(|t| t.teamed) {
+            conn.execute_batch(&format!("DROP INDEX {0}_team; ALTER TABLE {0} DROP COLUMN team_id;", t.table)).unwrap();
+        }
+        conn.execute_batch(
+            "ALTER TABLE sync_outbox DROP COLUMN team_id;
+             DROP TABLE teams;
+             UPDATE settings SET value = '4' WHERE key = 'schemaVersion';",
+        )
+        .unwrap();
+        clear_outbox(&conn);
+        let (sync_id, before) = stamp(&conn, "hosts", host);
+
+        db::migrate(&conn).unwrap();
+        assert_eq!(stamp(&conn, "hosts", host).1, before);
+        assert_eq!(queued(&conn, &sync_id), None, "new columns are not an edit");
+        let team: Option<String> = conn
+            .query_row("SELECT team_id FROM hosts WHERE id = ?1", params![host], |r| r.get(0))
+            .unwrap();
+        assert_eq!(team, None, "everything that was there is personal");
+        let version: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'schemaVersion'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, "5");
+        // An edit is queued in its row's vault
+        conn.execute("UPDATE hosts SET label = 'web2' WHERE id = ?1", params![host]).unwrap();
+        let in_vault: Option<String> = conn
+            .query_row("SELECT team_id FROM sync_outbox WHERE sync_id = ?1", params![sync_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(in_vault, None);
     }
 
     #[test]
@@ -573,7 +708,7 @@ mod tests {
         let version: String = conn
             .query_row("SELECT value FROM settings WHERE key = 'schemaVersion'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, "4");
+        assert_eq!(version, "5");
 
         // Changing the kind is an edit that syncs
         conn.execute("UPDATE port_forwards SET kind = 'dynamic' WHERE id = ?1", params![fwd])

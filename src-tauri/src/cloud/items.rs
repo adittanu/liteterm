@@ -209,6 +209,30 @@ impl Payload {
     }
 }
 
+/// Which vault a sync step is about: the account's own, or a team's. Rows
+/// carry it as `team_id` (NULL for the personal vault), and every lookup
+/// stays inside it, so a server can't make an item of one vault land on a row
+/// of another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Vault {
+    Personal,
+    Team(String),
+}
+
+impl Vault {
+    pub fn team(&self) -> Option<&str> {
+        match self {
+            Vault::Personal => None,
+            Vault::Team(id) => Some(id),
+        }
+    }
+
+    /// Whether rows of `t` can be in this vault: known hosts are personal only
+    fn holds(&self, t: &SyncedTable) -> bool {
+        t.teamed || *self == Vault::Personal
+    }
+}
+
 /// Targets before the rows that point at them: a pull applies (and a push
 /// sends) items in this order, deletes in the reverse one.
 const ORDER: [&str; 7] = [
@@ -253,13 +277,13 @@ pub struct Queued {
     pub changed_at: i64,
 }
 
-/// Everything the outbox holds: changes in dependency order, then deletes in
-/// the reverse one. An entry whose row is gone without a tombstone (or of a
-/// kind this version does not know) has nothing to send and is dropped.
-pub fn queued(conn: &Connection, secrets: &dyn Secrets) -> Result<Vec<Queued>, rusqlite::Error> {
+/// Everything the outbox holds for `vault`: changes in dependency order, then
+/// deletes in the reverse one. An entry whose row is gone without a tombstone
+/// (or of a kind this version does not know) has nothing to send and is dropped.
+pub fn queued(conn: &Connection, secrets: &dyn Secrets, vault: &Vault) -> Result<Vec<Queued>, rusqlite::Error> {
     let entries: Vec<(String, String, bool, i64)> = conn
-        .prepare("SELECT sync_id, kind, deleted, changed_at FROM sync_outbox")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?)))?
+        .prepare("SELECT sync_id, kind, deleted, changed_at FROM sync_outbox WHERE team_id IS ?1")?
+        .query_map([vault.team()], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?)))?
         .collect::<Result<_, _>>()?;
 
     let mut out = Vec::with_capacity(entries.len());
@@ -499,9 +523,9 @@ impl Applied {
     }
 }
 
-/// Apply a pull. Run it inside a transaction, together with moving the pull
-/// cursor; then [`Applied::write_secrets`] after the commit.
-pub fn apply(conn: &Connection, items: Vec<Incoming>) -> Result<Applied, rusqlite::Error> {
+/// Apply a pull of `vault`. Run it inside a transaction, together with moving
+/// the pull cursor; then [`Applied::write_secrets`] after the commit.
+pub fn apply(conn: &Connection, vault: &Vault, items: Vec<Incoming>) -> Result<Applied, rusqlite::Error> {
     let mut out = Applied::default();
     let (mut upserts, deletes): (Vec<Incoming>, Vec<Incoming>) =
         items.into_iter().partition(|i| i.payload.is_some());
@@ -510,11 +534,11 @@ pub fn apply(conn: &Connection, items: Vec<Incoming>) -> Result<Applied, rusqlit
     upserts.sort_by_key(|i| i.payload.as_ref().map_or(ORDER.len(), |p| order_of(p.table().kind)));
     let mut jumps = Vec::new();
     for item in upserts {
-        apply_upsert(conn, item, &mut out, &mut jumps)?;
+        apply_upsert(conn, vault, item, &mut out, &mut jumps)?;
     }
     // A host can jump through one that came later in the same pull
     for (sync_id, jump, modified_at) in jumps {
-        if let Some(jump_id) = local_id(conn, "hosts", &jump)? {
+        if let Some(jump_id) = local_id(conn, vault, &sync::HOSTS, &jump)? {
             // The update trigger takes this for a local edit; undo what it did
             conn.execute("UPDATE hosts SET jump_host_id = ?1 WHERE sync_id = ?2", params![jump_id, sync_id])?;
             conn.execute("UPDATE hosts SET modified_at = ?1 WHERE sync_id = ?2", params![modified_at, sync_id])?;
@@ -526,15 +550,15 @@ pub fn apply(conn: &Connection, items: Vec<Incoming>) -> Result<Applied, rusqlit
     // also cascaded (and queued) here
     let mut doomed = Vec::new();
     for item in deletes {
-        match locate(conn, &item.sync_id)? {
+        match locate(conn, vault, &item.sync_id)? {
             Some((table, rowid, local_modified)) => {
                 // A newer local edit outlives an older delete, and stays queued
                 if item.modified_at > local_modified {
                     doomed.push((table, rowid, item.sync_id));
                 }
             }
-            // Deleted on both sides
-            None => drop_outbox(conn, &item.sync_id)?,
+            // Deleted on both sides, or a row of another vault: not this one's to drop
+            None => drop_outbox_in(conn, vault, &item.sync_id)?,
         }
     }
     doomed.sort_by_key(|(table, _, _)| Reverse(order_of(table.kind)));
@@ -559,19 +583,26 @@ pub fn apply(conn: &Connection, items: Vec<Incoming>) -> Result<Applied, rusqlit
 
 enum Decision {
     Skip,
+    /// The id belongs to a row of another vault
+    Elsewhere,
     Update(i64),
     Insert,
 }
 
-fn decide(conn: &Connection, table: &str, sync_id: &str, remote: i64) -> Result<Decision, rusqlite::Error> {
-    if let Some((rowid, local)) = find(conn, table, sync_id)? {
+fn decide(conn: &Connection, vault: &Vault, table: &SyncedTable, sync_id: &str, remote: i64) -> Result<Decision, rusqlite::Error> {
+    if let Some((rowid, local)) = find(conn, vault, table, sync_id)? {
         return Ok(if remote > local { Decision::Update(rowid) } else { Decision::Skip });
+    }
+    // The id is taken by a row of another vault (or a known host pulled into a
+    // team, which can't hold one): never overwrite it from here
+    if !vault.holds(table) || taken_elsewhere(conn, table, sync_id)? {
+        return Ok(Decision::Elsewhere);
     }
     // Deleted here: an older edit stays deleted, a newer one brings it back
     let tombstone: Option<i64> = conn
         .query_row(
-            "SELECT changed_at FROM sync_outbox WHERE sync_id = ?1 AND deleted = 1",
-            [sync_id],
+            "SELECT changed_at FROM sync_outbox WHERE sync_id = ?1 AND deleted = 1 AND team_id IS ?2",
+            params![sync_id, vault.team()],
             |r| r.get(0),
         )
         .optional()?;
@@ -583,6 +614,7 @@ fn decide(conn: &Connection, table: &str, sync_id: &str, remote: i64) -> Result<
 
 fn apply_upsert(
     conn: &Connection,
+    vault: &Vault,
     item: Incoming,
     out: &mut Applied,
     jumps: &mut Vec<(String, String, i64)>,
@@ -590,11 +622,19 @@ fn apply_upsert(
     let Some(payload) = item.payload else { return Ok(()) };
     let table = payload.table();
     let (sid, m) = (item.sync_id.as_str(), item.modified_at);
-    let existing = match decide(conn, table.table, sid, m)? {
+    let existing = match decide(conn, vault, table, sid, m)? {
         Decision::Skip => return Ok(()),
+        Decision::Elsewhere => {
+            out.skipped += 1;
+            return Ok(());
+        }
         Decision::Update(rowid) => Some(rowid),
         Decision::Insert => None,
     };
+    let write_row = |conn: &Connection, t: &str, existing: Option<i64>, sid: &str, m: i64, cols: &[(&str, &dyn ToSql)]| {
+        write_row(conn, vault, t, existing, sid, m, cols)
+    };
+    let resolve = |conn: &Connection, t: &SyncedTable, sid: Option<&str>| resolve(conn, vault, t, sid);
 
     match &payload {
         Payload::Group(d) => {
@@ -619,10 +659,10 @@ fn apply_upsert(
             out.secret(db::cred_keypass_entry(id), d.key_passphrase.as_ref(), false);
         }
         Payload::Host(d) => {
-            let group_id = resolve(conn, "groups", d.group.as_deref())?;
-            let credential_id = resolve(conn, "credentials", d.credential.as_deref())?;
+            let group_id = resolve(conn, &sync::GROUPS, d.group.as_deref())?;
+            let credential_id = resolve(conn, &sync::CREDENTIALS, d.credential.as_deref())?;
             let jump = d.jump_host.as_deref().filter(|j| *j != sid);
-            let jump_id = resolve(conn, "hosts", jump)?;
+            let jump_id = resolve(conn, &sync::HOSTS, jump)?;
             let mut cols: Vec<(&str, &dyn ToSql)> = vec![
                 ("label", &d.label),
                 ("address", &d.address),
@@ -664,7 +704,7 @@ fn apply_upsert(
             )?;
         }
         Payload::Note(d) => {
-            let host_id = resolve(conn, "hosts", d.host.as_deref())?;
+            let host_id = resolve(conn, &sync::HOSTS, d.host.as_deref())?;
             let tags = serde_json::to_string(&d.tags).unwrap_or_else(|_| "[]".into());
             let mut cols: Vec<(&str, &dyn ToSql)> = vec![
                 ("title", &d.title),
@@ -684,7 +724,7 @@ fn apply_upsert(
             write_row(conn, "notes", existing, sid, m, &cols)?;
         }
         Payload::PortForward(d) => {
-            let Some(host_id) = local_id(conn, "hosts", &d.host)? else {
+            let Some(host_id) = local_id(conn, vault, &sync::HOSTS, &d.host)? else {
                 // Its host was deleted, or never arrived: nowhere to put it
                 out.skipped += 1;
                 return Ok(());
@@ -797,8 +837,10 @@ fn merge_known_host(
 
 /// Insert or update one row with the given columns, stamping sync_id and
 /// modified_at. Setting modified_at keeps the change-tracking triggers out.
+/// A new row of a teamed table is put in `vault`.
 fn write_row(
     conn: &Connection,
+    vault: &Vault,
     table: &str,
     existing: Option<i64>,
     sync_id: &str,
@@ -823,54 +865,87 @@ fn write_row(
             Ok(rowid)
         }
         None => {
-            let names: Vec<&str> = cols.iter().map(|(c, _)| *c).collect();
-            let marks: Vec<String> = (1..=n + 2).map(|i| format!("?{i}")).collect();
-            let sql = format!(
-                "INSERT INTO {table} ({}, sync_id, modified_at) VALUES ({})",
-                names.join(", "),
-                marks.join(", ")
-            );
+            let teamed = table_named(table).is_some_and(|t| t.teamed);
+            let team = vault.team();
+            let mut names: Vec<&str> = cols.iter().map(|(c, _)| *c).collect();
+            names.extend(["sync_id", "modified_at"]);
             values.push(&sync_id);
             values.push(&modified_at);
+            if teamed {
+                names.push("team_id");
+                values.push(&team);
+            }
+            let marks: Vec<String> = (1..=names.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!("INSERT INTO {table} ({}) VALUES ({})", names.join(", "), marks.join(", "));
             conn.execute(&sql, params_from_iter(values))?;
             Ok(conn.last_insert_rowid())
         }
     }
 }
 
-/// (rowid, modified_at) of the row with this sync_id
-fn find(conn: &Connection, table: &str, sync_id: &str) -> Result<Option<(i64, i64)>, rusqlite::Error> {
-    conn.query_row(
-        &format!("SELECT rowid, modified_at FROM {table} WHERE sync_id = ?1"),
-        [sync_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
-    .optional()
+fn table_named(name: &str) -> Option<&'static SyncedTable> {
+    sync::SYNCED.into_iter().find(|t| t.table == name)
 }
 
-/// A delete names no kind: look in every table
+/// (rowid, modified_at) of the row with this sync_id, in `vault`
+fn find(conn: &Connection, vault: &Vault, table: &SyncedTable, sync_id: &str) -> Result<Option<(i64, i64)>, rusqlite::Error> {
+    if !vault.holds(table) {
+        return Ok(None);
+    }
+    let t = table.table;
+    let row = |r: &rusqlite::Row| Ok((r.get(0)?, r.get(1)?));
+    if table.teamed {
+        conn.query_row(
+            &format!("SELECT rowid, modified_at FROM {t} WHERE sync_id = ?1 AND team_id IS ?2"),
+            params![sync_id, vault.team()],
+            row,
+        )
+        .optional()
+    } else {
+        conn.query_row(&format!("SELECT rowid, modified_at FROM {t} WHERE sync_id = ?1"), [sync_id], row)
+            .optional()
+    }
+}
+
+/// Whether a row with this sync_id exists at all, in any vault
+fn taken_elsewhere(conn: &Connection, table: &SyncedTable, sync_id: &str) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        &format!("SELECT EXISTS (SELECT 1 FROM {} WHERE sync_id = ?1)", table.table),
+        [sync_id],
+        |r| r.get(0),
+    )
+}
+
+/// A delete names no kind: look in every table of the vault
 fn locate(
     conn: &Connection,
+    vault: &Vault,
     sync_id: &str,
 ) -> Result<Option<(&'static SyncedTable, i64, i64)>, rusqlite::Error> {
     for table in sync::SYNCED {
-        if let Some((rowid, modified_at)) = find(conn, table.table, sync_id)? {
+        if let Some((rowid, modified_at)) = find(conn, vault, table, sync_id)? {
             return Ok(Some((table, rowid, modified_at)));
         }
     }
     Ok(None)
 }
 
-fn local_id(conn: &Connection, table: &str, sync_id: &str) -> Result<Option<i64>, rusqlite::Error> {
-    Ok(find(conn, table, sync_id)?.map(|(rowid, _)| rowid))
+fn local_id(conn: &Connection, vault: &Vault, table: &SyncedTable, sync_id: &str) -> Result<Option<i64>, rusqlite::Error> {
+    Ok(find(conn, vault, table, sync_id)?.map(|(rowid, _)| rowid))
 }
 
-/// A relation's local id; None when it names nothing here
-fn resolve(conn: &Connection, table: &str, sync_id: Option<&str>) -> Result<Option<i64>, rusqlite::Error> {
+/// A relation's local id; None when it names nothing in this vault
+fn resolve(conn: &Connection, vault: &Vault, table: &SyncedTable, sync_id: Option<&str>) -> Result<Option<i64>, rusqlite::Error> {
     match sync_id {
-        Some(s) => local_id(conn, table, s),
+        Some(s) => local_id(conn, vault, table, s),
         None => Ok(None),
     }
+}
+
+/// Drop an outbox entry only if it is this vault's
+fn drop_outbox_in(conn: &Connection, vault: &Vault, sync_id: &str) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM sync_outbox WHERE sync_id = ?1 AND team_id IS ?2", params![sync_id, vault.team()])?;
+    Ok(())
 }
 
 fn drop_outbox(conn: &Connection, sync_id: &str) -> Result<(), rusqlite::Error> {
@@ -888,22 +963,57 @@ fn queue(conn: &Connection, sync_id: &str, kind: &str, deleted: bool, changed_at
     Ok(())
 }
 
-/// Queue every synced row, for a device joining a vault: whatever it holds
-/// goes up. Rows the vault already has at the same version are refused by the
-/// server without a new rev, so re-joining the same vault costs one upload.
-pub fn queue_all(conn: &Connection) -> Result<(), rusqlite::Error> {
-    for table in table_of_all() {
-        conn.execute(
-            &format!(
-                "INSERT INTO sync_outbox (sync_id, kind, deleted, changed_at) \
-                 SELECT sync_id, ?1, 0, modified_at FROM {} WHERE sync_id IS NOT NULL \
-                 ON CONFLICT(sync_id) DO NOTHING",
-                table.table
-            ),
-            [table.kind],
-        )?;
+/// Queue every synced row of `vault`, for a device joining it: whatever it
+/// holds goes up. Rows the vault already has at the same version are refused
+/// by the server without a new rev, so re-joining the same vault costs one
+/// upload.
+pub fn queue_all(conn: &Connection, vault: &Vault) -> Result<(), rusqlite::Error> {
+    for table in table_of_all().filter(|t| vault.holds(t)) {
+        let (team_col, team_filter) =
+            if table.teamed { ("team_id", "AND team_id IS ?2") } else { ("NULL", "") };
+        let sql = format!(
+            "INSERT INTO sync_outbox (sync_id, kind, deleted, changed_at, team_id) \
+             SELECT sync_id, ?1, 0, modified_at, {team_col} FROM {} WHERE sync_id IS NOT NULL {team_filter} \
+             ON CONFLICT(sync_id) DO NOTHING",
+            table.table
+        );
+        if table.teamed {
+            conn.execute(&sql, params![table.kind, vault.team()])?;
+        } else {
+            conn.execute(&sql, [table.kind])?;
+        }
     }
     Ok(())
+}
+
+/// This computer is no longer in the team (removed, left, or signed out):
+/// delete the team's rows and outbox entries. The keyring entries of its
+/// hosts and credentials are returned, to delete after the commit.
+pub fn forget_team(conn: &Connection, team_id: &str) -> Result<Applied, rusqlite::Error> {
+    let mut out = Applied::default();
+    let ids = |table: &str| -> Result<Vec<i64>, rusqlite::Error> {
+        conn.prepare(&format!("SELECT id FROM {table} WHERE team_id = ?1"))?
+            .query_map([team_id], |r| r.get(0))?
+            .collect()
+    };
+    for id in ids("hosts")? {
+        out.secrets.push(SecretOp::Delete(db::password_entry(id)));
+        out.secrets.push(SecretOp::Delete(db::keypass_entry(id)));
+    }
+    for id in ids("credentials")? {
+        out.secrets.push(SecretOp::Delete(db::cred_password_entry(id)));
+        out.secrets.push(SecretOp::Delete(db::cred_keypass_entry(id)));
+    }
+    // Dependents first, so no cascade reaches into another vault
+    for table in table_of_all().filter(|t| t.teamed).collect::<Vec<_>>().into_iter().rev() {
+        if conn.execute(&format!("DELETE FROM {} WHERE team_id = ?1", table.table), [team_id])? > 0 {
+            out.kinds.insert(table.kind);
+        }
+    }
+    // The deletes queued tombstones; they are not this computer's to send
+    conn.execute("DELETE FROM sync_outbox WHERE team_id = ?1", [team_id])?;
+    conn.execute("DELETE FROM teams WHERE id = ?1", [team_id])?;
+    Ok(out)
 }
 
 fn table_of_all() -> impl Iterator<Item = &'static SyncedTable> {
@@ -915,6 +1025,18 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, HashMap};
+
+    // The personal vault, as most tests here exercise it; team tests call
+    // the vault-taking versions directly
+    fn apply(conn: &Connection, items: Vec<Incoming>) -> Result<Applied, rusqlite::Error> {
+        super::apply(conn, &Vault::Personal, items)
+    }
+    fn queued(conn: &Connection, secrets: &dyn Secrets) -> Result<Vec<Queued>, rusqlite::Error> {
+        super::queued(conn, secrets, &Vault::Personal)
+    }
+    fn queue_all(conn: &Connection) -> Result<(), rusqlite::Error> {
+        super::queue_all(conn, &Vault::Personal)
+    }
 
     #[derive(Default)]
     struct MemSecrets(RefCell<HashMap<String, String>>);
@@ -1008,6 +1130,197 @@ mod tests {
                 .unwrap();
             self.conn.last_insert_rowid()
         }
+
+        /// This computer is in team `team` (as the engine records it)
+        fn join(&self, team: &str) {
+            self.conn
+                .execute("INSERT INTO teams (id, name, role) VALUES (?1, 'Ops', 'editor')", [team])
+                .unwrap();
+        }
+
+        fn sync_team(&self, server: &mut Server, team: &str) -> Applied {
+            let vault = Vault::Team(team.to_string());
+            let tx = self.conn.unchecked_transaction().unwrap();
+            let applied = super::apply(&tx, &vault, server.pull()).unwrap();
+            tx.commit().unwrap();
+            applied.write_secrets(&self.secrets);
+            let q = super::queued(&self.conn, &self.secrets, &vault).unwrap();
+            server.push(&q);
+            clear_pushed(&self.conn, &q).unwrap();
+            applied
+        }
+
+        /// A team credential with a saved password, and a team host using it
+        fn add_team_host(&self, team: &str, label: &str) -> (i64, i64) {
+            self.conn
+                .execute(
+                    "INSERT INTO credentials (name, username, auth_method, password_saved, team_id) \
+                     VALUES (?1 || ' login', 'deploy', 'password', 1, ?2)",
+                    params![label, team],
+                )
+                .unwrap();
+            let cred = self.conn.last_insert_rowid();
+            self.secrets.set(&db::cred_password_entry(cred), "s3cret");
+            sync::mark_changed(&self.conn, &sync::CREDENTIALS, cred).unwrap();
+            self.conn
+                .execute(
+                    "INSERT INTO hosts (label, address, port, username, auth_method, credential_id, team_id) \
+                     VALUES (?1, ?1 || '.example', 22, 'deploy', 'password', ?2, ?3)",
+                    params![label, cred, team],
+                )
+                .unwrap();
+            (self.conn.last_insert_rowid(), cred)
+        }
+    }
+
+    const TEAM: &str = "7ea70000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn team_items_reach_every_member_and_never_the_personal_vault() {
+        let (a, b) = (Device::new(), Device::new());
+        let (mut personal_a, mut personal_b, mut team) = (Server::default(), Server::default(), Server::default());
+        a.join(TEAM);
+        b.join(TEAM);
+        a.add_host("laptop-only");
+        let (host, _) = a.add_team_host(TEAM, "db");
+
+        a.sync_with(&mut personal_a);
+        a.sync_team(&mut team, TEAM);
+        let labels = |s: &Server| -> Vec<String> {
+            s.0.values()
+                .filter_map(|(p, _)| match p {
+                    Some(Payload::Host(h)) => Some(h.label.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(labels(&personal_a), ["laptop-only"], "team rows stay out of the personal vault");
+        assert_eq!(labels(&team), ["db"], "personal rows stay out of the team vault");
+
+        b.sync_with(&mut personal_b);
+        b.sync_team(&mut team, TEAM);
+        assert_eq!(b.val::<String>("SELECT team_id FROM hosts WHERE label = 'db'"), TEAM);
+        let cred: i64 = b.val("SELECT credential_id FROM hosts WHERE label = 'db'");
+        assert_eq!(b.val::<String>(&format!("SELECT team_id FROM credentials WHERE id = {cred}")), TEAM);
+        assert_eq!(b.secrets.get(&db::cred_password_entry(cred)).as_deref(), Some("s3cret"));
+        assert_eq!(b.val::<i64>("SELECT count(*) FROM hosts WHERE label = 'laptop-only'"), 0);
+
+        // An edit on B comes back to A through the team vault only
+        b.conn.execute("UPDATE hosts SET label = 'db-primary' WHERE label = 'db'", []).unwrap();
+        assert!(super::queued(&b.conn, &b.secrets, &Vault::Personal).unwrap().is_empty());
+        b.sync_team(&mut team, TEAM);
+        a.sync_team(&mut team, TEAM);
+        assert_eq!(a.val::<String>(&format!("SELECT label FROM hosts WHERE id = {host}")), "db-primary");
+
+        // A delete's tombstone remembers its vault after the row is gone
+        a.conn.execute("DELETE FROM hosts WHERE id = ?1", [host]).unwrap();
+        assert!(super::queued(&a.conn, &a.secrets, &Vault::Personal).unwrap().is_empty());
+        let in_team = super::queued(&a.conn, &a.secrets, &Vault::Team(TEAM.into())).unwrap();
+        assert_eq!(in_team.len(), 1);
+        assert!(in_team[0].payload.is_none());
+        a.sync_team(&mut team, TEAM);
+        b.sync_team(&mut team, TEAM);
+        assert_eq!(b.val::<i64>("SELECT count(*) FROM hosts WHERE team_id IS NOT NULL"), 0);
+    }
+
+    #[test]
+    fn a_team_item_can_not_take_over_a_personal_row() {
+        let a = Device::new();
+        a.join(TEAM);
+        let mine = a.add_host("mine");
+        let sid = a.sid("hosts", mine);
+        let mut team = Server::default();
+        // A hostile server replays the personal host's id into the team vault
+        let mut forged = Server::default();
+        let (mut tmp, mut _p) = (Server::default(), Server::default());
+        let b = Device::new();
+        b.join(TEAM);
+        b.add_team_host(TEAM, "evil");
+        b.sync_team(&mut tmp, TEAM);
+        b.sync_with(&mut _p);
+        let evil = tmp.0.values().find_map(|(p, m)| match p {
+            Some(Payload::Host(h)) => Some((Payload::Host(h.clone()), *m)),
+            _ => None,
+        });
+        let (payload, _) = evil.unwrap();
+        forged.0.insert(sid.clone(), (Some(payload), i64::MAX / 2));
+        let applied = a.sync_team(&mut forged, TEAM);
+        assert_eq!(applied.skipped, 1);
+        assert_eq!(a.val::<String>(&format!("SELECT label FROM hosts WHERE id = {mine}")), "mine");
+        assert_eq!(a.val::<Option<String>>(&format!("SELECT team_id FROM hosts WHERE id = {mine}")), None);
+
+        // Nor can a team tombstone delete it
+        forged.0.insert(sid, (None, i64::MAX / 2));
+        a.sync_team(&mut forged, TEAM);
+        assert_eq!(a.val::<i64>(&format!("SELECT count(*) FROM hosts WHERE id = {mine}")), 1);
+
+        // A known host has no place in a team vault
+        team.0.insert(
+            "7ea70000-0000-4000-8000-0000000000aa".into(),
+            (
+                Some(Payload::KnownHost(KnownHostData {
+                    host: "db.example:22".into(),
+                    key_type: "ssh-ed25519".into(),
+                    public_key: "AAAA".into(),
+                    fingerprint: String::new(),
+                })),
+                1,
+            ),
+        );
+        assert_eq!(a.sync_team(&mut team, TEAM).skipped, 1);
+        assert_eq!(a.val::<i64>("SELECT count(*) FROM known_hosts"), 0);
+    }
+
+    #[test]
+    fn rows_can_not_point_into_another_vault() {
+        let a = Device::new();
+        a.join(TEAM);
+        let (team_host, team_cred) = a.add_team_host(TEAM, "db");
+        let personal = a.add_host("mine");
+        let refused = |sql: String| {
+            let err = a.conn.execute(&sql, []).unwrap_err().to_string();
+            assert!(err.contains("same vault"), "{sql}: {err}");
+        };
+        refused(format!("UPDATE hosts SET credential_id = {team_cred} WHERE id = {personal}"));
+        refused(format!("UPDATE hosts SET jump_host_id = {personal} WHERE id = {team_host}"));
+        refused(format!(
+            "INSERT INTO port_forwards (host_id, name, local_port, remote_host, remote_port) \
+             VALUES ({team_host}, 'pg', 5432, 'localhost', 5432)"
+        ));
+        refused(format!("INSERT INTO notes (title, body, host_id) VALUES ('n', '', {team_host})"));
+        // In the same vault it's fine
+        a.conn
+            .execute(
+                &format!(
+                    "INSERT INTO port_forwards (host_id, name, local_port, remote_host, remote_port, team_id) \
+                     VALUES ({team_host}, 'pg', 5432, 'localhost', 5432, '{TEAM}')"
+                ),
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn leaving_a_team_takes_its_rows_and_passwords_off_this_computer() {
+        let a = Device::new();
+        a.join(TEAM);
+        let (host, cred) = a.add_team_host(TEAM, "db");
+        a.secrets.set(&db::password_entry(host), "host-pw");
+        let mine = a.add_host("mine");
+        a.secrets.set(&db::password_entry(mine), "mine-pw");
+        let tx = a.conn.unchecked_transaction().unwrap();
+        let applied = forget_team(&tx, TEAM).unwrap();
+        tx.commit().unwrap();
+        applied.write_secrets(&a.secrets);
+
+        assert_eq!(a.val::<i64>("SELECT count(*) FROM hosts WHERE team_id IS NOT NULL"), 0);
+        assert_eq!(a.val::<i64>("SELECT count(*) FROM credentials"), 0);
+        assert_eq!(a.val::<i64>("SELECT count(*) FROM teams"), 0);
+        assert_eq!(a.val::<i64>("SELECT count(*) FROM sync_outbox WHERE team_id IS NOT NULL"), 0);
+        assert_eq!(a.secrets.get(&db::password_entry(host)), None);
+        assert_eq!(a.secrets.get(&db::cred_password_entry(cred)), None);
+        assert_eq!(a.secrets.get(&db::password_entry(mine)).as_deref(), Some("mine-pw"), "personal ones stay");
+        assert_eq!(a.val::<i64>(&format!("SELECT count(*) FROM hosts WHERE id = {mine}")), 1);
     }
 
     /// Device A with one of everything, related the way the app relates them
@@ -1343,7 +1656,7 @@ mod tests {
             )
             .unwrap();
         a.conn
-            .execute("INSERT INTO sync_outbox SELECT sync_id, 'snippet', 0, modified_at FROM snippets", [])
+            .execute("INSERT INTO sync_outbox SELECT sync_id, 'snippet', 0, modified_at, NULL FROM snippets", [])
             .unwrap();
         a.sync_with(&mut server);
         b.sync_with(&mut server);

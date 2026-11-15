@@ -156,6 +156,13 @@ TeamState { key per epoch, role, cursor }>`.
 
 ## Risks
 
+- **A lost account key.** After a personal vault reset, the server's copy of
+  the account key is sealed under the old vault key. Any computer of the
+  account that still holds the key seals it again (`reseal_account_key`). If
+  none does, the account can't open its teams; it needs a new account key and
+  a fresh invite (not built yet: `put_account_key` never replaces a key).
+- **Team ids are chosen by the app**, because the creator's key copy is
+  sealed with the team id in its associated data (`create_team(team_id, …)`).
 - **Rotation of a large team** rewrites every item; done in pages, resumable
   by epoch (items with an old epoch are the ones left to rewrite).
 - **Server cost**: team data lives on the same Supabase project as personal

@@ -14,18 +14,18 @@
     project, then applied with `supabase db query --linked -f`.
   - _Requirements: 2.1, 2.5, 3.1–3.4, 5.1, 7.1_
 
-- [ ] 3. API client
+- [x] 3. API client
   - `cloud/api.rs`: account key, team, invite, member, item and rotation calls,
     with the existing error mapping.
   - _Requirements: 1, 2, 5, 6_
 
-- [ ] 4. Local schema v5
+- [x] 4. Local schema v5
   - `teams` table, `team_id` on synced tables and on `sync_outbox`, triggers
     that carry it, cross-vault relation checks in the db writers.
   - Migration test from a v4 database.
   - _Requirements: 4.3, 6.1_
 
-- [ ] 5. Sync per vault
+- [x] 5. Sync per vault
   - `items.rs`: a `Vault` parameter for `queued`, `apply`, `queue_all`.
   - `engine.rs`: account key on unlock, membership refresh, team pull/push,
     leaving a team cleans up locally.
