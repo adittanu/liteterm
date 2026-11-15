@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { api } from '../services/api'
 import { useUiStore } from './ui'
 import { errorText } from './sessions'
+import { useTeamsStore } from './teams'
 import { extractTags } from '../utils/tags'
 import type { Note } from '../types'
 
@@ -39,7 +40,8 @@ export const useNotesStore = defineStore('notes', () => {
     for (const n of notes.value) {
       persistedTags.set(n.id, tagsKey(n.tags))
       const tags = extractTags(n.body)
-      if (tagsKey(tags) !== tagsKey(n.tags)) {
+      // A team note this account only views keeps what the team has
+      if (tagsKey(tags) !== tagsKey(n.tags) && useTeamsStore().canEdit(n.team_id)) {
         n.tags = tags
         void api
           .setNoteTags(n.id, tags)
@@ -49,8 +51,9 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
-  async function create(title = '', body = ''): Promise<Note> {
-    let note = await api.createNote(title, body)
+  /** `teamId` is the vault the note goes in (null: personal) */
+  async function create(title = '', body = '', teamId: string | null = null): Promise<Note> {
+    let note = await api.createNote(title, body, teamId)
     const tags = extractTags(body)
     if (tags.length) {
       try {
@@ -225,7 +228,7 @@ export const useNotesStore = defineStore('notes', () => {
       if (restoring) return
       restoring = true
       void api
-        .createNote(note.title, note.body)
+        .createNote(note.title, note.body, note.team_id)
         .then(async (restored) => {
           if (note.tags.length) await api.setNoteTags(restored.id, note.tags)
           restored.tags = note.tags

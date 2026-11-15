@@ -3,6 +3,7 @@ use std::path::Path;
 
 use super::models::*;
 use super::sync;
+use super::vaults::WRITABLE;
 
 pub fn open_db(app_data_dir: &Path) -> Result<Connection, rusqlite::Error> {
     std::fs::create_dir_all(app_data_dir).ok();
@@ -219,6 +220,7 @@ fn row_to_host(row: &rusqlite::Row) -> rusqlite::Result<Host> {
         agent_forwarding: row.get::<_, i64>(16)? != 0,
         protocol: row.get(17)?,
         baud_rate: row.get(18)?,
+        team_id: row.get(19)?,
     })
 }
 
@@ -230,7 +232,7 @@ const HOST_COLS: &str = "h.id, h.group_id, h.label, h.address, h.port, \
     COALESCE(c.username, h.username), COALESCE(c.auth_method, h.auth_method), \
     h.password_saved, CASE WHEN c.id IS NULL THEN h.key_path ELSE c.key_path END, \
     h.sort, h.credential_id, c.name, h.os, h.last_used_at, h.jump_host_id, h.startup_command, h.agent_forwarding, \
-    h.protocol, h.baud_rate";
+    h.protocol, h.baud_rate, h.team_id";
 
 pub fn list_hosts(conn: &Connection) -> Result<Vec<Host>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
@@ -275,9 +277,10 @@ pub fn get_host(conn: &Connection, id: i64) -> Result<Option<Host>, rusqlite::Er
 pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlite::Error> {
     let save_pw = input.save_password.unwrap_or(false);
 
-    // Optionally create a reusable credential from the inline fields
+    // Optionally create a reusable credential from the inline fields, in the
+    // host's vault
     let created_credential_id = match &input.create_credential {
-        Some(cred_input) => Some(upsert_credential(conn, None, cred_input)?.id),
+        Some(cred_input) => Some(upsert_credential_in(conn, None, cred_input, input.team_id.as_deref())?.id),
         None => None,
     };
     let credential_id = created_credential_id.or(input.credential_id);
@@ -319,8 +322,8 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
         }
         None => {
             conn.execute(
-                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id, startup_command, agent_forwarding, protocol, baud_rate) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                "INSERT INTO hosts (group_id, label, address, port, username, auth_method, password_saved, key_path, credential_id, jump_host_id, startup_command, agent_forwarding, protocol, baud_rate, team_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     input.group_id,
                     input.label,
@@ -336,6 +339,7 @@ pub fn upsert_host(conn: &Connection, input: &HostInput) -> Result<Host, rusqlit
                     input.agent_forwarding.unwrap_or(false),
                     input.protocol.as_deref().unwrap_or("ssh"),
                     input.baud_rate,
+                    input.team_id,
                 ],
             )?;
             conn.last_insert_rowid()
@@ -476,29 +480,29 @@ pub fn set_host_jump(conn: &Connection, id: i64, jump_host_id: Option<i64>) -> R
 
 // ---------- groups ----------
 
+fn row_to_group(row: &rusqlite::Row) -> rusqlite::Result<HostGroup> {
+    Ok(HostGroup { id: row.get(0)?, name: row.get(1)?, sort: row.get(2)?, team_id: row.get(3)? })
+}
+
 pub fn list_groups(conn: &Connection) -> Result<Vec<HostGroup>, rusqlite::Error> {
-    let mut stmt = conn.prepare("SELECT id, name, sort FROM groups ORDER BY sort, name COLLATE NOCASE")?;
-    let rows = stmt.query_map([], |row| {
-        Ok(HostGroup { id: row.get(0)?, name: row.get(1)?, sort: row.get(2)? })
-    })?;
+    let mut stmt = conn.prepare("SELECT id, name, sort, team_id FROM groups ORDER BY sort, name COLLATE NOCASE")?;
+    let rows = stmt.query_map([], row_to_group)?;
     rows.collect()
 }
 
-pub fn upsert_group(conn: &Connection, id: Option<i64>, name: &str) -> Result<HostGroup, rusqlite::Error> {
+/// `team_id` is the vault a new group goes in; an update leaves it
+pub fn upsert_group(conn: &Connection, id: Option<i64>, name: &str, team_id: Option<&str>) -> Result<HostGroup, rusqlite::Error> {
     let id = match id {
         Some(id) => {
             conn.execute("UPDATE groups SET name=?2 WHERE id=?1", params![id, name])?;
             id
         }
         None => {
-            conn.execute("INSERT INTO groups (name) VALUES (?1)", params![name])?;
+            conn.execute("INSERT INTO groups (name, team_id) VALUES (?1, ?2)", params![name, team_id])?;
             conn.last_insert_rowid()
         }
     };
-    let mut stmt = conn.prepare("SELECT id, name, sort FROM groups WHERE id=?1")?;
-    stmt.query_row(params![id], |row| {
-        Ok(HostGroup { id: row.get(0)?, name: row.get(1)?, sort: row.get(2)? })
-    })
+    conn.query_row("SELECT id, name, sort, team_id FROM groups WHERE id=?1", params![id], row_to_group)
 }
 
 pub fn delete_group(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
@@ -508,7 +512,7 @@ pub fn delete_group(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
 
 // ---------- credentials ----------
 
-const CRED_COLS: &str = "id, name, username, auth_method, password_saved, key_path";
+const CRED_COLS: &str = "id, name, username, auth_method, password_saved, key_path, team_id";
 
 fn row_to_credential(row: &rusqlite::Row) -> rusqlite::Result<Credential> {
     Ok(Credential {
@@ -519,6 +523,7 @@ fn row_to_credential(row: &rusqlite::Row) -> rusqlite::Result<Credential> {
         password_saved: row.get::<_, i64>(4)? != 0,
         has_password: false, // filled by caller via keyring check
         key_path: row.get(5)?,
+        team_id: row.get(6)?,
     })
 }
 
@@ -551,6 +556,16 @@ pub fn upsert_credential(
     id: Option<i64>,
     input: &CredentialInput,
 ) -> Result<Credential, rusqlite::Error> {
+    upsert_credential_in(conn, id, input, input.team_id.as_deref())
+}
+
+/// As [`upsert_credential`], a new one going in `team_id`'s vault
+fn upsert_credential_in(
+    conn: &Connection,
+    id: Option<i64>,
+    input: &CredentialInput,
+    team_id: Option<&str>,
+) -> Result<Credential, rusqlite::Error> {
     let save_pw = input.save_password.unwrap_or(false);
     let id = match id {
         Some(id) => {
@@ -570,14 +585,15 @@ pub fn upsert_credential(
         }
         None => {
             conn.execute(
-                "INSERT INTO credentials (name, username, auth_method, password_saved, key_path) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO credentials (name, username, auth_method, password_saved, key_path, team_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     input.name.trim(),
                     input.username.trim(),
                     input.auth_method,
                     save_pw as i64,
                     input.key_path,
+                    team_id,
                 ],
             )?;
             conn.last_insert_rowid()
@@ -616,29 +632,39 @@ pub fn delete_credential(conn: &Connection, id: i64) -> Result<(), rusqlite::Err
 
 // ---------- snippets ----------
 
+fn row_to_snippet(row: &rusqlite::Row) -> rusqlite::Result<Snippet> {
+    Ok(Snippet { id: row.get(0)?, name: row.get(1)?, command: row.get(2)?, sort: row.get(3)?, team_id: row.get(4)? })
+}
+
 pub fn list_snippets(conn: &Connection) -> Result<Vec<Snippet>, rusqlite::Error> {
-    let mut stmt = conn.prepare("SELECT id, name, command, sort FROM snippets ORDER BY sort, name COLLATE NOCASE")?;
-    let rows = stmt.query_map([], |row| {
-        Ok(Snippet { id: row.get(0)?, name: row.get(1)?, command: row.get(2)?, sort: row.get(3)? })
-    })?;
+    let mut stmt =
+        conn.prepare("SELECT id, name, command, sort, team_id FROM snippets ORDER BY sort, name COLLATE NOCASE")?;
+    let rows = stmt.query_map([], row_to_snippet)?;
     rows.collect()
 }
 
-pub fn upsert_snippet(conn: &Connection, id: Option<i64>, name: &str, command: &str) -> Result<Snippet, rusqlite::Error> {
+/// `team_id` is the vault a new snippet goes in; an update leaves it
+pub fn upsert_snippet(
+    conn: &Connection,
+    id: Option<i64>,
+    name: &str,
+    command: &str,
+    team_id: Option<&str>,
+) -> Result<Snippet, rusqlite::Error> {
     let id = match id {
         Some(id) => {
             conn.execute("UPDATE snippets SET name=?2, command=?3 WHERE id=?1", params![id, name, command])?;
             id
         }
         None => {
-            conn.execute("INSERT INTO snippets (name, command) VALUES (?1, ?2)", params![name, command])?;
+            conn.execute(
+                "INSERT INTO snippets (name, command, team_id) VALUES (?1, ?2, ?3)",
+                params![name, command, team_id],
+            )?;
             conn.last_insert_rowid()
         }
     };
-    let mut stmt = conn.prepare("SELECT id, name, command, sort FROM snippets WHERE id=?1")?;
-    stmt.query_row(params![id], |row| {
-        Ok(Snippet { id: row.get(0)?, name: row.get(1)?, command: row.get(2)?, sort: row.get(3)? })
-    })
+    conn.query_row("SELECT id, name, command, sort, team_id FROM snippets WHERE id=?1", params![id], row_to_snippet)
 }
 
 pub fn delete_snippet(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
@@ -648,7 +674,7 @@ pub fn delete_snippet(conn: &Connection, id: i64) -> Result<(), rusqlite::Error>
 
 // ---------- notes ----------
 
-const NOTE_COLS: &str = "id, title, body, pinned, tags, created_at, updated_at, host_id, sort, archived";
+const NOTE_COLS: &str = "id, title, body, pinned, tags, created_at, updated_at, host_id, sort, archived, team_id";
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
     let tags_json: String = row.get(4)?;
@@ -663,6 +689,7 @@ fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
         host_id: row.get(7)?,
         sort: row.get(8)?,
         archived: row.get::<_, i64>(9)? != 0,
+        team_id: row.get(10)?,
     })
 }
 
@@ -681,21 +708,27 @@ pub fn get_note(conn: &Connection, id: i64) -> Result<Option<Note>, rusqlite::Er
     rows.next().transpose()
 }
 
-/// New notes land at the top of the manual order.
-pub fn create_note(conn: &Connection, title: &str, body: &str) -> Result<Note, rusqlite::Error> {
+/// New notes land at the top of the manual order, in `team_id`'s vault.
+pub fn create_note(conn: &Connection, title: &str, body: &str, team_id: Option<&str>) -> Result<Note, rusqlite::Error> {
     conn.execute(
-        "INSERT INTO notes (title, body, sort) VALUES (?1, ?2, (SELECT COALESCE(MIN(sort), 0) - 1 FROM notes))",
-        params![title, body],
+        "INSERT INTO notes (title, body, sort, team_id) \
+         VALUES (?1, ?2, (SELECT COALESCE(MIN(sort), 0) - 1 FROM notes), ?3)",
+        params![title, body, team_id],
     )?;
     get_note(conn, conn.last_insert_rowid())?.ok_or(rusqlite::Error::QueryReturnedNoRows)
 }
 
 /// `ids` is every note, top to bottom; each note's sort becomes its index.
 /// One transaction, so an interrupted save can't leave a half-moved list.
+/// Notes of a team this account only views keep theirs: the change would
+/// never reach the team.
 pub fn reorder_notes(conn: &Connection, ids: &[i64]) -> Result<(), rusqlite::Error> {
     let tx = conn.unchecked_transaction()?;
     for (i, id) in ids.iter().enumerate() {
-        tx.execute("UPDATE notes SET sort=?2 WHERE id=?1", params![id, i as i64])?;
+        tx.execute(
+            &format!("UPDATE notes SET sort=?2 WHERE id=?1 AND {WRITABLE}"),
+            params![id, i as i64],
+        )?;
     }
     tx.commit()
 }
@@ -740,7 +773,7 @@ pub fn delete_note(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
 
 // ---------- port forwards ----------
 
-const FORWARD_COLS: &str = "id, host_id, name, local_port, remote_host, remote_port, auto_start, kind";
+const FORWARD_COLS: &str = "id, host_id, name, local_port, remote_host, remote_port, auto_start, kind, team_id";
 
 fn row_to_forward(row: &rusqlite::Row) -> rusqlite::Result<PortForward> {
     Ok(PortForward {
@@ -752,6 +785,7 @@ fn row_to_forward(row: &rusqlite::Row) -> rusqlite::Result<PortForward> {
         remote_port: row.get(5)?,
         auto_start: row.get::<_, i64>(6)? != 0,
         kind: row.get(7)?,
+        team_id: row.get(8)?,
     })
 }
 
@@ -791,9 +825,10 @@ pub fn upsert_forward(
             id
         }
         None => {
+            // A forward is in its host's vault
             conn.execute(
-                "INSERT INTO port_forwards (host_id, name, local_port, remote_host, remote_port, auto_start, kind) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO port_forwards (host_id, name, local_port, remote_host, remote_port, auto_start, kind, team_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT team_id FROM hosts WHERE id = ?1))",
                 params![host_id, name, local_port, remote_host, remote_port, auto_start as i64, kind],
             )?;
             conn.last_insert_rowid()

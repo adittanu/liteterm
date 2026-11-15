@@ -31,12 +31,15 @@ export const useDialogsStore = defineStore('dialogs', () => {
     groupId: number | null
     prefill: HostPrefill | null
     connectAfter: boolean
+    /** The vault a new host starts in (null: personal) */
+    teamId: string | null
   }>({
     open: false,
     host: null,
     groupId: null,
     prefill: null,
     connectAfter: false,
+    teamId: null,
   })
 
   function openHostDialog(
@@ -44,24 +47,27 @@ export const useDialogsStore = defineStore('dialogs', () => {
     groupId: number | null = null,
     prefill: HostPrefill | null = null,
     connectAfter = false,
+    teamId: string | null = null,
   ) {
-    hostDialog.value = { open: true, host, groupId, prefill, connectAfter }
+    hostDialog.value = { open: true, host, groupId, prefill, connectAfter, teamId }
   }
   function closeHostDialog() {
-    hostDialog.value = { open: false, host: null, groupId: null, prefill: null, connectAfter: false }
+    hostDialog.value = { open: false, host: null, groupId: null, prefill: null, connectAfter: false, teamId: null }
   }
 
   // Group create/rename
-  const groupDialog = ref<{ open: boolean; group: HostGroup | null }>({
+  const groupDialog = ref<{ open: boolean; group: HostGroup | null; teamId: string | null }>({
     open: false,
     group: null,
+    teamId: null,
   })
 
-  function openGroupDialog(group: HostGroup | null = null) {
-    groupDialog.value = { open: true, group }
+  /** `teamId` is the vault a new group starts in (null: personal) */
+  function openGroupDialog(group: HostGroup | null = null, teamId: string | null = null) {
+    groupDialog.value = { open: true, group, teamId }
   }
   function closeGroupDialog() {
-    groupDialog.value = { open: false, group: null }
+    groupDialog.value = { open: false, group: null, teamId: null }
   }
 
   // Confirm (destructive only). resolve(true) only on explicit confirm.

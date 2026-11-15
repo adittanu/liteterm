@@ -425,10 +425,10 @@ mod tests {
     #[test]
     fn every_local_insert_gets_an_identity_and_is_queued() {
         let conn = open();
-        let group = db::upsert_group(&conn, None, "prod").unwrap().id;
+        let group = db::upsert_group(&conn, None, "prod", None).unwrap().id;
         let host = add_host(&conn, "web");
-        let snippet = db::upsert_snippet(&conn, None, "df", "df -h").unwrap().id;
-        let note = db::create_note(&conn, "t", "b").unwrap().id;
+        let snippet = db::upsert_snippet(&conn, None, "df", "df -h", None).unwrap().id;
+        let note = db::create_note(&conn, "t", "b", None).unwrap().id;
         let fwd = db::upsert_forward(&conn, None, host, "pg", "local", 5432, "localhost", 5432, false)
             .unwrap()
             .id;
@@ -486,7 +486,7 @@ mod tests {
         assert_eq!(queued(&conn, &sync_id), Some(("host".into(), false, edited)));
 
         // NULL -> value counts as a change
-        let group = db::upsert_group(&conn, None, "prod").unwrap().id;
+        let group = db::upsert_group(&conn, None, "prod", None).unwrap().id;
         conn.execute("UPDATE hosts SET group_id = ?2 WHERE id = ?1", params![host, group])
             .unwrap();
         assert!(stamp(&conn, "hosts", host).1 > edited);
@@ -496,9 +496,9 @@ mod tests {
     fn reordering_notes_queues_only_the_ones_that_moved() {
         let conn = open();
         // create_note puts each new note on top: c, b, a
-        let a = db::create_note(&conn, "a", "").unwrap().id;
-        let b = db::create_note(&conn, "b", "").unwrap().id;
-        let c = db::create_note(&conn, "c", "").unwrap().id;
+        let a = db::create_note(&conn, "a", "", None).unwrap().id;
+        let b = db::create_note(&conn, "b", "", None).unwrap().id;
+        let c = db::create_note(&conn, "c", "", None).unwrap().id;
         db::reorder_notes(&conn, &[c, b, a]).unwrap();
         clear_outbox(&conn);
 
@@ -516,14 +516,14 @@ mod tests {
     #[test]
     fn deletes_leave_tombstones_including_cascades() {
         let conn = open();
-        let group = db::upsert_group(&conn, None, "prod").unwrap().id;
+        let group = db::upsert_group(&conn, None, "prod", None).unwrap().id;
         let host = add_host(&conn, "web");
         conn.execute("UPDATE hosts SET group_id = ?2 WHERE id = ?1", params![host, group])
             .unwrap();
         let fwd = db::upsert_forward(&conn, None, host, "pg", "local", 5432, "localhost", 5432, false)
             .unwrap()
             .id;
-        let note = db::create_note(&conn, "runbook", "").unwrap().id;
+        let note = db::create_note(&conn, "runbook", "", None).unwrap().id;
         db::set_note_host(&conn, note, Some(host)).unwrap();
         let (host_sid, host_mod) = stamp(&conn, "hosts", host);
         let (fwd_sid, _) = stamp(&conn, "port_forwards", fwd);
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn a_tombstone_for_a_row_still_queued_replaces_the_edit() {
         let conn = open();
-        let snippet = db::upsert_snippet(&conn, None, "df", "df -h").unwrap().id;
+        let snippet = db::upsert_snippet(&conn, None, "df", "df -h", None).unwrap().id;
         let (sid, _) = stamp(&conn, "snippets", snippet);
         db::delete_snippet(&conn, snippet).unwrap();
         assert_eq!(queued(&conn, &sid).map(|q| q.1), Some(true));

@@ -13,6 +13,8 @@ import InstallKeyDialog from '../components/InstallKeyDialog.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
 import PvText from '../components/PvText.vue'
+import VaultChip from '../components/VaultChip.vue'
+import { useTeamsStore } from '../stores/teams'
 import { api } from '../services/api'
 import { copyText, matchesQuery, plural } from '../utils/pageHelpers'
 import type { KeySource } from '../utils/installKey'
@@ -22,6 +24,7 @@ import type { Credential } from '../types'
 const credentials = useCredentialsStore()
 const hosts = useHostsStore()
 const dialogs = useDialogsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 const pv = usePrivacyStore()
 
@@ -68,11 +71,14 @@ function openNew() {
 }
 
 function openEdit(cred: Credential) {
+  // A team credential this account only views can't be changed here
+  if (!teams.canEdit(cred.team_id)) return
   editing.value = cred
   editorOpen.value = true
 }
 
 function openMenu(cred: Credential, e: MouseEvent) {
+  const readOnly = !teams.canEdit(cred.team_id)
   const keyItems: MenuItem[] =
     cred.auth_method === 'key' && cred.key_path
       ? [
@@ -84,9 +90,9 @@ function openMenu(cred: Credential, e: MouseEvent) {
     x: e.clientX,
     y: e.clientY,
     items: [
-      { label: 'Edit', icon: Pencil, action: () => openEdit(cred) },
+      { label: 'Edit', icon: Pencil, disabled: readOnly, action: () => openEdit(cred) },
       ...keyItems,
-      { label: 'Delete', icon: Trash2, danger: true, action: () => void remove(cred) },
+      { label: 'Delete', icon: Trash2, danger: true, disabled: readOnly, action: () => void remove(cred) },
     ],
   }
 }
@@ -224,6 +230,7 @@ async function remove(cred: Credential) {
               <span v-if="cred.auth_method === 'key'" class="mono pv">{{ secretState(cred).label }}</span>
               <template v-else>{{ secretState(cred).label }}</template>
             </span>
+            <VaultChip :team-id="cred.team_id" />
             <span class="cred-usage" :class="{ unused: !usedBy(cred) }">
               {{ usedBy(cred) ? `Used by ${plural(usedBy(cred), 'host')}` : 'Not in use' }}
             </span>

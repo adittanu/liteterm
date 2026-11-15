@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import BaseModal from './BaseModal.vue'
+import VaultField from './VaultField.vue'
 import { useSnippetsStore } from '../stores/extras'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
@@ -15,6 +16,8 @@ const ui = useUiStore()
 
 const name = ref(props.snippet?.name ?? '')
 const command = ref(props.snippet?.command ?? '')
+// The vault a new snippet goes in; an existing one stays where it is
+const teamId = ref<string | null>(null)
 const submitted = ref(false)
 const saving = ref(false)
 const commandEl = ref<HTMLTextAreaElement | null>(null)
@@ -32,7 +35,7 @@ async function save() {
   if (commandError.value || saving.value) return
   saving.value = true
   try {
-    await snippets.save(name.value.trim() || derivedName.value, command.value.replace(/\s+$/, ''), props.snippet?.id ?? null)
+    await snippets.save(name.value.trim() || derivedName.value, command.value.replace(/\s+$/, ''), props.snippet?.id ?? null, teamId.value)
     emit('close')
   } catch (e) {
     ui.toast('error', `Could not save: ${errorText(e)}`)
@@ -81,6 +84,8 @@ onMounted(() => nextTick(() => commandEl.value?.focus()))
           @keydown.ctrl.enter.prevent="save"
         />
       </div>
+
+      <VaultField v-if="!snippet" id="sn-vault" v-model="teamId" />
 
       <footer class="form-actions">
         <button type="button" class="btn btn-ghost" @click="emit('close')">Cancel</button>

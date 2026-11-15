@@ -11,6 +11,8 @@ import ForwardDialog from '../components/ForwardDialog.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
 import PvText from '../components/PvText.vue'
+import VaultChip from '../components/VaultChip.vue'
+import { useTeamsStore } from '../stores/teams'
 import { copyText, matchesQuery } from '../utils/pageHelpers'
 import { waitForConnection } from '../utils/sessionWait'
 import { thisComputerLower } from '../utils/platform'
@@ -21,6 +23,7 @@ const forwards = useForwardsStore()
 const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 const pv = usePrivacyStore()
 
@@ -127,22 +130,25 @@ function openNew() {
 }
 
 function openEdit(f: PortForward) {
+  // A team forward this account only views can be started, not changed
+  if (!teams.canEdit(f.team_id)) return
   editing.value = f
   editorOpen.value = true
 }
 
 function openMenu(f: PortForward, e: MouseEvent) {
+  const readOnly = !teams.canEdit(f.team_id)
   menu.value = {
     x: e.clientX,
     y: e.clientY,
     items: [
-      { label: 'Edit', icon: Pencil, action: () => openEdit(f) },
+      { label: 'Edit', icon: Pencil, disabled: readOnly, action: () => openEdit(f) },
       {
         label: f.kind === 'remote' ? 'Copy server address' : 'Copy local address',
         icon: Copy,
         action: () => copyAddress(f),
       },
-      { label: 'Delete', icon: Trash2, danger: true, action: () => void remove(f) },
+      { label: 'Delete', icon: Trash2, danger: true, disabled: readOnly, action: () => void remove(f) },
     ],
   }
 }
@@ -258,6 +264,7 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
               <span class="text-ellipsis"><PvText :text="f.name" /></span>
               <span v-if="f.kind !== 'local'" class="chip" :title="FORWARD_KINDS.find((k) => k.kind === f.kind)?.hint">{{ kindLabel(f) }}</span>
               <span v-if="f.auto_start" class="chip" title="Starts whenever the host connects">Auto</span>
+              <VaultChip :team-id="f.team_id" />
             </span>
             <span v-if="f.kind === 'remote'" class="fwd-route mono">
               <span class="fwd-local"><PvText :text="hostLabel(f.host_id)" />:{{ f.remote_port }}</span>

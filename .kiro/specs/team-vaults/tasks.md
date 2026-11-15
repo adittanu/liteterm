@@ -37,7 +37,7 @@
     delete. Rotation on removal, with the "change these passwords" list.
   - _Requirements: 1, 2, 3, 5_
 
-- [ ] 7. Team items in the app
+- [x] 7. Team items in the app
   - Team sections in the hosts view, "Move to team…", vault-aware pickers,
     read-only state for viewers.
   - _Requirements: 4.1–4.6_

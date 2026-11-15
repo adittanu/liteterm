@@ -6,6 +6,7 @@ export interface HostGroup {
   id: number
   name: string
   sort: number
+  team_id: string | null // the team vault it's in; null = personal
 }
 
 export interface Host {
@@ -29,6 +30,7 @@ export interface Host {
   agent_forwarding: boolean // ssh -A: the server may use this computer's agent
   protocol: HostProtocol
   baud_rate: number | null // serial hosts; their device (COM3, /dev/ttyUSB0) is `address`
+  team_id: string | null // the team vault it's in; null = personal
 }
 
 export type HostProtocol = 'ssh' | 'telnet' | 'serial'
@@ -62,6 +64,9 @@ export interface HostInput {
   // Optional the same way; when protocol is sent, baud_rate is written with it
   protocol?: HostProtocol
   baud_rate?: number | null
+  // The vault a new host (and the credential it creates) goes in; null =
+  // personal. Ignored on an update: moving is its own call.
+  team_id?: string | null
 }
 
 export interface Credential {
@@ -72,6 +77,7 @@ export interface Credential {
   password_saved: boolean
   has_password: boolean
   key_path: string | null
+  team_id: string | null
 }
 
 export interface CredentialInput {
@@ -82,6 +88,7 @@ export interface CredentialInput {
   save_password?: boolean
   key_path?: string | null
   key_passphrase?: string | null
+  team_id?: string | null // the vault a new credential goes in; ignored on an update
 }
 
 export interface KeyDefaults {
@@ -101,6 +108,7 @@ export interface Snippet {
   name: string
   command: string
   sort: number
+  team_id: string | null
 }
 
 export interface Note {
@@ -114,6 +122,7 @@ export interface Note {
   host_id: number | null // host this note belongs to
   sort: number // position in the manual order (lower = higher)
   archived: boolean // hidden from All Notes; listed under Archive
+  team_id: string | null
 }
 
 /**
@@ -132,6 +141,7 @@ export interface PortForward {
   remote_host: string
   remote_port: number
   auto_start: boolean
+  team_id: string | null // always its host's vault
 }
 
 export type SessionStatus =
@@ -355,4 +365,13 @@ export interface PendingView {
 export interface TeamDetail {
   members: MemberView[]
   pending: PendingView[]
+}
+
+/** What moving hosts to another vault did */
+export interface MoveResult {
+  hosts: number
+  /** Credentials copied rather than moved: hosts left behind still use them */
+  credentialsCopied: string[]
+  /** Moved hosts whose jump host stayed behind; they now connect directly */
+  jumpsCleared: string[]
 }

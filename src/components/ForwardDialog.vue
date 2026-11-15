@@ -6,6 +6,7 @@ import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import PvText from './PvText.vue'
 import { useForwardsStore } from '../stores/extras'
 import { useHostsStore } from '../stores/hosts'
+import { useTeamsStore } from '../stores/teams'
 import { useUiStore } from '../stores/ui'
 import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
@@ -19,6 +20,7 @@ const emit = defineEmits<{ close: [] }>()
 
 const forwards = useForwardsStore()
 const hosts = useHostsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 const pv = usePrivacyStore()
 
@@ -30,7 +32,7 @@ const kind = ref<ForwardKind>(f?.kind ?? 'local')
 // dynamic: local_port only.
 const form = reactive({
   name: f?.name ?? '',
-  host_id: f?.host_id ?? hosts.hosts.find(isSsh)?.id ?? 0,
+  host_id: f?.host_id ?? hosts.hosts.find((h) => isSsh(h) && teams.canEdit(h.team_id))?.id ?? 0,
   local_port: f ? String(f.local_port) : '',
   remote_host: f?.remote_host || 'localhost',
   remote_port: f && f.kind !== 'dynamic' ? String(f.remote_port) : '',
@@ -43,8 +45,12 @@ const submitted = ref(false)
 const saving = ref(false)
 
 const hostOptions = computed<ComboOption[]>(() =>
-  // Tunnels ride on SSH; a Telnet or serial host can't carry one
-  hosts.hosts.filter(isSsh).map((h) => ({ value: h.id, label: h.label, hint: h.address })),
+  // Tunnels ride on SSH; a Telnet or serial host can't carry one. A forward
+  // is in its host's vault: an existing one keeps to its vault, and a team
+  // this account only views gets no new ones.
+  hosts.hosts
+    .filter((h) => isSsh(h) && (f ? h.team_id === f.team_id : teams.canEdit(h.team_id)))
+    .map((h) => ({ value: h.id, label: h.label, hint: h.address })),
 )
 const hostLabel = computed(() => hosts.hostById(form.host_id)?.label ?? 'host')
 const kindInfo = computed(() => FORWARD_KINDS.find((k) => k.kind === kind.value)!)

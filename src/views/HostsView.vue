@@ -20,6 +20,7 @@ import {
   SquareTerminal,
   Trash2,
   Upload,
+  Users,
   X,
 } from 'lucide-vue-next'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
@@ -30,18 +31,21 @@ import { useHostsStore } from '../stores/hosts'
 import { usePrivacyStore } from '../stores/privacy'
 import { useSessionsStore, errorText } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
+import { useTeamsStore } from '../stores/teams'
 import { useUiStore } from '../stores/ui'
 import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
 import { fuzzy, highlight } from '../utils/fuzzy'
 import { copyText, plural, relativeAge } from '../utils/pageHelpers'
 import { hostTarget, isSsh, protocolOf } from '../utils/hostProtocol'
+import { groupMoveItems, hostMoveItems } from '../utils/vaultMoves'
 import { comboFor, comboText } from '../services/shortcuts'
 import type { Host, HostGroup } from '../types'
 
 const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 const pv = usePrivacyStore()
 
@@ -170,7 +174,6 @@ const rows = computed<Row[]>(() => {
 const showActiveSection = computed(() => !searching.value && rows.value.some((r) => r.status !== 'idle'))
 const activeRows = computed(() => (showActiveSection.value ? rows.value.filter((r) => r.status !== 'idle') : []))
 const restRows = computed(() => (showActiveSection.value ? rows.value.filter((r) => r.status === 'idle') : rows.value))
-const ordered = computed(() => [...activeRows.value, ...restRows.value])
 
 const sectionTitle = computed(() => {
   if (searching.value) return 'Matching hosts'
@@ -178,6 +181,55 @@ const sectionTitle = computed(() => {
   if (groupFilter.value === 'ungrouped') return 'Ungrouped'
   return showActiveSection.value ? 'All hosts' : 'Hosts'
 })
+
+// ---- vaults: a section per team, after the personal hosts ----
+
+interface Section {
+  key: string
+  title: string
+  rows: Row[]
+  /** undefined: not a vault's section (Active, or the only one) */
+  teamId?: string | null
+}
+
+/** Teams this computer is in, and any a host still names (before the list loads) */
+const teamIds = computed(() => {
+  const ids = new Set(teams.list.map((t) => t.id))
+  for (const h of hosts.hosts) if (h.team_id) ids.add(h.team_id)
+  return [...ids]
+})
+
+const sections = computed<Section[]>(() => {
+  const out: Section[] = []
+  if (showActiveSection.value) out.push({ key: 'active', title: 'Active', rows: activeRows.value })
+  if (!teamIds.value.length) {
+    out.push({ key: 'rest', title: sectionTitle.value, rows: restRows.value })
+    return out
+  }
+  // Empty teams show too, as somewhere to add to, unless a filter is on
+  const everything = groupFilter.value === 'all' && !searching.value
+  out.push({ key: 'personal', title: everything ? 'Personal' : sectionTitle.value, rows: restRows.value.filter((r) => r.host.team_id === null), teamId: null })
+  for (const id of teamIds.value) {
+    const teamRows = restRows.value.filter((r) => r.host.team_id === id)
+    if (teamRows.length || everything) {
+      const name = teams.teamName(id)
+      out.push({ key: id, title: everything ? name : `${name} · ${sectionTitle.value}`, rows: teamRows, teamId: id })
+    }
+  }
+  return out
+})
+
+const ordered = computed(() => sections.value.flatMap((s) => s.rows))
+const orderIndex = computed(() => new Map(ordered.value.map((r, i) => [r.host.id, i])))
+
+const canEdit = (h: Host | HostGroup) => teams.canEdit(h.team_id)
+
+// Group chips: personal groups first, then each team's
+const orderedGroups = computed(() =>
+  [...hosts.groups].sort(
+    (a, b) => Number(a.team_id !== null) - Number(b.team_id !== null) || (a.team_id ?? '').localeCompare(b.team_id ?? ''),
+  ),
+)
 
 const selectedHost = computed(() => hosts.hosts.find((h) => h.id === selectedId.value) ?? null)
 
@@ -213,6 +265,7 @@ async function duplicate(h: Host) {
       protocol: protocolOf(h),
       baud_rate: h.baud_rate,
       save_password: false,
+      team_id: h.team_id,
     })
     selectedId.value = copy.id
     ui.toast('success', `Duplicated “${h.label}”${h.has_password && !h.credential_id ? ' — the password isn’t copied' : ''}`)
@@ -222,6 +275,7 @@ async function duplicate(h: Host) {
 }
 
 async function removeHost(host: Host) {
+  if (!canEdit(host)) return
   const ok = await dialogs.confirm({
     title: `Delete “${host.label}”?`,
     message: 'The saved connection is removed. Open sessions stay open.',
@@ -262,14 +316,15 @@ function openQuickAdd() {
 function hostMenu(host: Host, e: MouseEvent) {
   selectedId.value = host.id
   const live = statusFor(host.id) === 'connected'
+  const readOnly = !canEdit(host)
   menu.value = {
     x: e.clientX,
     y: e.clientY,
     items: [
       { label: live ? 'Open terminal' : 'Connect', icon: Play, action: () => connect(host) },
       ...(isSsh(host) ? [{ label: 'Browse files (SFTP)', icon: FolderTree, action: () => openSftp(host) }] : []),
-      { label: 'Edit', icon: Pencil, action: () => dialogs.openHostDialog(host) },
-      { label: 'Duplicate', icon: Copy, action: () => void duplicate(host) },
+      { label: 'Edit', icon: Pencil, disabled: readOnly, action: () => dialogs.openHostDialog(host) },
+      { label: 'Duplicate', icon: Copy, disabled: readOnly, action: () => void duplicate(host) },
       ...(protocolOf(host) === 'serial'
         ? []
         : [{
@@ -277,7 +332,8 @@ function hostMenu(host: Host, e: MouseEvent) {
             icon: ClipboardCopy,
             action: () => void copyText(sshCommand(host), isSsh(host) ? 'SSH command copied' : 'Telnet command copied'),
           }]),
-      { label: 'Delete', icon: Trash2, danger: true, action: () => void removeHost(host) },
+      ...hostMoveItems(host),
+      { label: 'Delete', icon: Trash2, danger: true, disabled: readOnly, action: () => void removeHost(host) },
     ],
   }
 }
@@ -300,15 +356,23 @@ function moreMenu(e: MouseEvent) {
 }
 
 function groupMenu(g: HostGroup, e: MouseEvent) {
+  const readOnly = !canEdit(g)
   menu.value = {
     x: e.clientX,
     y: e.clientY,
     items: [
-      { label: 'New host here', icon: Plus, action: () => dialogs.openHostDialog(null, g.id) },
-      { label: 'Rename group', icon: Pencil, action: () => dialogs.openGroupDialog(g) },
-      { label: 'Delete group', icon: Trash2, danger: true, action: () => void deleteGroup(g) },
+      { label: 'New host here', icon: Plus, disabled: readOnly, action: () => dialogs.openHostDialog(null, g.id) },
+      { label: 'Rename group', icon: Pencil, disabled: readOnly, action: () => dialogs.openGroupDialog(g) },
+      ...groupMoveItems(g),
+      { label: 'Delete group', icon: Trash2, danger: true, disabled: readOnly, action: () => void deleteGroup(g) },
     ],
   }
+}
+
+/** A team section's "New host": starts in that team */
+function newHostIn(teamId: string) {
+  const g = currentGroup.value
+  dialogs.openHostDialog(null, g?.team_id === teamId ? g.id : null, null, false, teamId)
 }
 
 async function deleteGroup(g: HostGroup) {
@@ -377,7 +441,8 @@ function onCardKey(e: KeyboardEvent, host: Host) {
       return void removeHost(host)
     case 'F2':
       e.preventDefault()
-      return dialogs.openHostDialog(host)
+      if (canEdit(host)) dialogs.openHostDialog(host)
+      return
   }
 }
 
@@ -491,15 +556,17 @@ function pickGroup(g: GroupFilter) {
           All <span class="chip-n">{{ hosts.hosts.length }}</span>
         </button>
         <button
-          v-for="g in hosts.groups"
+          v-for="g in orderedGroups"
           :key="g.id"
           class="chip-btn"
           :class="{ on: groupFilter === g.id }"
           :aria-pressed="groupFilter === g.id"
+          :title="g.team_id ? `In ${teams.teamName(g.team_id)}` : undefined"
           @click="pickGroup(g.id)"
           @contextmenu.prevent="groupMenu(g, $event)"
         >
-          <Folder :size="12" :stroke-width="1.75" aria-hidden="true" />
+          <Users v-if="g.team_id" :size="12" :stroke-width="1.75" aria-hidden="true" />
+          <Folder v-else :size="12" :stroke-width="1.75" aria-hidden="true" />
           <PvText :text="g.name" />
           <span class="chip-n">{{ groupCounts.get(g.id) ?? 0 }}</span>
         </button>
@@ -579,20 +646,37 @@ function pickGroup(g: GroupFilter) {
         </p>
 
         <template v-else>
-          <section v-for="sec in (showActiveSection ? [{ key: 'active', title: 'Active', rows: activeRows }, { key: 'rest', title: sectionTitle, rows: restRows }] : [{ key: 'rest', title: sectionTitle, rows: restRows }])" :key="sec.key" class="sec">
-            <h3 v-if="sec.rows.length" class="sec-title">
+          <section v-for="sec in sections" :key="sec.key" class="sec">
+            <h3 v-if="sec.rows.length || sec.teamId" class="sec-title">
+              <Users v-if="sec.teamId" :size="14" :stroke-width="1.75" class="sec-icon" aria-hidden="true" />
               <PvText :text="sec.title" />
               <span class="sec-n">{{ sec.rows.length }}</span>
+              <span v-if="sec.teamId && !teams.canEdit(sec.teamId)" class="sec-ro">View only</span>
+              <button
+                v-if="sec.teamId && teams.canEdit(sec.teamId)"
+                class="btn-icon sec-add"
+                :aria-label="`New host in ${sec.title}`"
+                :title="`New host in ${sec.title}`"
+                @click="newHostIn(sec.teamId)"
+              >
+                <Plus :size="14" :stroke-width="1.75" aria-hidden="true" />
+              </button>
             </h3>
+            <p v-if="sec.teamId && !sec.rows.length" class="sec-empty">
+              <template v-if="teams.canEdit(sec.teamId)">
+                Nothing shared yet. Add a host with +, or move one here from its menu.
+              </template>
+              <template v-else>Nothing shared yet.</template>
+            </p>
 
             <div class="host-grid" :class="layout">
               <div
-                v-for="(r, i) in sec.rows"
+                v-for="r in sec.rows"
                 :key="r.host.id"
                 class="host"
                 :class="[r.status, { selected: selectedId === r.host.id }]"
                 role="button"
-                :tabindex="tabIndexFor(r.host.id, sec.key === 'rest' && activeRows.length ? i + activeRows.length : i)"
+                :tabindex="tabIndexFor(r.host.id, orderIndex.get(r.host.id) ?? 0)"
                 :data-host-id="r.host.id"
                 :aria-label="`${pv.t(r.host.label)}, ${pv.t(hostTarget(r.host))}${r.status !== 'idle' ? ', ' + statusLabel[r.status] : ''}. Enter to connect`"
                 @click="selectedId = r.host.id; focusKey = r.host.id"
@@ -676,11 +760,11 @@ function pickGroup(g: GroupFilter) {
     <Transition name="panel">
       <HostDetailsPanel v-if="selectedHost" :host="selectedHost" @close="selectedId = null">
         <template #actions>
-          <button class="btn-icon" aria-label="Edit host" title="Edit host" @click="dialogs.openHostDialog(selectedHost!)">
+          <button v-if="canEdit(selectedHost)" class="btn-icon" aria-label="Edit host" title="Edit host" @click="dialogs.openHostDialog(selectedHost!)">
             <Pencil :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
         </template>
-        <template #danger>
+        <template v-if="canEdit(selectedHost)" #danger>
           <button class="btn btn-danger panel-delete" @click="removeHost(selectedHost!)">
             <Trash2 :size="14" :stroke-width="1.5" aria-hidden="true" />
             Delete host
@@ -1004,6 +1088,29 @@ function pickGroup(g: GroupFilter) {
   font-weight: 500;
   color: var(--text-4);
   font-variant-numeric: tabular-nums;
+}
+
+.sec-icon {
+  align-self: center;
+  color: var(--text-3);
+}
+
+.sec-ro {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.sec-add {
+  align-self: center;
+  width: 24px;
+  height: 24px;
+}
+
+.sec-empty {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-3);
 }
 
 /* ---- host cards: grid ---- */

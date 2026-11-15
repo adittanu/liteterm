@@ -24,9 +24,12 @@ import { copyText } from '../utils/pageHelpers'
 import type { Note } from '../types'
 import NoteEditor from '../components/NoteEditor.vue'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
+import VaultChip from '../components/VaultChip.vue'
+import { useTeamsStore } from '../stores/teams'
 
 const notes = useNotesStore()
 const ui = useUiStore()
+const teams = useTeamsStore()
 
 type Layout = 'split' | 'gallery'
 const layout = ref<Layout>(
@@ -358,6 +361,7 @@ async function togglePinned(n: Note) {
 }
 
 function openMenu(n: Note, e: MouseEvent) {
+  const readOnly = !teams.canEdit(n.team_id)
   menu.value = {
     x: e.clientX,
     y: e.clientY,
@@ -365,15 +369,17 @@ function openMenu(n: Note, e: MouseEvent) {
       {
         label: n.pinned ? 'Unpin' : 'Pin',
         icon: n.pinned ? PinOff : Pin,
+        disabled: readOnly,
         action: () => void togglePinned(n),
       },
       { label: 'Copy', icon: Copy, action: () => void copyText([n.title, n.body].filter(Boolean).join('\n\n'), 'Note copied') },
       {
         label: n.archived ? 'Unarchive' : 'Archive',
         icon: n.archived ? ArchiveRestore : Archive,
+        disabled: readOnly,
         action: () => void archiveNote(n.id, !n.archived),
       },
-      { label: 'Delete', icon: Trash2, danger: true, action: () => void removeNote(n.id) },
+      { label: 'Delete', icon: Trash2, danger: true, disabled: readOnly, action: () => void removeNote(n.id) },
     ],
   }
 }
@@ -830,6 +836,7 @@ function listDate(s: string): string {
                     <span class="row-date">{{ listDate(item.note.updated_at) }}</span>
                     {{ previewOf(item.note) || 'No additional text' }}
                   </span>
+                  <VaultChip v-if="item.note.team_id" :team-id="item.note.team_id" class="row-vault" />
                 </button>
               </div>
             </TransitionGroup>
@@ -1343,6 +1350,10 @@ function listDate(s: string): string {
 
 .note-list:focus-within .note-row.selected {
   background: var(--accent-bg);
+}
+
+.row-vault {
+  margin-top: 4px;
 }
 
 .row-title {

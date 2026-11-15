@@ -23,10 +23,12 @@ import {
 } from 'lucide-vue-next'
 import { useNotesStore } from '../stores/notes'
 import { useHostsStore } from '../stores/hosts'
+import { useTeamsStore } from '../stores/teams'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
 import { noteExtensions } from './noteExtensions'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
+import VaultChip from './VaultChip.vue'
 import { NOTE_HOST_ID } from './noteContext'
 import type { Note } from '../types'
 
@@ -35,14 +37,20 @@ const emit = defineEmits<{ remove: []; back: [] }>()
 
 const notes = useNotesStore()
 const hosts = useHostsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
+
+// A team note this account only views: readable, runnable, not editable
+const readOnly = computed(() => !teams.canEdit(props.note.team_id))
 
 // ---- host link: where this note's code blocks run ----
 provide(NOTE_HOST_ID, computed(() => props.note.host_id))
 
+// Only a host of the note's own vault can be linked
 const hostOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No host', muted: true },
-  ...[...hosts.hosts]
+  ...hosts.hosts
+    .filter((h) => h.team_id === props.note.team_id)
     .sort((a, b) => a.label.localeCompare(b.label))
     .map((h) => ({ value: h.id, label: h.label, hint: h.address })),
 ])
@@ -74,11 +82,15 @@ function markdownOf(e: Editor): string {
 
 const editor = useEditor({
   content: props.note.body,
+  editable: !readOnly.value,
   extensions: noteExtensions('Start typing… #tag to organize'),
   onUpdate: ({ editor }) => {
     notes.edit(props.note.id, title.value, markdownOf(editor))
   },
 })
+
+// The role can change while the note is open (an owner made this account a viewer)
+watch(readOnly, (ro) => editor.value?.setEditable(!ro))
 
 // Toolbar buttons must light up as the caret moves — transactions
 // bump a tick the computed below depends on.
@@ -206,7 +218,8 @@ defineExpose({
           <ArrowLeft :size="14" :stroke-width="1.5" aria-hidden="true" />
         </button>
         <span v-if="back" class="fmt-sep" aria-hidden="true"></span>
-        <div class="format-group" role="toolbar" aria-label="Formatting">
+        <VaultChip v-if="note.team_id && readOnly" :team-id="note.team_id" />
+        <div v-if="!readOnly" class="format-group" role="toolbar" aria-label="Formatting">
           <button
             class="btn-icon"
             :class="{ on: active.h1 }"
@@ -285,7 +298,7 @@ defineExpose({
             <Code :size="13" :stroke-width="1.5" aria-hidden="true" />
           </button>
         </div>
-        <template v-if="active.table">
+        <template v-if="active.table && !readOnly">
           <span class="fmt-sep" aria-hidden="true"></span>
           <div class="format-group" role="group" aria-label="Table rows">
             <button
@@ -316,7 +329,8 @@ defineExpose({
         </template>
       </div>
       <div class="editor-actions">
-        <div class="host-link" title="Linked host — code blocks run there, and the note shows in its details">
+        <VaultChip v-if="note.team_id && !readOnly" :team-id="note.team_id" />
+        <div v-if="!readOnly" class="host-link" title="Linked host — code blocks run there, and the note shows in its details">
           <Server :size="13" :stroke-width="1.5" class="host-link-icon" aria-hidden="true" />
           <SearchSelect
             compact
@@ -327,6 +341,7 @@ defineExpose({
           />
         </div>
         <button
+          v-if="!readOnly"
           class="btn-icon"
           :class="{ pinned: note.pinned }"
           :aria-label="note.pinned ? 'Unpin note' : 'Pin note'"
@@ -336,7 +351,7 @@ defineExpose({
           <Pin v-if="!note.pinned" :size="14" :stroke-width="1.5" aria-hidden="true" />
           <PinOff v-else :size="14" :stroke-width="1.5" aria-hidden="true" />
         </button>
-        <button class="btn-icon note-delete" aria-label="Delete note" title="Delete" @click="emit('remove')">
+        <button v-if="!readOnly" class="btn-icon note-delete" aria-label="Delete note" title="Delete" @click="emit('remove')">
           <Trash2 :size="14" :stroke-width="1.5" aria-hidden="true" />
         </button>
       </div>
@@ -353,6 +368,7 @@ defineExpose({
           placeholder="Title"
           aria-label="Note title"
           spellcheck="false"
+          :readonly="readOnly"
           @input="syncEdit"
           @keydown.enter.prevent="onTitleEnter"
         />

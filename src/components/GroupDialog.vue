@@ -3,12 +3,15 @@ import { computed, nextTick, ref, watch } from 'vue'
 import BaseModal from './BaseModal.vue'
 import { useDialogsStore } from '../stores/dialogs'
 import { useHostsStore } from '../stores/hosts'
+import { useTeamsStore } from '../stores/teams'
 import { useUiStore } from '../stores/ui'
 import { errorText } from '../stores/sessions'
 import { FolderPlus } from 'lucide-vue-next'
+import VaultField from './VaultField.vue'
 
 const dialogs = useDialogsStore()
 const hosts = useHostsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 
 const open = computed(() => dialogs.groupDialog.open)
@@ -18,10 +21,14 @@ const name = ref('')
 const error = ref('')
 const saving = ref(false)
 const nameEl = ref<HTMLInputElement | null>(null)
+// The vault a new group goes in; a renamed one stays where it is
+const teamId = ref<string | null>(null)
 
 watch(open, (o) => {
   if (!o) return
   name.value = editing.value?.name ?? ''
+  const start = dialogs.groupDialog.teamId
+  teamId.value = teams.canEdit(start) ? start : null
   error.value = ''
   saving.value = false
   nextTick(() => nameEl.value?.focus())
@@ -36,7 +43,7 @@ async function save() {
   }
   saving.value = true
   try {
-    await hosts.saveGroup(editing.value?.id ?? null, trimmed)
+    await hosts.saveGroup(editing.value?.id ?? null, trimmed, teamId.value)
     dialogs.closeGroupDialog()
   } catch (e) {
     ui.toast('error', `Could not save group: ${errorText(e)}`)
@@ -69,6 +76,7 @@ async function save() {
         <span v-if="error" class="field-error">{{ error }}</span>
         <span v-else class="field-hint">Hosts inside a group show up when you open it.</span>
       </div>
+      <VaultField v-if="!editing" id="gd-vault" v-model="teamId" />
       <footer class="form-actions">
         <button type="button" class="btn btn-ghost" @click="dialogs.closeGroupDialog()">Cancel</button>
         <button type="submit" class="btn btn-primary" :disabled="saving">

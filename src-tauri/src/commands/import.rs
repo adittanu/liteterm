@@ -113,7 +113,8 @@ fn apply_parsed_hosts(
 ) -> Result<Vec<i64>, String> {
     // Groups first: create missing ones, map name -> id
     let mut group_ids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for g in db::list_groups(conn).map_err(|e| e.to_string())? {
+    // Imports land in the personal vault, so only its groups are reused
+    for g in db::list_groups(conn).map_err(|e| e.to_string())?.into_iter().filter(|g| g.team_id.is_none()) {
         group_ids.insert(g.name, g.id);
     }
 
@@ -131,7 +132,7 @@ fn apply_parsed_hosts(
                 } else if let Some(id) = group_ids.get(name) {
                     Some(*id)
                 } else {
-                    let g = db::upsert_group(conn, None, name).map_err(|e| e.to_string())?;
+                    let g = db::upsert_group(conn, None, name, None).map_err(|e| e.to_string())?;
                     group_ids.insert(name.to_string(), g.id);
                     Some(g.id)
                 }
@@ -165,6 +166,7 @@ fn apply_parsed_hosts(
             agent_forwarding: None,
             protocol: h.protocol.clone(),
             baud_rate: h.baud_rate,
+            team_id: None,
         };
         let host = db::upsert_host(conn, &input).map_err(|e| e.to_string())?;
         host_ids.push(host.id);
@@ -174,9 +176,14 @@ fn apply_parsed_hosts(
     }
 
     // ProxyJump second pass: point each host at its bastion, matched by
-    // label (imported aliases become labels) or address among saved hosts
+    // label (imported aliases become labels) or address among saved hosts of
+    // the personal vault: a team host can't be a personal host's jump host
     if !pending_jumps.is_empty() {
-        let saved = db::list_hosts(conn).map_err(|e| e.to_string())?;
+        let saved: Vec<_> = db::list_hosts(conn)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|h| h.team_id.is_none())
+            .collect();
         for (host_id, jump) in pending_jumps {
             let target = saved
                 .iter()

@@ -26,6 +26,7 @@ import type {
   TeamSummary,
   TeamDetail,
   TeamRole,
+  MoveResult,
   KeyDefaults,
   GeneratedKey,
   SerialPortEntry,
@@ -37,9 +38,15 @@ export const api = {
   listGroups: (): Promise<HostGroup[]> => invoke('list_groups'),
   upsertHost: (input: HostInput): Promise<Host> => invoke('upsert_host', { input }),
   deleteHost: (id: number): Promise<void> => invoke('delete_host', { id }),
-  upsertGroup: (id: number | null, name: string): Promise<HostGroup> =>
-    invoke('upsert_group', { id, name }),
+  /** `teamId` is the vault a new group goes in (null: personal) */
+  upsertGroup: (id: number | null, name: string, teamId: string | null = null): Promise<HostGroup> =>
+    invoke('upsert_group', { id, name, teamId }),
   deleteGroup: (id: number): Promise<void> => invoke('delete_group', { id }),
+  /** Move hosts, or a group with its hosts, to `teamId`'s vault (null: personal) */
+  moveHosts: (hostIds: number[], groupId: number | null, teamId: string | null): Promise<MoveResult> =>
+    invoke('move_hosts', { hostIds, groupId, teamId }),
+  /** The teams this computer is in, read locally */
+  listTeams: (): Promise<TeamSummary[]> => invoke('list_teams'),
   forgetHostKey: (hostId: number): Promise<void> => invoke('forget_host_key', { hostId }),
   resolveHost: (address: string): Promise<string[]> => invoke('resolve_host', { address }),
   /** Short single-line clipboard text, or null (see commands/clipboard.rs) */
@@ -87,15 +94,19 @@ export const api = {
 
   // ---- snippets ----
   listSnippets: (): Promise<Snippet[]> => invoke('list_snippets'),
-  upsertSnippet: (id: number | null, name: string, command: string): Promise<Snippet> =>
-    invoke('upsert_snippet', { id, name, command }),
+  /** `teamId` is the vault a new snippet goes in (null: personal) */
+  upsertSnippet: (id: number | null, name: string, command: string, teamId: string | null = null): Promise<Snippet> =>
+    invoke('upsert_snippet', { id, name, command, teamId }),
   deleteSnippet: (id: number): Promise<void> => invoke('delete_snippet', { id }),
+  moveSnippet: (id: number, teamId: string | null): Promise<Snippet> => invoke('move_snippet', { id, teamId }),
 
   // ---- notes ----
   listNotes: (): Promise<Note[]> => invoke('list_notes'),
   saveNoteImage: (dataBase64: string, ext: string): Promise<string> =>
     invoke('save_note_image', { dataBase64, ext }),
-  createNote: (title = '', body = ''): Promise<Note> => invoke('create_note', { title, body }),
+  /** `teamId` is the vault the note goes in (null: personal) */
+  createNote: (title = '', body = '', teamId: string | null = null): Promise<Note> =>
+    invoke('create_note', { title, body, teamId }),
   updateNote: (id: number, title: string, body: string): Promise<Note> =>
     invoke('update_note', { id, title, body }),
   setNotePinned: (id: number, pinned: boolean): Promise<Note> =>

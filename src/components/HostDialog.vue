@@ -10,6 +10,9 @@ import { useCredentialsStore } from '../stores/credentials'
 import { useSessionsStore } from '../stores/sessions'
 import { useUiStore } from '../stores/ui'
 import { usePrivacyStore } from '../stores/privacy'
+import { useTeamsStore } from '../stores/teams'
+import VaultField from './VaultField.vue'
+import VaultChip from './VaultChip.vue'
 import { api } from '../services/api'
 import { isIpv4 } from '../utils/parseTarget'
 import { jumpCandidates } from '../utils/jumpHosts'
@@ -23,6 +26,7 @@ const credentials = useCredentialsStore()
 const sessions = useSessionsStore()
 const ui = useUiStore()
 const pv = usePrivacyStore()
+const teams = useTeamsStore()
 
 const open = computed(() => dialogs.hostDialog.open)
 const editing = computed(() => dialogs.hostDialog.host)
@@ -95,14 +99,20 @@ const selectedCred = computed(() => {
   return Number.isInteger(id) && id > 0 ? credentials.byId(id) : undefined
 })
 
+// The vault the host is in: chosen for a new one, fixed once it exists
+// (moving is its own action). Its group, jump host and credential must be
+// in the same vault, so the pickers offer only those.
+const teamId = ref<string | null>(null)
+const inVault = (x: { team_id: string | null }) => x.team_id === teamId.value
+
 const groupOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No group', muted: true },
-  ...hosts.groups.map((g) => ({ value: g.id, label: g.name })),
+  ...hosts.groups.filter(inVault).map((g) => ({ value: g.id, label: g.name })),
 ])
 
 const jumpOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'None — connect directly', muted: true },
-  ...jumpCandidates(hosts.hosts, editing.value?.id ?? null).map((h) => ({
+  ...jumpCandidates(hosts.hosts.filter(inVault), editing.value?.id ?? null).map((h) => ({
     value: h.id,
     label: h.label,
     hint: `${h.username}@${h.address}`,
@@ -112,12 +122,21 @@ const jumpOptions = computed<ComboOption[]>(() => [
 const credOptions = computed<ComboOption[]>(() => [
   { value: '', label: 'No credential', hint: 'fill in below', muted: true },
   { value: 'new', label: '+ New credential', hint: 'save & reuse' },
-  ...credentials.credentials.map((c) => ({
+  ...credentials.credentials.filter(inVault).map((c) => ({
     value: String(c.id),
     label: c.name,
     hint: c.username,
   })),
 ])
+
+// Another vault: what was picked from the old one doesn't belong
+function dropOtherVaults() {
+  if (form.group_id !== null && !hosts.groups.some((g) => g.id === form.group_id && inVault(g))) form.group_id = null
+  if (form.jump_host_id !== null && !hosts.hosts.some((h) => h.id === form.jump_host_id && inVault(h))) form.jump_host_id = null
+  const cred = Number(credentialChoice.value)
+  if (cred > 0 && !credentials.credentials.some((c) => c.id === cred && inVault(c))) credentialChoice.value = ''
+}
+watch(teamId, dropOtherVaults)
 
 // Inline validation — validate as the user types, not on submit
 watch(
@@ -162,6 +181,7 @@ watch(open, (o) => {
   const host = dialogs.hostDialog.host
   showCredDetails.value = false
   if (host) {
+    teamId.value = host.team_id
     form.label = host.label
     form.protocol = protocolOf(host)
     form.address = host.address
@@ -193,6 +213,11 @@ watch(open, (o) => {
     form.protocol = 'ssh'
     form.baud = String(DEFAULT_BAUD)
     form.group_id = dialogs.hostDialog.groupId
+    // A new host starts in its group's vault, or the one it was opened for;
+    // one this account can't add to falls back to the personal vault
+    const group = hosts.groups.find((g) => g.id === form.group_id)
+    const start = group ? group.team_id : dialogs.hostDialog.teamId
+    teamId.value = teams.canEdit(start) ? start : null
     form.jump_host_id = prefill?.jumpHostId ?? null
     form.startup_command = ''
     form.agent_forwarding = false
@@ -215,6 +240,8 @@ watch(open, (o) => {
         .catch(() => {})
     }
   }
+  // A quick-connect jump host or a group of another vault doesn't come along
+  dropOtherVaults()
   errors.label = errors.address = errors.port = errors.baud = errors.username = errors.key_path = errors.cred_name = undefined
 })
 
@@ -242,6 +269,7 @@ async function save() {
       const serial = form.protocol === 'serial'
       input = {
         id: editing.value?.id,
+        team_id: teamId.value,
         group_id: form.group_id,
         jump_host_id: null,
         startup_command: null,
@@ -259,6 +287,7 @@ async function save() {
     } else if (usingExisting) {
       input = {
         id: editing.value?.id,
+        team_id: teamId.value,
         protocol: 'ssh' as HostProtocol,
         baud_rate: null,
         group_id: form.group_id,
@@ -275,6 +304,7 @@ async function save() {
     } else if (credentialChoice.value === 'new') {
       input = {
         id: editing.value?.id,
+        team_id: teamId.value,
         protocol: 'ssh' as HostProtocol,
         baud_rate: null,
         group_id: form.group_id,
@@ -299,6 +329,7 @@ async function save() {
     } else {
       input = {
         id: editing.value?.id,
+        team_id: teamId.value,
         protocol: 'ssh' as HostProtocol,
         baud_rate: null,
         group_id: form.group_id,
@@ -370,6 +401,12 @@ async function save() {
         />
         <span v-if="errors.label" class="field-error">{{ errors.label }}</span>
       </div>
+
+      <!-- Where it goes; an existing host only says where it is -->
+      <VaultField v-if="!editing" id="hf-vault" v-model="teamId" />
+      <p v-else-if="teamId" class="field-hint vault-line">
+        <VaultChip :team-id="teamId" /> Move it from the host's menu.
+      </p>
 
       <div class="field">
         <span class="field-label">Protocol</span>
@@ -700,6 +737,13 @@ async function save() {
 </template>
 
 <style scoped>
+.vault-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+}
+
 .host-form {
   display: flex;
   flex-direction: column;

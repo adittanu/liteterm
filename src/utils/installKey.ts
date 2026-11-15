@@ -47,9 +47,10 @@ export async function switchHostToKey(hostId: number, key: KeySource) {
   const credentials = useCredentialsStore()
   const host = hosts.hostById(hostId)
   if (!host) return
-  // The key's credential fits only when it logs in as the host's user
+  // The key's credential fits only when it logs in as the host's user, from
+  // the host's own vault
   const cred = credentials.byId(key.credentialId ?? null)
-  const viaCredential = cred && cred.username === host.username ? cred : undefined
+  const viaCredential = cred && cred.username === host.username && cred.team_id === host.team_id ? cred : undefined
   const input: HostInput = {
     id: host.id,
     group_id: host.group_id,

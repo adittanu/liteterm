@@ -4,7 +4,9 @@ import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
 import { warnIfPasswordNotKept } from '../utils/savedSecret'
 import { useNotesStore } from './notes'
-import type { Host, HostGroup, HostInput } from '../types'
+import { useCredentialsStore } from './credentials'
+import { useForwardsStore } from './extras'
+import type { Host, HostGroup, HostInput, MoveResult } from '../types'
 
 export const useHostsStore = defineStore('hosts', () => {
   const hosts = ref<Host[]>([])
@@ -45,12 +47,29 @@ export const useHostsStore = defineStore('hosts', () => {
     useNotesStore().forgetHost(id)
   }
 
-  async function saveGroup(id: number | null, name: string): Promise<HostGroup> {
-    const group = await api.upsertGroup(id, name)
+  /** `teamId` is the vault a new group goes in (null: personal) */
+  async function saveGroup(id: number | null, name: string, teamId: string | null = null): Promise<HostGroup> {
+    const group = await api.upsertGroup(id, name, teamId)
     const i = groups.value.findIndex((g) => g.id === group.id)
     if (i === -1) groups.value.push(group)
     else groups.value[i] = group
     return group
+  }
+
+  /**
+   * Move hosts, or a group with every host in it, to another vault (null:
+   * personal). They come back as new rows, and take credentials and port
+   * forwards along, so everything that shows them reloads.
+   */
+  async function moveHosts(hostIds: number[], groupId: number | null, teamId: string | null): Promise<MoveResult> {
+    const result = await api.moveHosts(hostIds, groupId, teamId)
+    await Promise.allSettled([
+      load(),
+      useCredentialsStore().load(),
+      useForwardsStore().load(),
+      useNotesStore().loaded ? useNotesStore().reloadFromSync() : Promise.resolve(),
+    ])
+    return result
   }
 
   async function removeGroup(id: number) {
@@ -83,6 +102,7 @@ export const useHostsStore = defineStore('hosts', () => {
     removeHost,
     saveGroup,
     removeGroup,
+    moveHosts,
     hostById,
     touchHost,
   }

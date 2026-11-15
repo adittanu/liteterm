@@ -14,8 +14,9 @@ export const useSnippetsStore = defineStore('snippets', () => {
     loaded.value = true
   }
 
-  async function save(name: string, command: string, id: number | null = null) {
-    const s = await api.upsertSnippet(id, name, command)
+  /** `teamId` is the vault a new snippet goes in (null: personal) */
+  async function save(name: string, command: string, id: number | null = null, teamId: string | null = null) {
+    const s = await api.upsertSnippet(id, name, command, teamId)
     const i = snippets.value.findIndex((x) => x.id === s.id)
     if (i === -1) snippets.value.push(s)
     else snippets.value[i] = s
@@ -26,7 +27,14 @@ export const useSnippetsStore = defineStore('snippets', () => {
     snippets.value = snippets.value.filter((s) => s.id !== id)
   }
 
-  return { snippets, loaded, load, save, remove }
+  /** To another vault (null: personal); it comes back as a new row */
+  async function move(id: number, teamId: string | null) {
+    const moved = await api.moveSnippet(id, teamId)
+    snippets.value = [...snippets.value.filter((s) => s.id !== id), moved]
+    return moved
+  }
+
+  return { snippets, loaded, load, save, remove, move }
 })
 
 export const useForwardsStore = defineStore('forwards', () => {
@@ -64,7 +72,8 @@ export const useForwardsStore = defineStore('forwards', () => {
     })
   }
 
-  async function save(input: Omit<PortForward, 'id'> & { id?: number }) {
+  /** A forward is in its host's vault, so there is no vault to pass */
+  async function save(input: Omit<PortForward, 'id' | 'team_id'> & { id?: number }) {
     // A running tunnel keeps listening on its old port and target, whatever the
     // saved row now says. Stop it, so the row cannot claim "Listening" on an
     // address nothing serves any more.

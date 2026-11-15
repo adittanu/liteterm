@@ -52,5 +52,5 @@ void forwardsStore.load()
 void forwardsStore.initEvents()
 // Optional account: follow the backend's sync status and reload what it changes
 void useCloudStore().init()
-// Shared team vaults: loaded when Settings → Teams first opens
+// Shared team vaults: which teams this computer is in, for the hosts view
 void useTeamsStore().init()

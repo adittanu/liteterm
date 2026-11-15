@@ -21,13 +21,17 @@ import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import SearchField from '../components/SearchField.vue'
 import SearchSelect, { type ComboOption } from '../components/SearchSelect.vue'
 import PvText from '../components/PvText.vue'
+import VaultChip from '../components/VaultChip.vue'
+import { useTeamsStore } from '../stores/teams'
 import { copyText, matchesQuery } from '../utils/pageHelpers'
+import { moveItems } from '../utils/vaultMoves'
 import type { Snippet } from '../types'
 
 const snippets = useSnippetsStore()
 const sessions = useSessionsStore()
 const ui = useUiStore()
 const dialogs = useDialogsStore()
+const teams = useTeamsStore()
 const pv = usePrivacyStore()
 
 const query = ref('')
@@ -84,11 +88,14 @@ function openNew() {
 }
 
 function openEdit(s: Snippet) {
+  // A team snippet this account only views can't be changed here
+  if (!teams.canEdit(s.team_id)) return
   editing.value = s
   editorOpen.value = true
 }
 
 function openMenu(s: Snippet, e: MouseEvent) {
+  const readOnly = !teams.canEdit(s.team_id)
   menu.value = {
     x: e.clientX,
     y: e.clientY,
@@ -96,9 +103,19 @@ function openMenu(s: Snippet, e: MouseEvent) {
       { label: 'Run', icon: Play, disabled: !target.value, action: () => run(s, true) },
       { label: 'Insert without running', icon: TextCursorInput, disabled: !target.value, action: () => run(s, false) },
       { label: 'Copy command', icon: Copy, action: () => void copyText(s.command, 'Command copied') },
-      { label: 'Edit', icon: Pencil, action: () => openEdit(s) },
-      { label: 'Delete', icon: Trash2, danger: true, action: () => void remove(s) },
+      { label: 'Edit', icon: Pencil, disabled: readOnly, action: () => openEdit(s) },
+      ...moveItems(s.team_id, (to) => void move(s, to)),
+      { label: 'Delete', icon: Trash2, danger: true, disabled: readOnly, action: () => void remove(s) },
     ],
+  }
+}
+
+async function move(s: Snippet, to: string | null) {
+  try {
+    await snippets.move(s.id, to)
+    ui.toast('success', `Moved “${s.name}” to ${teams.teamName(to)}`)
+  } catch (e) {
+    ui.toast('error', `Could not move: ${errorText(e)}`)
   }
 }
 
@@ -113,7 +130,7 @@ async function remove(s: Snippet) {
   ui.toast('info', `Deleted “${s.name}”`, {
     actionLabel: 'Undo',
     duration: 6000,
-    action: () => void snippets.save(s.name, s.command).catch((e) => ui.toast('error', errorText(e))),
+    action: () => void snippets.save(s.name, s.command, null, s.team_id).catch((e) => ui.toast('error', errorText(e))),
   })
 }
 
@@ -189,6 +206,7 @@ function lineCount(cmd: string): number {
             <span class="row-title">
               <span class="text-ellipsis">{{ s.name }}</span>
               <span v-if="lineCount(s.command) > 1" class="chip quiet">{{ lineCount(s.command) }} lines</span>
+              <VaultChip :team-id="s.team_id" />
             </span>
             <code class="snip-cmd mono">{{ s.command }}</code>
           </button>

@@ -14,11 +14,14 @@ import {
   PlugZap,
   Download,
   Upload,
+  Users,
+  Play,
 } from 'lucide-vue-next'
 import ContextMenu, { type MenuItem } from '../components/ContextMenu.vue'
 import { useHostsStore } from '../stores/hosts'
 import { useSessionsStore } from '../stores/sessions'
 import { useDialogsStore } from '../stores/dialogs'
+import { useTeamsStore } from '../stores/teams'
 import { useUiStore } from '../stores/ui'
 import HostDetailsPanel from '../components/HostDetailsPanel.vue'
 import PlanetAvatar from '../components/PlanetAvatar.vue'
@@ -27,11 +30,13 @@ import { usePrivacyStore } from '../stores/privacy'
 import { useSmartConnect } from '../utils/smartConnect'
 import { targetDisplay } from '../utils/parseTarget'
 import { isSsh, protocolOf } from '../utils/hostProtocol'
+import { groupMoveItems, hostMoveItems } from '../utils/vaultMoves'
 import type { Host, HostGroup } from '../types'
 
 const hosts = useHostsStore()
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 const pv = usePrivacyStore()
 
@@ -77,12 +82,14 @@ function hostMatches(h: Host, q: string): boolean {
 }
 
 // Root: folders (searched by name). Hidden entirely while inside a group.
-const visibleFolders = computed(() => {
+const matchingFolders = computed(() => {
   if (currentGroupId.value !== null) return []
   const q = query.value.trim().toLowerCase()
   if (!q) return groupCards.value
   return groupCards.value.filter((g) => g.name.toLowerCase().includes(q))
 })
+// The personal vault's; each team's show in the team's own section
+const visibleFolders = computed(() => matchingFolders.value.filter((g) => g.team_id === null))
 
 // Root shows every host (folders are just a way in); inside a folder, only
 // its hosts. Search filters whichever scope is active.
@@ -100,6 +107,30 @@ const visibleHosts = computed(() => {
 function byRecent(a: Host, b: Host): number {
   return (b.last_used_at ?? 0) - (a.last_used_at ?? 0) || a.label.localeCompare(b.label)
 }
+
+// ---- vaults: at the root, a section per team after the personal hosts ----
+
+const teamSections = computed(() => {
+  if (currentGroupId.value !== null) return []
+  const ids = new Set(teams.list.map((t) => t.id))
+  for (const h of hosts.hosts) if (h.team_id) ids.add(h.team_id)
+  for (const g of hosts.groups) if (g.team_id) ids.add(g.team_id)
+  return [...ids]
+    .map((id) => ({
+      id,
+      name: teams.teamName(id),
+      folders: matchingFolders.value.filter((g) => g.team_id === id),
+      hosts: visibleHosts.value.filter((h) => h.team_id === id),
+    }))
+    .filter((s) => !searching.value || s.folders.length || s.hosts.length)
+})
+
+/** The Hosts section's: inside a folder all of them, at the root the personal ones */
+const shownHosts = computed(() =>
+  currentGroupId.value !== null ? visibleHosts.value : visibleHosts.value.filter((h) => h.team_id === null),
+)
+
+const canEdit = (item: Host | HostGroup) => teams.canEdit(item.team_id)
 
 function groupName(id: number | null): string {
   if (id === null) return ''
@@ -158,13 +189,30 @@ function statusFor(hostId: number): string {
 }
 
 function openFolderMenu(g: HostGroup, e: MouseEvent) {
+  const readOnly = !canEdit(g)
   menu.value = {
     x: e.clientX,
     y: e.clientY,
     items: [
-      { label: 'New host here', icon: Plus, action: () => dialogs.openHostDialog(null, g.id) },
-      { label: 'Rename group', icon: Pencil, action: () => dialogs.openGroupDialog(g) },
-      { label: 'Delete group', icon: Trash2, danger: true, action: () => void deleteGroup(g) },
+      { label: 'New host here', icon: Plus, disabled: readOnly, action: () => dialogs.openHostDialog(null, g.id) },
+      { label: 'Rename group', icon: Pencil, disabled: readOnly, action: () => dialogs.openGroupDialog(g) },
+      ...groupMoveItems(g),
+      { label: 'Delete group', icon: Trash2, danger: true, disabled: readOnly, action: () => void deleteGroup(g) },
+    ],
+  }
+}
+
+function openHostMenu(host: Host, e: MouseEvent) {
+  selectedId.value = host.id
+  const readOnly = !canEdit(host)
+  menu.value = {
+    x: e.clientX,
+    y: e.clientY,
+    items: [
+      { label: 'Connect', icon: Play, action: () => void sessions.connect(host.id) },
+      { label: 'Edit', icon: Pencil, disabled: readOnly, action: () => dialogs.openHostDialog(host) },
+      ...hostMoveItems(host),
+      { label: 'Delete', icon: Trash2, danger: true, disabled: readOnly, action: () => void deleteSelected() },
     ],
   }
 }
@@ -184,7 +232,7 @@ async function deleteGroup(g: HostGroup) {
 
 async function deleteSelected() {
   const host = selectedHost.value
-  if (!host) return
+  if (!host || !canEdit(host)) return
   const ok = await dialogs.confirm({
     title: `Delete “${host.label}”?`,
     message: 'The saved connection will be removed. Active sessions stay open.',
@@ -378,14 +426,14 @@ async function deleteSelected() {
                 </button>
               </div>
               <p
-                v-else-if="searching && !visibleHosts.length && !visibleFolders.length"
+                v-else-if="searching && !visibleHosts.length && !matchingFolders.length"
                 class="quiet-hint"
               >
                 No matches for “{{ query }}”
               </p>
-              <div v-else-if="visibleHosts.length" class="card-grid">
+              <div v-else-if="shownHosts.length" class="card-grid">
                 <div
-                  v-for="host in visibleHosts"
+                  v-for="host in shownHosts"
                   :key="host.id"
                   class="host-card"
                   :class="{ selected: selectedId === host.id }"
@@ -394,6 +442,7 @@ async function deleteSelected() {
                   @click="select(host)"
                   @dblclick="sessions.connect(host.id)"
                   @keydown.enter="sessions.connect(host.id)"
+                  @contextmenu.prevent="openHostMenu(host, $event)"
                 >
                   <PlanetAvatar :host="host" :size="40" />
                   <span class="host-card-text">
@@ -405,6 +454,79 @@ async function deleteSelected() {
                   <span class="host-card-status" :class="statusFor(host.id)" :title="statusFor(host.id)"></span>
                 </div>
               </div>
+              <p v-else-if="!currentGroup && teamSections.length && !searching" class="quiet-hint">
+                No personal hosts. Your teams’ hosts are below.
+              </p>
+            </section>
+
+            <!-- Root: one section per team, its folders then its hosts -->
+            <section v-for="t in teamSections" :key="t.id" class="dash-section">
+              <h3 class="section-title team-title">
+                <Users :size="14" :stroke-width="1.75" aria-hidden="true" />
+                <PvText :text="t.name" />
+                <span v-if="!teams.canEdit(t.id)" class="team-ro">View only</span>
+                <button
+                  v-else
+                  class="btn-icon team-add"
+                  :aria-label="`New host in ${t.name}`"
+                  :title="`New host in ${t.name}`"
+                  @click="dialogs.openHostDialog(null, null, null, false, t.id)"
+                >
+                  <Plus :size="14" :stroke-width="1.75" aria-hidden="true" />
+                </button>
+              </h3>
+              <div v-if="t.folders.length || t.hosts.length" class="card-grid">
+                <div
+                  v-for="g in t.folders"
+                  :key="`g${g.id}`"
+                  class="folder-card"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="`Open group ${pv.t(g.name)}`"
+                  @click="openGroup(g)"
+                  @keydown.enter="openGroup(g)"
+                  @keydown.space.prevent="openGroup(g)"
+                  @contextmenu.prevent="openFolderMenu(g, $event)"
+                >
+                  <span class="folder-avatar">
+                    <Folder :size="19" :stroke-width="1.5" aria-hidden="true" />
+                  </span>
+                  <span class="folder-text">
+                    <span class="folder-name text-ellipsis"><PvText :text="g.name" /></span>
+                    <span class="folder-sub">{{ g.count }} {{ g.count === 1 ? 'host' : 'hosts' }}</span>
+                  </span>
+                  <span class="folder-go">
+                    <ChevronRight :size="15" :stroke-width="1.5" class="folder-chev" aria-hidden="true" />
+                    <button class="btn-icon folder-more" aria-label="Group options" @click.stop="openFolderMenu(g, $event)">
+                      <MoreHorizontal :size="15" :stroke-width="1.5" aria-hidden="true" />
+                    </button>
+                  </span>
+                </div>
+                <div
+                  v-for="host in t.hosts"
+                  :key="host.id"
+                  class="host-card"
+                  :class="{ selected: selectedId === host.id }"
+                  role="button"
+                  tabindex="0"
+                  @click="select(host)"
+                  @dblclick="sessions.connect(host.id)"
+                  @keydown.enter="sessions.connect(host.id)"
+                  @contextmenu.prevent="openHostMenu(host, $event)"
+                >
+                  <PlanetAvatar :host="host" :size="40" />
+                  <span class="host-card-text">
+                    <span class="host-card-name text-ellipsis"><PvText :text="host.label" /></span>
+                    <span class="host-card-sub text-ellipsis">
+                      <template v-if="isSsh(host)">ssh, <PvText :text="host.username" /></template><template v-else>{{ protocolOf(host) }}, <PvText :text="host.address" /></template><template v-if="host.group_id"> · <PvText :text="groupName(host.group_id)" /></template>
+                    </span>
+                  </span>
+                  <span class="host-card-status" :class="statusFor(host.id)" :title="statusFor(host.id)"></span>
+                </div>
+              </div>
+              <p v-else class="quiet-hint">
+                Nothing shared yet.<template v-if="teams.canEdit(t.id)"> Add a host with +, or move one here from its menu.</template>
+              </p>
             </section>
           </div>
         </Transition>
@@ -419,11 +541,11 @@ async function deleteSelected() {
         @close="selectedId = null"
       >
         <template #actions>
-          <button class="btn-icon" aria-label="Edit host" title="Edit host" @click="dialogs.openHostDialog(selectedHost!)">
+          <button v-if="canEdit(selectedHost)" class="btn-icon" aria-label="Edit host" title="Edit host" @click="dialogs.openHostDialog(selectedHost!)">
             <Pencil :size="14" :stroke-width="1.5" aria-hidden="true" />
           </button>
         </template>
-        <template #danger>
+        <template v-if="canEdit(selectedHost)" #danger>
           <button class="btn btn-danger panel-delete" @click="deleteSelected">
             <Trash2 :size="14" :stroke-width="1.5" aria-hidden="true" />
             Delete host
@@ -656,6 +778,27 @@ async function deleteSelected() {
   font-weight: 600;
   color: var(--text-1);
   margin-bottom: var(--space-3);
+}
+
+.team-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.team-title > svg {
+  color: var(--text-3);
+}
+
+.team-ro {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.team-add {
+  width: 24px;
+  height: 24px;
 }
 
 .card-grid {

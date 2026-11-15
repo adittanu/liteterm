@@ -28,6 +28,8 @@ pub struct Host {
     /// /dev/ttyUSB0) in `address` and its speed in `baud_rate`
     pub protocol: String,
     pub baud_rate: Option<i64>,
+    /// The team vault it belongs to; None = the personal vault
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +61,10 @@ pub struct HostInput {
     pub protocol: Option<String>,
     #[serde(default)]
     pub baud_rate: Option<i64>,
+    /// The vault a new host goes in (None: personal), together with the
+    /// credential it creates. Ignored on an update: moving is its own command.
+    #[serde(default)]
+    pub team_id: Option<String>,
 }
 
 pub const HOST_PROTOCOLS: [&str; 3] = ["ssh", "telnet", "serial"];
@@ -72,6 +78,7 @@ pub struct Credential {
     pub password_saved: bool,
     pub has_password: bool,
     pub key_path: Option<String>,
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +90,9 @@ pub struct CredentialInput {
     pub save_password: Option<bool>,
     pub key_path: Option<String>,
     pub key_passphrase: Option<String>,
+    /// The vault a new credential goes in (None: personal); ignored on an update
+    #[serde(default)]
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +100,7 @@ pub struct HostGroup {
     pub id: i64,
     pub name: String,
     pub sort: i64,
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,6 +109,7 @@ pub struct Snippet {
     pub name: String,
     pub command: String,
     pub sort: i64,
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,6 +127,7 @@ pub struct Note {
     pub sort: i64,
     /// Hidden from All Notes; lives in the Archive
     pub archived: bool,
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -134,6 +147,8 @@ pub struct PortForward {
     pub remote_host: String,
     pub remote_port: i64,
     pub auto_start: bool,
+    /// Always its host's vault
+    pub team_id: Option<String>,
 }
 
 pub const FORWARD_KINDS: [&str; 3] = ["local", "remote", "dynamic"];

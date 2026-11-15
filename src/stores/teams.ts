@@ -1,18 +1,21 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { api } from '../services/api'
 import { useCloudStore } from './cloud'
 import { errorText } from './sessions'
-import type { TeamRole, TeamsView } from '../types'
+import type { TeamRole, TeamSummary, TeamsView } from '../types'
 
 /**
  * Team vaults. The backend owns the keys and syncs the teams' data with the
- * personal vault; this holds the teams list, the invites for this account and
- * its safety code. Loaded the first time something asks for it: it reads
- * invites from the server.
+ * personal vault. This holds the teams this computer is in (read locally, for
+ * the hosts view and the vault pickers) and, for Settings → Teams, the
+ * invites for this account and its safety code (read from the server, so
+ * loaded only when that page asks).
  */
 export const useTeamsStore = defineStore('teams', () => {
+  /** The teams this computer is in, as of its last sync */
+  const list = ref<TeamSummary[]>([])
   const view = ref<TeamsView | null>(null)
   const loaded = ref(false)
   const loading = ref(false)
@@ -21,24 +24,36 @@ export const useTeamsStore = defineStore('teams', () => {
   async function init() {
     // The backend says when the teams this computer knows changed
     await listen('cloud:teams', () => {
+      void loadList()
       if (loaded.value) void load().catch(() => {})
     })
-    // Teams need the vault unlocked; signing out drops them on this computer
+    // Signing out drops the teams on this computer
     watch(
       () => useCloudStore().status.state,
       (state) => {
+        void loadList()
         if (state !== 'ready') {
           view.value = null
           loaded.value = false
         }
       },
     )
+    await loadList()
+  }
+
+  async function loadList() {
+    try {
+      list.value = await api.listTeams()
+    } catch {
+      /* the database is busy; the next event reads it again */
+    }
   }
 
   async function load() {
     loading.value = true
     try {
       view.value = await api.cloudTeams()
+      list.value = view.value.teams
       error.value = null
       loaded.value = true
     } catch (e) {
@@ -86,15 +101,39 @@ export const useTeamsStore = defineStore('teams', () => {
     await load()
   }
 
-  const roleOf = (teamId: string): TeamRole | null =>
-    view.value?.teams.find((t) => t.id === teamId)?.role ?? null
+  // ---- vaults: where an item is, and whether it can be changed here ----
+
+  const roleOf = (teamId: string): TeamRole | null => list.value.find((t) => t.id === teamId)?.role ?? null
+
+  /** The personal vault always; a team's unless this account only views it */
+  function canEdit(teamId: string | null): boolean {
+    if (teamId === null) return true
+    const role = roleOf(teamId)
+    return role !== null && role !== 'viewer'
+  }
+
+  function teamName(teamId: string | null): string {
+    if (teamId === null) return 'Personal'
+    return list.value.find((t) => t.id === teamId)?.name ?? 'A team'
+  }
+
+  /** Teams this account can add to and move into */
+  const writable = computed(() => list.value.filter((t) => t.role !== 'viewer'))
+
+  /** Vaults a new item can go in, for the pickers; one entry means no choice */
+  const vaultOptions = computed(() => [
+    { value: null as string | null, label: 'Personal', hint: 'only you' },
+    ...writable.value.map((t) => ({ value: t.id as string | null, label: t.name, hint: 'team' })),
+  ])
 
   return {
+    list,
     view,
     loaded,
     loading,
     error,
     init,
+    loadList,
     load,
     createTeam,
     renameTeam,
@@ -104,5 +143,9 @@ export const useTeamsStore = defineStore('teams', () => {
     declineInvite,
     syncRoles,
     roleOf,
+    canEdit,
+    teamName,
+    writable,
+    vaultOptions,
   }
 })

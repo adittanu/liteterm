@@ -2,6 +2,7 @@
 import { reactive, ref, watch } from 'vue'
 import { KeyRound, Fingerprint } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
+import VaultField from './VaultField.vue'
 import { useCredentialsStore } from '../stores/credentials'
 import { useUiStore } from '../stores/ui'
 import { usePrivacyStore } from '../stores/privacy'
@@ -29,6 +30,8 @@ const form = reactive({
 
 const errors = reactive<{ name?: string; username?: string; key_path?: string }>({})
 const saving = ref(false)
+// The vault a new credential goes in; an existing one stays where it is
+const teamId = ref<string | null>(null)
 
 watch(
   () => props.credential,
@@ -74,6 +77,7 @@ async function save() {
       save_password: form.auth_method === 'agent' ? false : form.save_password,
       key_path: form.auth_method === 'key' ? form.key_path.trim() : null,
       key_passphrase: form.key_passphrase ? form.key_passphrase : null,
+      team_id: teamId.value,
     })
     emit('close')
   } catch (e) {
@@ -104,6 +108,8 @@ async function save() {
         />
         <span v-if="errors.name" class="field-error">{{ errors.name }}</span>
       </div>
+
+      <VaultField v-if="!credential" id="cf-vault" v-model="teamId" />
 
       <div class="field">
         <label class="field-label" for="cf-user">Username</label>

@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::store::models::{Host, HostGroup, HostInput, HOST_PROTOCOLS};
 use crate::store::db;
+use crate::store::vaults::{self, Teamed};
 use crate::Db;
 
 #[tauri::command]
@@ -19,6 +20,10 @@ pub fn list_groups(db: State<Db>) -> Result<Vec<HostGroup>, String> {
 #[tauri::command]
 pub fn upsert_host(db: State<Db>, input: HostInput) -> Result<Host, String> {
     let conn = db.0.lock().map_err(|_| "database busy")?;
+    match input.id {
+        Some(id) => vaults::check_row(&conn, Teamed::Hosts, id)?,
+        None => vaults::check(&conn, input.team_id.as_deref())?,
+    }
     // A caller that leaves the protocol out keeps the stored one
     let stored = match (input.id, &input.protocol) {
         (Some(id), None) => db::get_host(&conn, id).map_err(|e| e.to_string())?.map(|h| h.protocol),
@@ -47,21 +52,28 @@ pub fn upsert_host(db: State<Db>, input: HostInput) -> Result<Host, String> {
 #[tauri::command]
 pub fn delete_host(db: State<Db>, id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|_| "database busy")?;
+    vaults::check_row(&conn, Teamed::Hosts, id)?;
     db::delete_host(&conn, id).map_err(|e| e.to_string())
 }
 
+/// `team_id` is the vault a new group goes in (None: personal)
 #[tauri::command]
-pub fn upsert_group(db: State<Db>, id: Option<i64>, name: String) -> Result<HostGroup, String> {
+pub fn upsert_group(db: State<Db>, id: Option<i64>, name: String, team_id: Option<String>) -> Result<HostGroup, String> {
     if name.trim().is_empty() {
         return Err("Group name is required".into());
     }
     let conn = db.0.lock().map_err(|_| "database busy")?;
-    db::upsert_group(&conn, id, name.trim()).map_err(|e| e.to_string())
+    match id {
+        Some(id) => vaults::check_row(&conn, Teamed::Groups, id)?,
+        None => vaults::check(&conn, team_id.as_deref())?,
+    }
+    db::upsert_group(&conn, id, name.trim(), team_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_group(db: State<Db>, id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|_| "database busy")?;
+    vaults::check_row(&conn, Teamed::Groups, id)?;
     db::delete_group(&conn, id).map_err(|e| e.to_string())
 }
 

@@ -7,12 +7,14 @@ import { useDialogsStore } from '../stores/dialogs'
 import { useSessionsStore } from '../stores/sessions'
 import { useHostsStore } from '../stores/hosts'
 import { useCredentialsStore } from '../stores/credentials'
+import { useTeamsStore } from '../stores/teams'
 import { useUiStore } from '../stores/ui'
 
 const dialogs = useDialogsStore()
 const sessions = useSessionsStore()
 const hosts = useHostsStore()
 const credentials = useCredentialsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 
 const value = ref('')
@@ -34,6 +36,9 @@ watch(prompt, (p) => {
 async function rememberSecret(hostId: number, kind: 'password' | 'passphrase', secret: string) {
   const host = hosts.hostById(hostId)
   if (!host) return
+  // A team host this account only views can't be changed: the secret is
+  // used for this connection only
+  if (!teams.canEdit(host.team_id)) return
   if (host.credential_id !== null) {
     const cred = credentials.byId(host.credential_id)
     if (!cred) return

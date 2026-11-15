@@ -17,3 +17,4 @@ pub mod settings;
 pub mod sftp;
 pub mod snippets;
 pub mod update;
+pub mod vaults;

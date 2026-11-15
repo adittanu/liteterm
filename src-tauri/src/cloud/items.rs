@@ -1329,7 +1329,7 @@ mod tests {
         let a = Device::new();
         let c = &a.conn;
         let mut ids = BTreeMap::new();
-        ids.insert("group", db::upsert_group(c, None, "prod").unwrap().id);
+        ids.insert("group", db::upsert_group(c, None, "prod", None).unwrap().id);
         c.execute(
             "INSERT INTO credentials (name, username, auth_method, password_saved) \
              VALUES ('ops', 'alice', 'password', 1)",
@@ -1356,7 +1356,7 @@ mod tests {
         a.secrets.set(&db::password_entry(web), "web-pw");
         ids.insert("web", web);
 
-        let note = db::create_note(c, "runbook", "restart #nginx").unwrap().id;
+        let note = db::create_note(c, "runbook", "restart #nginx", None).unwrap().id;
         db::set_note_host(c, note, Some(web)).unwrap();
         db::set_note_tags(c, note, &["nginx".into()]).unwrap();
         ids.insert("note", note);
@@ -1364,7 +1364,7 @@ mod tests {
             "forward",
             db::upsert_forward(c, None, web, "pg", "local", 5432, "localhost", 5432, true).unwrap().id,
         );
-        ids.insert("snippet", db::upsert_snippet(c, None, "df", "df -h").unwrap().id);
+        ids.insert("snippet", db::upsert_snippet(c, None, "df", "df -h", None).unwrap().id);
         db::remember_host_key(c, "web.example:22", "ssh-ed25519", "AAAA", "SHA256:x").unwrap();
         (a, ids)
     }
@@ -1642,7 +1642,7 @@ mod tests {
         let a = Device::new();
         let b = Device::new();
         let mut server = Server::default();
-        let snip = db::upsert_snippet(&a.conn, None, "df", "df -h").unwrap().id;
+        let snip = db::upsert_snippet(&a.conn, None, "df", "df -h", None).unwrap().id;
         a.sync_with(&mut server);
         b.sync_with(&mut server);
         let on_b = b.val::<i64>("SELECT id FROM snippets");
@@ -1675,7 +1675,7 @@ mod tests {
     #[test]
     fn an_older_remote_edit_does_not_undelete() {
         let b = Device::new();
-        let snip = db::upsert_snippet(&b.conn, None, "df", "df -h").unwrap().id;
+        let snip = db::upsert_snippet(&b.conn, None, "df", "df -h", None).unwrap().id;
         let sid = b.sid("snippets", snip);
         let created: i64 = b.val("SELECT modified_at FROM snippets");
         b.conn.execute("DELETE FROM snippets", []).unwrap();

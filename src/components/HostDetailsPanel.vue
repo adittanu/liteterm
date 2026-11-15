@@ -8,6 +8,7 @@ import { useDialogsStore } from '../stores/dialogs'
 import { useNotesStore } from '../stores/notes'
 import { useUiStore } from '../stores/ui'
 import { usePrivacyStore } from '../stores/privacy'
+import { useTeamsStore } from '../stores/teams'
 import { errorText } from '../stores/sessions'
 import { api } from '../services/api'
 import { jumpCandidates } from '../utils/jumpHosts'
@@ -17,6 +18,7 @@ import { previewOf } from '../utils/notePreview'
 import PlanetAvatar from './PlanetAvatar.vue'
 import PvText from './PvText.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
+import VaultChip from './VaultChip.vue'
 import type { Host } from '../types'
 
 const props = defineProps<{ host: Host }>()
@@ -33,6 +35,12 @@ const dialogs = useDialogsStore()
 const notes = useNotesStore()
 const ui = useUiStore()
 const pv = usePrivacyStore()
+const teams = useTeamsStore()
+
+// A team host this account only views: everything shows, nothing changes
+const readOnly = computed(() => !teams.canEdit(props.host.team_id))
+// Its group, jump host and credential come from its own vault
+const inVault = (x: { team_id: string | null }) => x.team_id === props.host.team_id
 
 const form = reactive({
   label: props.host.label,
@@ -57,12 +65,12 @@ const inlineMode = computed(() => form.credential_id === null)
 
 const groupOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No group', muted: true },
-  ...hosts.groups.map((g) => ({ value: g.id, label: g.name })),
+  ...hosts.groups.filter(inVault).map((g) => ({ value: g.id, label: g.name })),
 ])
 
 const jumpOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'None — direct', muted: true },
-  ...jumpCandidates(hosts.hosts, props.host.id).map((h) => ({
+  ...jumpCandidates(hosts.hosts.filter(inVault), props.host.id).map((h) => ({
     value: h.id,
     label: h.label,
     hint: `${h.username}@${h.address}`,
@@ -84,7 +92,8 @@ onMounted(() => {
 
 async function newHostNote() {
   try {
-    const note = await notes.create(props.host.label, '')
+    // In the host's vault: a note can only be linked to a host of its own
+    const note = await notes.create(props.host.label, '', props.host.team_id)
     await notes.setHost(note.id, props.host.id)
     ui.openNote(note.id)
   } catch (e) {
@@ -94,7 +103,7 @@ async function newHostNote() {
 
 const credOptions = computed<ComboOption[]>(() => [
   { value: null, label: 'No credential', hint: 'set below', muted: true },
-  ...credentials.credentials.map((c) => ({
+  ...credentials.credentials.filter(inVault).map((c) => ({
     value: c.id,
     label: c.name,
     hint: c.username,
@@ -196,6 +205,8 @@ watch(
 
 /** True when the host is saved (or nothing needed saving). */
 async function saveField(): Promise<boolean> {
+  // Nothing here can change a host this account only views
+  if (readOnly.value) return true
   try {
     await saveFieldUnsafe()
     return true
@@ -324,9 +335,14 @@ function connect() {
           <span class="identity-meta">
             <PvText :text="metaLine" /> · {{ lastUsedText(host.last_used_at) }}
           </span>
+          <VaultChip v-if="host.team_id" :team-id="host.team_id" class="identity-vault" />
         </div>
       </div>
 
+      <p v-if="readOnly" class="ro-note">You can connect to this team's hosts, but not change them.</p>
+
+      <!-- Everything editable; a viewer's stays disabled -->
+      <fieldset class="ro-set" :disabled="readOnly">
       <!-- General -->
       <div class="panel-card">
         <div class="panel-card-title">General</div>
@@ -449,12 +465,14 @@ function connect() {
           </div>
         </template>
       </div>
+      </fieldset>
 
       <!-- Notes linked to this host: runbooks, quirks, commands -->
       <div class="panel-card">
         <div class="panel-card-head">
           <span class="panel-card-title">Notes</span>
           <button
+            v-if="!readOnly"
             class="btn-icon card-add"
             :aria-label="pv.t(`New note for ${host.label}`)"
             title="New note for this host"
@@ -500,6 +518,26 @@ function connect() {
 </template>
 
 <style scoped>
+/* Lays out as if it weren't there; it only carries `disabled` down */
+.ro-set {
+  display: contents;
+}
+
+.ro-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-2);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.identity-vault {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
 .details-panel {
   display: flex;
   flex-direction: column;

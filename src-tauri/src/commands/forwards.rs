@@ -5,6 +5,7 @@ use tauri::State;
 use crate::ssh::pool::{self, AppState};
 use crate::store::models::{PortForward, FORWARD_KINDS};
 use crate::store::db;
+use crate::store::vaults::{self, Teamed};
 use crate::Db;
 
 #[tauri::command]
@@ -34,6 +35,11 @@ pub fn upsert_forward(
     let kind = kind.unwrap_or_else(|| "local".into());
     let (remote_host, remote_port) = validate_forward(&name, &kind, local_port, remote_host.trim(), remote_port)?;
     let conn = db.0.lock().map_err(|_| "database busy")?;
+    // A forward is in its host's vault
+    if let Some(id) = id {
+        vaults::check_row(&conn, Teamed::PortForwards, id)?;
+    }
+    vaults::check_row(&conn, Teamed::Hosts, host_id)?;
     db::upsert_forward(&conn, id, host_id, name.trim(), &kind, local_port, &remote_host, remote_port, auto_start)
         .map_err(|e| e.to_string())
 }
@@ -90,6 +96,10 @@ mod tests {
 
 #[tauri::command]
 pub async fn delete_forward(state: State<'_, Arc<AppState>>, db: State<'_, Db>, id: i64) -> Result<(), String> {
+    {
+        let conn = db.0.lock().map_err(|_| "database busy")?;
+        vaults::check_row(&conn, Teamed::PortForwards, id)?;
+    }
     pool::forward_stop(state.inner().clone(), id).await;
     let conn = db.0.lock().map_err(|_| "database busy")?;
     db::delete_forward(&conn, id).map_err(|e| e.to_string())

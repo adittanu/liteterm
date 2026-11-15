@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::store::db;
 use crate::store::models::Note;
+use crate::store::vaults::{self, Teamed};
 use crate::Db;
 
 #[tauri::command]
@@ -14,44 +15,60 @@ pub fn list_notes(db: State<Db>) -> Result<Vec<Note>, String> {
     db::list_notes(&conn).map_err(|e| e.to_string())
 }
 
+/// `team_id` is the vault the note goes in (None: personal)
 #[tauri::command]
-pub fn create_note(db: State<Db>, title: Option<String>, body: Option<String>) -> Result<Note, String> {
+pub fn create_note(
+    db: State<Db>,
+    title: Option<String>,
+    body: Option<String>,
+    team_id: Option<String>,
+) -> Result<Note, String> {
     let conn = db.0.lock().map_err(|_| "database busy")?;
+    vaults::check(&conn, team_id.as_deref())?;
     db::create_note(
         &conn,
         title.as_deref().unwrap_or(""),
         body.as_deref().unwrap_or(""),
+        team_id.as_deref(),
     )
     .map_err(|e| e.to_string())
 }
 
+/// Opens the database for a change to note `id`, refused when it is in a
+/// team this account only views
+fn writable_note<'a>(db: &'a State<Db>, id: i64) -> Result<std::sync::MutexGuard<'a, rusqlite::Connection>, String> {
+    let conn = db.0.lock().map_err(|_| "database busy")?;
+    vaults::check_row(&conn, Teamed::Notes, id)?;
+    Ok(conn)
+}
+
 #[tauri::command]
 pub fn update_note(db: State<Db>, id: i64, title: String, body: String) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|_| "database busy")?;
+    let conn = writable_note(&db, id)?;
     db::update_note(&conn, id, &title, &body).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_note_pinned(db: State<Db>, id: i64, pinned: bool) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|_| "database busy")?;
+    let conn = writable_note(&db, id)?;
     db::set_note_pinned(&conn, id, pinned).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_note_archived(db: State<Db>, id: i64, archived: bool) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|_| "database busy")?;
+    let conn = writable_note(&db, id)?;
     db::set_note_archived(&conn, id, archived).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_note_tags(db: State<Db>, id: i64, tags: Vec<String>) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|_| "database busy")?;
+    let conn = writable_note(&db, id)?;
     db::set_note_tags(&conn, id, &tags).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_note_host(db: State<Db>, id: i64, host_id: Option<i64>) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|_| "database busy")?;
+    let conn = writable_note(&db, id)?;
     db::set_note_host(&conn, id, host_id).map_err(|e| e.to_string())
 }
 
@@ -63,7 +80,7 @@ pub fn reorder_notes(db: State<Db>, ids: Vec<i64>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn delete_note(db: State<Db>, id: i64) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|_| "database busy")?;
+    let conn = writable_note(&db, id)?;
     db::delete_note(&conn, id).map_err(|e| e.to_string())
 }
 

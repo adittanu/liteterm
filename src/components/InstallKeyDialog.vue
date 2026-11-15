@@ -4,6 +4,7 @@ import BaseModal from './BaseModal.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import { useHostsStore } from '../stores/hosts'
 import { useUiStore } from '../stores/ui'
+import { useTeamsStore } from '../stores/teams'
 import { errorText } from '../stores/sessions'
 import { installKeyOn, switchHostToKey, type KeySource } from '../utils/installKey'
 import { isSsh } from '../utils/hostProtocol'
@@ -15,6 +16,7 @@ const props = defineProps<{ source: KeySource; keyName: string }>()
 const emit = defineEmits<{ close: [] }>()
 
 const hosts = useHostsStore()
+const teams = useTeamsStore()
 const ui = useUiStore()
 
 const hostId = ref<number | null>(null)
@@ -41,7 +43,9 @@ async function install() {
   if (!h || busy.value) return
   busy.value = true
   const source = props.source
-  const switchTo = switchLogin.value && !alreadyUses.value
+  // Already logging in with this key, or a team host this account only views:
+  // the login stays as it is
+  const switchTo = switchLogin.value && !alreadyUses.value && teams.canEdit(h.team_id)
   // Close first: the login may stop for a password or host key prompt, and
   // that dialog must not sit underneath this one
   emit('close')
