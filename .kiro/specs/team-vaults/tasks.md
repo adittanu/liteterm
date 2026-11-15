@@ -1,6 +1,6 @@
 # Shared team vaults: tasks
 
-- [ ] 1. Crypto: account keys and team keys
+- [x] 1. Crypto: account keys and team keys
   - Add `x25519-dalek` (static secrets). New `cloud/team_crypto.rs`: make an
     account key pair, seal/open the private key with the personal vault key,
     sealed box for team keys, team item encrypt/decrypt with the team AAD,
@@ -8,7 +8,7 @@
   - Unit tests: round trips, wrong recipient, item moved between teams fails.
   - _Requirements: 1.1, 1.2, 2.3, 6.3_
 
-- [ ] 2. Server migration
+- [x] 2. Server migration
   - `supabase/migrations/2026111x_team_vaults.sql`: tables, RLS, RPCs and
     limits from the design, tried in a rolled-back transaction on the live
     project, then applied with `supabase db query --linked -f`.

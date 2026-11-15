@@ -75,15 +75,20 @@ the invitee `select` on invites addressed to their email
 |---|---|---|
 | `put_account_key(public_key, private_key_sealed)` | anyone | first key only; never overwritten |
 | `create_team(name, wrapped_team_key)` | anyone | team + owner row, epoch 1 |
-| `invite_member(team_id, email, role)` | owner, admin | invite row, 7-day expiry |
+| `invite_member(team_id, email, role)` | owner, admin | invite row, 7-day expiry; only an owner invites an admin |
 | `accept_invite(invite_id)` | invitee | attaches the caller's public key |
-| `admit_member(invite_id, wrapped_team_key)` | owner, admin | member row at the current epoch, deletes the invite |
-| `remove_member(team_id, user_id)` | owner, admin (owner for admins) | deletes the row; refuses the last owner |
-| `set_role(team_id, user_id, role)` | owner | |
-| `leave_team(team_id)` | member | refuses the last owner |
-| `push_team_items(team_id, items)` | owner, admin, editor | as `push_items`, rev per team, records `epoch` |
-| `rotate_team_key(team_id, new_epoch, wrapped_keys jsonb, items jsonb)` | owner, admin | in one transaction: bumps epoch, replaces every member's wrapped key, rewrites items in pages (called repeatedly with `items`, epoch bump on the first call) |
-| `delete_team(team_id)` | owner | cascades |
+| `cancel_invite(invite_id)` | invitee, owner, admin | declines or withdraws |
+| `admit_member(invite_id, epoch, wrapped_key)` | owner, admin | member row and key copy at the current epoch; refused while items still use an older key, or if the invitee's key changed since accepting |
+| `remove_member(team_id, user_id, new_epoch, wrapped)` | owner, admin (owner for owners/admins) | removes and starts the new epoch in one transaction; `wrapped` must cover exactly the remaining members |
+| `set_member_role(team_id, user_id, role)` | owner | keeps at least one owner |
+| `leave_team(team_id, new_epoch, wrapped)` | member | also starts a new epoch; refuses the last owner |
+| `push_team_items(team_id, epoch, items)` | owner, admin, editor | as `push_items`, rev per team; refused unless `epoch` is current |
+| `rewrite_team_items(team_id, epoch, items)` | owner, admin | after a new epoch: replaces old-key copies (unless edited meanwhile) without moving rev; deletes old key copies once none is used; returns how many items are left |
+| `rename_team`, `delete_team` | owner, admin / owner | |
+
+Each member's key copies live in `team_keys (team_id, user_id, epoch,
+wrapped_key)`, readable only by that member. The invite also stores the team
+name and the inviter's email, since the invitee can't read the team yet.
 
 Pull is a plain `GET /rest/v1/team_items?team_id=eq.{id}&rev=gt.{n}&order=rev`.
 Membership listing: `GET /rest/v1/team_members?select=team_id,role,epoch,wrapped_team_key,teams(name,rev,epoch)`.
