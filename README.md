@@ -120,6 +120,8 @@
 - **Notes** with `#tags`, linked to a host. A code block's **Run** sends it to that host's terminal.
 - **Passwords** in the OS keychain, never in LiteTerm's database.
 - **Sync** between your computers, if you sign in: end-to-end encrypted with a master password the server never sees.
+- **Team vaults**, free: share hosts, groups, credentials, snippets, notes and port forwards with a team, encrypted on each member's computer. See [Team vaults](#team-vaults).
+- **Keys stored in LiteTerm**: a credential can carry its private key, so it signs in on every computer, and for every teammate, without copying a key file.
 - **Import** from `~/.ssh/config` and `known_hosts`, or a Termius export. Export and import LiteTerm's own file.
 - **Privacy mode** swaps host names and addresses for stand-ins, so screenshots are safe to share.
 - **Shortcuts** you can rebind.
@@ -128,6 +130,32 @@
 </td>
   </tr>
 </table>
+
+<br>
+
+## Team vaults
+
+A team vault holds hosts, groups, credentials, snippets, notes and port forwards that every member gets, next to their own. It is free, and it needs sync with a master password.
+
+1. **Create** a team under Settings, Teams, then invite people by email. No email is sent: tell them to open Settings, Teams in LiteTerm, signed in with that address.
+2. **They accept**, and their LiteTerm shows a 20-digit **safety code** made from their account's public key.
+3. **You admit them** after they read you that code and it matches the one LiteTerm shows you for their invite. The team key is then sealed to the key you checked, so a server that swapped in another key would get nothing.
+4. **Use it**: each team gets its own section in Hosts. Make new items there, or move a host, a group or a snippet in from its menu. Its credential and port forwards come along, and its saved passwords become readable to the team.
+
+| Role | Can |
+|:--|:--|
+| Viewer | Connect, open SFTP and forwards, read notes. Change nothing. |
+| Editor | Also add, change and delete items. |
+| Admin | Also invite, admit and remove editors and viewers, and rename the team. |
+| Owner | Also invite and remove admins, change roles and delete the team. A team keeps at least one owner. |
+
+**What the server sees.** Team names, members' email addresses and roles, invites, public keys, the team key sealed to each member, and the items as encrypted blobs with their ids, sizes and times. It can't read the items, their passwords or their keys.
+
+**When someone leaves** or is removed, LiteTerm makes a new team key, re-encrypts the team's items with it and seals it to the members who stay. Their computers delete the team's items on the next sync. What they already saw can't be taken back, so whoever removes them gets a list of the team's saved passwords, to change on the servers.
+
+**Key files** can't be shared as paths, so a team credential that signs in with a key carries the key itself: choose the file, and LiteTerm reads it once, unlocks it with its passphrase and stores it in the vault. Personal credentials can do the same with **Store the key in LiteTerm**. On each computer the key sits in LiteTerm's database, encrypted with a key kept in the OS keychain.
+
+A team holds up to 50 members and 5,000 items, and an account owns up to 20 teams.
 
 <br>
 
@@ -143,7 +171,7 @@ flowchart LR
     DB[("SQLite, WAL<br/>hosts · notes · snippets")]
     Keys[("OS keyring<br/>Credential Manager · Keychain<br/>Secret Service")]
     Servers(["Your servers"])
-    Vault[("Sync vault, optional<br/>Supabase · encrypted items")]
+    Vault[("Sync, optional<br/>Supabase · personal and<br/>team vaults, encrypted items")]
 
     UI <-->|commands and events| Core
     Core --> SSH
@@ -166,7 +194,10 @@ Better to read this before you install than to find out after.
 | **No Pageant** | PuTTY's agent isn't read. The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work, for signing in and for agent forwarding. |
 | **FIDO2 security keys are untried** | `ed25519-sk` and `ecdsa-sk` keys (YubiKey and the like) held in an SSH agent are offered, after the keys that need no touch, but this hasn't been tested with a hardware key yet. A security-key file can't be used directly: load it with `ssh-add` first. |
 | **Jump hosts need a saved login** | A password with Remember, a key or an agent. |
-| **Sync carries key paths, not key files** | A synced host remembers where its private key is: copy the key to the same place, or use an SSH agent. Images in notes don't sync yet. |
+| **Sync carries key paths, not key files** | A synced host, or a credential that uses a key file, remembers where the key is: copy it to the same place, store the key in LiteTerm (credentials only), or use an SSH agent. Images in notes don't sync yet. |
+| **A stored key has no certificate** | A `-cert.pub` is found next to a key file only. For a certificate, use the key file or the SSH agent. |
+| **Teams need 1.14** | Older versions keep syncing the personal vault and never see team items. |
+| **Resetting the vault everywhere ends teams for that account** | Your team keys open with an account key kept in your vault. If you reset the vault while no computer of yours still holds that key, LiteTerm can't open any team vault on that account again, new ones included. Reset on one computer while another stays signed in, and that one carries the key over. |
 | **Older versions see every forward as local** | LiteTerm 1.11 and earlier don't know remote and SOCKS forwards. Synced to such a computer, those run there as local forwards. Update every computer that syncs. |
 | **Telnet and serial hosts need 1.13** | Older versions treat them as SSH hosts and fail to connect. Serial lines are fixed at 8N1 without flow control, and Telnet has no local echo for servers that expect one. |
 | **macOS and Linux are new** | Those builds come from CI and have had far less testing than Windows. |
@@ -227,9 +258,10 @@ To get DevTools (<kbd>F12</kbd>) in a release build, build the diagnostic instal
 ```
 src/                     Vue 3 frontend: views, components, stores, design tokens
 src-tauri/src/ssh/       russh client, session pool, SFTP, port forwarding
-src-tauri/src/store/     SQLite (migrations and queries) and keyring helpers
-src-tauri/src/cloud/     optional sync: vault encryption, Supabase client, sync loop
+src-tauri/src/store/     SQLite (migrations and queries), keyring helpers, vaults and stored keys
+src-tauri/src/cloud/     optional sync: vault and team encryption, Supabase client, sync loop
 supabase/migrations/     the sync server's schema and access rules
+supabase/tests/          the server's team vault rules, tried in a rolled-back transaction
 src-tauri/src/commands/  Tauri commands
 src-tauri/vendor/        portable-pty fork (ConPTY passthrough)
 site/                    the landing page (Astro), deployed to GitHub Pages

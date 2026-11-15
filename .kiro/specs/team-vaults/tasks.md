@@ -48,6 +48,6 @@
     LiteTerm" in the credential dialog (always on for team credentials).
   - _Requirements: 7.3_
 
-- [ ] 8. Docs and landing
+- [x] 8. Docs and landing
   - README (how teams work, what the server sees, the safety code), FAQ,
     Compare row "Shared team vaults".

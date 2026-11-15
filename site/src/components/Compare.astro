@@ -64,7 +64,7 @@ const groups: { name: string; rows: [string, Cell, Cell, Cell][] }[] = [
     rows: [
       ['Windows, macOS and Linux', yes(), yes(), yes()],
       ['iPhone, iPad and Android', no(), yes(), yes()],
-      ['Shared team vaults', no(), no(), no('Team plan, $20 a seat')],
+      ['Shared team vaults', yes('Free, end to end encrypted'), no(), no('Team plan, $20 a seat')],
     ],
   },
 ];
@@ -78,8 +78,8 @@ const SR: Record<Kind, string> = { yes: 'Yes', no: 'No', part: 'Partly', text: '
       <p class="eyebrow"><b>02</b> · Compare</p>
       <h2 id="compare-title">LiteTerm and Termius, side by side.</h2>
       <p class="lede">
-        Termius covers more ground, especially on phones and in teams. LiteTerm gives you sync between computers, a startup command per host and
-        runbook notes for free.
+        Termius covers more ground, especially on phones. LiteTerm gives you sync between computers, shared team vaults, a startup command per
+        host and runbook notes for free.
       </p>
     </div>
 

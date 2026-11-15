@@ -6,15 +6,19 @@ import { REPO_URL } from '../data/release';
 const faq = [
   {
     q: 'Is LiteTerm free?',
-    a: "Yes. There is no subscription and no license key, and you don’t need an account: signing in is only for sync, which is optional. The code is on GitHub.",
+    a: "Yes, team vaults included. There is no subscription and no license key, and you don’t need an account: signing in is only for sync and teams, which are optional. The code is on GitHub.",
   },
   {
     q: 'Where are my passwords stored?',
-    a: "In your operating system’s keychain: the Windows Credential Manager, the macOS Keychain or the Secret Service on Linux. LiteTerm’s own database holds addresses, user names and settings, never passwords. With sync on, a copy also goes to your cloud vault, encrypted on your computer first.",
+    a: "In your operating system’s keychain: the Windows Credential Manager, the macOS Keychain or the Secret Service on Linux. LiteTerm’s own database holds addresses, user names and settings, never passwords. A private key you store in LiteTerm sits in that database encrypted, with its key in the keychain. With sync on, a copy also goes to your cloud vault, encrypted on your computer first.",
   },
   {
     q: 'Does it sync between my computers?',
-    a: 'If you want it to. Sign in with your email under Settings, Account & sync, and set a master password. Hosts, groups, credentials with their saved passwords, snippets, notes, port forwards and known hosts are encrypted on your computer before they are uploaded, so the server keeps only data it cannot read. A computer that already has hosts of its own adds them to the vault next to the synced ones.',
+    a: 'If you want it to. Sign in with your email under Settings, Account & sync, and set a master password. Hosts, groups, credentials with their saved passwords and stored keys, snippets, notes, port forwards and known hosts are encrypted on your computer before they are uploaded, so the server keeps only data it cannot read. A computer that already has hosts of its own adds them to the vault next to the synced ones.',
+  },
+  {
+    q: 'Can I share hosts with my team?',
+    a: 'Yes, for free. With sync on, open Settings, Teams and create a team, then invite people by email. They accept in LiteTerm and read you their safety code; you admit them once it matches the one you see. A team’s hosts, groups, credentials, snippets, notes and port forwards are encrypted on its members’ computers with a key only they have. Credentials carry their private keys, so nobody copies key files around. Viewers can connect but not change anything, and when someone leaves, the team key changes and LiteTerm lists the saved passwords they could read.',
   },
   {
     q: 'What if I forget my master password?',
@@ -22,7 +26,7 @@ const faq = [
   },
   {
     q: 'How is LiteTerm different from Termius?',
-    a: 'Both are SSH clients with SFTP, port forwarding, snippets and jump hosts. LiteTerm is free and open source, syncs between your computers without a subscription, keeps passwords in your OS keychain and adds notes you can run from. Termius has phone and tablet apps, Mosh and team vaults; syncing needs its Pro plan. The comparison table above lists the details.',
+    a: 'Both are SSH clients with SFTP, port forwarding, snippets and jump hosts. LiteTerm is free and open source, syncs between your computers and shares team vaults without a subscription, keeps passwords in your OS keychain and adds notes you can run from. Termius has phone and tablet apps and Mosh; syncing needs its Pro plan, and team vaults its Team plan. The comparison table above lists the details.',
   },
   {
     q: 'Can I bring my hosts from another app?',
