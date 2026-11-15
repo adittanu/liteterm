@@ -2,12 +2,8 @@
 // Straight from the project's own list of limits (README "Batasan") and the app's behavior.
 const limits = [
   {
-    title: 'SFTP moves files, not folders',
-    text: 'Folder transfers and resuming an interrupted transfer are not built yet.',
-  },
-  {
-    title: 'Local port forwards only',
-    text: 'Forwarding supports <code>-L</code>. There is no remote (<code>-R</code>) or dynamic (<code>-D</code>) forwarding.',
+    title: 'Interrupted transfers start over',
+    text: 'SFTP does not resume a file or folder transfer that broke off.',
   },
   {
     title: 'No agent forwarding, no Pageant',
@@ -22,8 +18,8 @@ const limits = [
     text: 'Those builds come from CI and have had far less testing than the Windows one.',
   },
   {
-    title: 'Updates install themselves on Windows only',
-    text: 'On macOS and Linux the update button opens the download page.',
+    title: 'Mac updates need the Applications folder',
+    text: 'Started from the disk image, or straight from Downloads, LiteTerm can’t replace itself and opens the download page instead.',
   },
 ];
 ---

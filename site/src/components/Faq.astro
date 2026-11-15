@@ -38,7 +38,7 @@ const faq = [
   },
   {
     q: 'How do updates work?',
-    a: 'On Windows, LiteTerm checks GitHub Releases, downloads the new installer and restarts itself. On macOS and Linux it tells you a new version exists and opens the download page.',
+    a: 'LiteTerm checks GitHub Releases, downloads the new version, checks it against the SHA-256 checksum GitHub publishes and restarts into it. On Windows that is the installer; on a Mac the new app replaces the old one, as long as LiteTerm runs from Applications; on Linux the AppImage is replaced in place, and a .deb or .rpm is installed by your package manager after you enter your password.',
   },
   {
     q: 'Why does macOS say it cannot verify the app?',

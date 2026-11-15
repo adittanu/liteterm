@@ -55,8 +55,8 @@
   <tr>
     <td><b>Updates</b></td>
     <td>Installs itself from inside the app</td>
-    <td>Opens the release page</td>
-    <td>Opens the release page</td>
+    <td>Installs itself from inside the app</td>
+    <td>Installs itself: the AppImage in place, a <code>.deb</code> or <code>.rpm</code> after your password</td>
   </tr>
   <tr>
     <td><b>Status</b></td>
@@ -104,8 +104,8 @@
 - **Notices** when a long command finishes or a program rings the bell in a tab you aren't looking at, and the computer stays awake while a command runs.
 - **Paste a screenshot**: it goes to the server's `/tmp` and its path is pasted, for agent CLIs such as opencode.
 - **Auto-reconnect** after a Wi-Fi switch or a sleeping laptop, in the same tab, scrollback kept.
-- **SFTP** in two panes: this computer and a host, or two hosts. Progress and cancel.
-- **Port forwarding** (`-L`) you start and stop from a list, or that starts with its host.
+- **SFTP** in two panes: this computer and a host, or two hosts. Files or whole folders, with progress and cancel.
+- **Port forwarding**: local (`-L`), remote (`-R`) and a SOCKS proxy (`-D`), started from a list or with their host.
 - **Snippets**: run in one click, or Shift+click to insert. `{{name}}` placeholders are asked for first.
 - **Local terminal** next to your sessions.
 
@@ -158,8 +158,8 @@ Better to read this before you install than to find out after.
 
 | | |
 |:--|:--|
-| **SFTP moves files, not folders** | Folder transfers and resuming an interrupted transfer are not built yet. |
-| **Local port forwards only** | Forwarding supports `-L`, not remote (`-R`) or dynamic (`-D`). |
+| **Interrupted transfers start over** | SFTP does not resume a file or folder transfer that broke off. |
+| **Mac updates need the Applications folder** | Started from the disk image, or straight from Downloads, LiteTerm can't replace itself and opens the release page instead. |
 | **No agent forwarding, no Pageant** | The OpenSSH agent, 1Password, Bitwarden and KeePassXC all work. |
 | **Jump hosts need a saved login** | A password with Remember, a key or an agent. |
 | **Sync carries key paths, not key files** | A synced host remembers where its private key is: copy the key to the same place, or use an SSH agent. Images in notes don't sync yet. |
