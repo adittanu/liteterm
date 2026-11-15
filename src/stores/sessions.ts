@@ -569,12 +569,18 @@ export const useSessionsStore = defineStore('sessions', () => {
       size: number
       done: boolean
       error?: string
+      filesDone?: number
+      filesTotal?: number
+      skipped?: number
     }>('transfer:progress', (e) => {
       updateTransfer(e.payload.transferId, {
         transferred: e.payload.transferred,
         size: e.payload.size,
         done: e.payload.done,
         error: e.payload.error,
+        filesDone: e.payload.filesDone,
+        filesTotal: e.payload.filesTotal,
+        skipped: e.payload.skipped,
       })
     })
 

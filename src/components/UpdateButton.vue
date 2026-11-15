@@ -30,7 +30,13 @@ const tooltip = computed(() => {
     case 'downloading':
       return `Downloading v${latest} — ${fmtMB(updater.downloaded)} of ${fmtMB(updater.total)} MB`
     case 'ready':
-      return `Restart LiteTerm to finish updating to v${latest}`
+      return updater.info?.installMethod === 'package'
+        ? `Install LiteTerm v${latest}: your system asks for your password, then LiteTerm restarts`
+        : `Restart LiteTerm to finish updating to v${latest}`
+    case 'installing':
+      return updater.info?.installMethod === 'package'
+        ? `Installing v${latest}: enter your password in the system prompt`
+        : `Installing v${latest}…`
     case 'uptodate':
       return `LiteTerm is up to date${current ? ` (v${current})` : ''}`
     default:
@@ -39,7 +45,7 @@ const tooltip = computed(() => {
 })
 
 const busy = computed(
-  () => updater.status === 'checking' || updater.status === 'downloading',
+  () => updater.status === 'checking' || updater.status === 'downloading' || updater.status === 'installing',
 )
 </script>
 

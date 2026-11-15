@@ -70,6 +70,7 @@ export const useForwardsStore = defineStore('forwards', () => {
       input.id ?? null,
       input.host_id,
       input.name,
+      input.kind,
       input.local_port,
       input.remote_host,
       input.remote_port,

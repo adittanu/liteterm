@@ -160,6 +160,19 @@ pub struct PortForwardData {
     pub remote_port: i64,
     #[serde(default)]
     pub auto_start: bool,
+    /// "local", "remote" or "dynamic" (the `kind` column; `kind` itself is the
+    /// payload tag). Left out for a local forward, so those push the same
+    /// payload as before; a payload without it is local
+    #[serde(default = "local_kind", skip_serializing_if = "is_local_kind")]
+    pub forward_kind: String,
+}
+
+fn local_kind() -> String {
+    "local".into()
+}
+
+fn is_local_kind(kind: &str) -> bool {
+    kind == "local"
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -386,7 +399,7 @@ fn read_payload(
         )?,
         "port_forward" => one(
             "SELECT h.sync_id, f.name, f.local_port, f.remote_host, f.remote_port, f.auto_start, \
-             f.modified_at FROM port_forwards f JOIN hosts h ON h.id = f.host_id \
+             f.modified_at, f.kind FROM port_forwards f JOIN hosts h ON h.id = f.host_id \
              WHERE f.sync_id = ?1",
             &|r| {
                 Ok((
@@ -397,6 +410,7 @@ fn read_payload(
                         remote_host: r.get(3)?,
                         remote_port: r.get(4)?,
                         auto_start: r.get::<_, i64>(5)? != 0,
+                        forward_kind: r.get(7)?,
                     }),
                     r.get(6)?,
                 ))
@@ -672,6 +686,7 @@ fn apply_upsert(
                     ("remote_host", &d.remote_host),
                     ("remote_port", &d.remote_port),
                     ("auto_start", &d.auto_start),
+                    ("kind", &d.forward_kind),
                 ],
             )?;
         }
@@ -1019,7 +1034,7 @@ mod tests {
         ids.insert("note", note);
         ids.insert(
             "forward",
-            db::upsert_forward(c, None, web, "pg", 5432, "localhost", 5432, true).unwrap().id,
+            db::upsert_forward(c, None, web, "pg", "local", 5432, "localhost", 5432, true).unwrap().id,
         );
         ids.insert("snippet", db::upsert_snippet(c, None, "df", "df -h").unwrap().id);
         db::remember_host_key(c, "web.example:22", "ssh-ed25519", "AAAA", "SHA256:x").unwrap();
@@ -1038,6 +1053,33 @@ mod tests {
         // Fields a later version adds are ignored, ones it drops default
         let p: Payload = serde_json::from_str(r#"{"kind":"snippet","name":"a","command":"b","new":1}"#).unwrap();
         assert_eq!(p, Payload::Snippet(SnippetData { name: "a".into(), command: "b".into(), sort: 0 }));
+    }
+
+    #[test]
+    fn a_forward_kind_syncs_and_old_payloads_read_as_local() {
+        let (a, b, mut server) = (Device::new(), Device::new(), Server::default());
+        let host = a.add_host("app");
+        db::upsert_forward(&a.conn, None, host, "socks", "dynamic", 1080, "", 0, false).unwrap();
+        db::upsert_forward(&a.conn, None, host, "pg", "local", 5432, "localhost", 5432, false).unwrap();
+        for q in queued(&a.conn, &a.secrets).unwrap() {
+            let json = serde_json::to_string(&q.payload).unwrap();
+            if json.contains("\"pg\"") {
+                assert!(!json.contains("forward_kind"), "local forwards push what they pushed before: {json}");
+            }
+        }
+        a.sync_with(&mut server);
+        b.sync_with(&mut server);
+        assert_eq!(b.val::<String>("SELECT kind FROM port_forwards WHERE name = 'socks'"), "dynamic");
+        assert_eq!(b.val::<String>("SELECT kind FROM port_forwards WHERE name = 'pg'"), "local");
+
+        let old: Payload = serde_json::from_str(
+            r#"{"kind":"port_forward","host":"h","name":"n","local_port":1,"remote_host":"x","remote_port":2}"#,
+        )
+        .unwrap();
+        match old {
+            Payload::PortForward(d) => assert_eq!(d.forward_kind, "local"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1300,6 +1342,7 @@ mod tests {
                 remote_host: "localhost".into(),
                 remote_port: 5432,
                 auto_start: false,
+                forward_kind: "local".into(),
             })),
             modified_at: 1,
         };

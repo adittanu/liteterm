@@ -57,7 +57,9 @@ const overall = computed(() => {
 const title = computed(() => {
   if (active.value.length) {
     const pct = overall.value !== null ? ` · ${Math.round(overall.value * 100)}%` : ''
-    return `${active.value.length === 1 ? 'Transferring 1 file' : `Transferring ${active.value.length} files`}${pct}`
+    const n = active.value.length
+    const noun = active.value.some((t) => t.filesTotal !== undefined) ? (n === 1 ? 'item' : 'items') : n === 1 ? 'file' : 'files'
+    return `Transferring ${n} ${noun}${pct}`
   }
   if (failed.value.length) return failed.value.length === 1 ? '1 transfer failed' : `${failed.value.length} transfers failed`
   return 'All transfers complete'
@@ -67,14 +69,24 @@ function pct(t: Transfer): number {
   return t.size ? Math.min(100, (t.transferred / t.size) * 100) : 0
 }
 
+function files(n: number): string {
+  return n === 1 ? '1 file' : `${n} files`
+}
+
 function detail(t: Transfer): string {
   if (t.error) return t.error === 'Cancelled' ? 'Cancelled' : t.error
-  if (t.done) return t.size > 1 ? `${fmtBytes(t.size)} · Done` : 'Done'
-  if (!t.size) return 'Starting…'
+  const folder = t.filesTotal !== undefined
+  const skipped = t.skipped ? ` · ${t.skipped} skipped` : ''
+  if (t.done) {
+    if (folder) return `${files(t.filesTotal!)}${t.size ? ` · ${fmtBytes(t.size)}` : ''} · Done${skipped}`
+    return t.size > 1 ? `${fmtBytes(t.size)} · Done` : 'Done'
+  }
+  if (!t.size) return folder ? `${files(t.filesTotal!)} · Starting…` : 'Starting…'
   const s = samples[key(t)]?.speed ?? 0
   const left = s > 0 ? (t.size - t.transferred) / s : null
   const eta = left === null ? '' : left < 60 ? ` · ${Math.max(1, Math.round(left))}s left` : ` · ${Math.round(left / 60)} min left`
-  return `${fmtBytes(t.transferred)} of ${fmtBytes(t.size)}${s > 0 ? ` · ${fmtBytes(s)}/s` : ''}${eta}`
+  const count = folder ? ` · ${t.filesDone ?? 0} of ${files(t.filesTotal!)}` : ''
+  return `${fmtBytes(t.transferred)} of ${fmtBytes(t.size)}${count}${s > 0 ? ` · ${fmtBytes(s)}/s` : ''}${eta}`
 }
 
 function icon(t: Transfer) {

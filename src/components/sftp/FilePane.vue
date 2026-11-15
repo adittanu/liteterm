@@ -13,6 +13,7 @@ import {
   EyeOff,
   FolderOpen,
   FolderPlus,
+  FolderUp,
   HardDrive,
   House,
   Laptop,
@@ -152,24 +153,24 @@ function setSort(key: SortKey) {
 const towardRight = computed(() => p.idx === 0)
 
 const send = computed(() => {
-  const files = selection.value.filter((e) => e.kind === 'file')
-  const folders = selection.value.length - files.length
+  // Files and folders both transfer (a link goes as what it points to)
+  const items = selection.value.filter((e) => e.kind !== 'other')
   const o = props.other
   let label = 'Send'
   let reason: string | null = null
-  if (!files.length) reason = folders ? 'Folders can’t be transferred yet — select files' : null
+  if (!items.length) reason = selection.value.length ? 'Devices and sockets can’t be copied' : null
   else if (!isReady(o)) reason = 'Open a location on the other side first'
   else if (p.kind === 'local' && o.kind === 'local') reason = 'Copying between local folders isn’t supported'
   if (p.kind === 'local' && o.kind === 'ssh') label = `Upload to ${o.hostLabel}`
   else if (p.kind === 'ssh' && o.kind === 'local') label = `Download to ${thisComputer}`
   else if (p.kind === 'ssh' && o.kind === 'ssh')
     label = o.sessionId === p.sessionId ? `Move to ${baseName(o.path) || '/'}` : `Copy to ${o.hostLabel}`
-  return { files, folders, label, reason }
+  return { items, label, reason }
 })
 
 function sendSelection() {
-  if (send.value.reason || !send.value.files.length) return
-  emit('send', send.value.files.map((f) => f.name), null)
+  if (send.value.reason || !send.value.items.length) return
+  emit('send', send.value.items.map((f) => f.name), null)
 }
 
 // ---- selection (Finder/Explorer semantics) ----
@@ -469,7 +470,12 @@ function paneItems(): MenuItem[] {
   const items: MenuItem[] = []
   if (ready.value) {
     items.push({ label: 'New folder', icon: FolderPlus, action: startCreate })
-    if (p.kind === 'ssh') items.push({ label: 'Upload files…', icon: Upload, action: () => void pickUpload() })
+    if (p.kind === 'ssh') {
+      items.push(
+        { label: 'Upload files…', icon: Upload, action: () => void pickUpload() },
+        { label: 'Upload folder…', icon: FolderUp, action: () => void pickUploadFolder() },
+      )
+    }
     items.push(
       { label: 'Refresh', icon: RefreshCw, action: () => void refresh(p) },
       {
@@ -508,9 +514,9 @@ function rowMenu(e: MouseEvent, entry: FileEntry) {
   if (single && (single.kind === 'dir' || single.kind === 'symlink')) {
     items.push({ label: 'Open', icon: FolderOpen, action: () => openDir(p, single.name) })
   }
-  if (send.value.files.length) {
+  if (send.value.items.length) {
     items.push({
-      label: pv.t(send.value.files.length > 1 ? `${send.value.label} (${send.value.files.length})` : send.value.label),
+      label: pv.t(send.value.items.length > 1 ? `${send.value.label} (${send.value.items.length})` : send.value.label),
       icon: p.kind === 'ssh' && props.other.kind === 'local' ? ArrowDownToLine : ArrowUpFromLine,
       disabled: !!send.value.reason,
       action: sendSelection,
@@ -535,6 +541,11 @@ function rowMenu(e: MouseEvent, entry: FileEntry) {
 async function pickUpload() {
   const paths = await api.pickFiles(pv.t(`Upload to ${p.hostLabel}`))
   if (paths.length) emit('upload', paths)
+}
+
+async function pickUploadFolder() {
+  const path = await api.pickDirectory(pv.t(`Upload a folder to ${p.hostLabel}`))
+  if (path) emit('upload', [path])
 }
 
 // Selection changes from the outside (e.g. after navigating) keep the row visible
@@ -760,7 +771,7 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
             <span class="state-icon"><FolderOpen :size="20" :stroke-width="1.5" aria-hidden="true" /></span>
             <p class="state-title">This folder is empty</p>
             <p class="state-sub">
-              {{ hiddenCount ? `${plural(hiddenCount, 'hidden item')} — ` : '' }}{{ pane.kind === 'ssh' ? 'Drop files here to upload.' : 'Drag files here from the other side.' }}
+              {{ hiddenCount ? `${plural(hiddenCount, 'hidden item')} — ` : '' }}{{ pane.kind === 'ssh' ? 'Drop files or folders here to upload.' : 'Drag files or folders here from the other side.' }}
             </p>
             <button v-if="hiddenCount" class="btn btn-ghost" @click.stop="emit('toggle-hidden')">Show hidden</button>
           </template>
@@ -837,14 +848,14 @@ defineExpose({ focusPath: () => pathBar.value?.beginEdit(), focusList, startCrea
         <Transition name="send" mode="out-in">
           <span v-if="send.reason" key="hint" class="send-hint">{{ send.reason }}</span>
           <button
-            v-else-if="send.files.length"
+            v-else-if="send.items.length"
             key="send"
             class="btn btn-primary send-btn"
             :title="pv.t(`${send.label} — you can also drag, or double-click a file`)"
             @click="sendSelection"
           >
             <ArrowLeft v-if="!towardRight" :size="13" :stroke-width="2" aria-hidden="true" />
-            <span class="text-ellipsis"><PvText :text="send.files.length > 1 ? `${send.label} · ${send.files.length}` : send.label" /></span>
+            <span class="text-ellipsis"><PvText :text="send.items.length > 1 ? `${send.label} · ${send.items.length}` : send.label" /></span>
             <ArrowRight v-if="towardRight" :size="13" :stroke-width="2" aria-hidden="true" />
           </button>
         </Transition>

@@ -101,10 +101,18 @@ export interface Note {
   archived: boolean // hidden from All Notes; listed under Archive
 }
 
+/**
+ * local (-L): listen on this computer's local_port, reach remote_host:remote_port from the server.
+ * remote (-R): the server listens on remote_port, connections reach remote_host:local_port from this computer.
+ * dynamic (-D): a SOCKS proxy on this computer's local_port; remote_host and remote_port are unused.
+ */
+export type ForwardKind = 'local' | 'remote' | 'dynamic'
+
 export interface PortForward {
   id: number
   host_id: number
   name: string
+  kind: ForwardKind
   local_port: number
   remote_host: string
   remote_port: number
@@ -162,6 +170,10 @@ export interface Transfer {
   transferred: number
   done: boolean
   error?: string
+  /** Folders: files copied so far, of how many, and entries left out (links to folders, devices) */
+  filesDone?: number
+  filesTotal?: number
+  skipped?: number
 }
 
 export interface AppSettings {
@@ -245,6 +257,8 @@ export interface UpdateAsset {
   name: string
   size: number
   url: string
+  /** SHA-256 GitHub published for the asset; the download is checked against it */
+  sha256?: string | null
 }
 
 export interface UpdateInfo {
@@ -254,9 +268,10 @@ export interface UpdateInfo {
   releaseUrl: string | null
   notes: string | null
   asset: UpdateAsset | null
-  /** The app can download and run the installer itself (Windows only);
-   *  elsewhere an update means opening the release page. */
+  /** The app can download and install the update itself; when false an update means opening the release page */
   autoInstall: boolean
+  /** installer (Windows), app (macOS), appimage, package (deb/rpm: asks for a password), page (release page) */
+  installMethod: 'installer' | 'app' | 'appimage' | 'package' | 'page'
 }
 
 // ---- account / cloud sync ----

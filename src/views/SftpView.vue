@@ -21,6 +21,7 @@ import {
 } from '../components/sftp/pane'
 import { baseName, joinLocal, joinPath, joinRemote, safeLocalName, samePath } from '../components/sftp/fsUtils'
 import { hasMod, isWindows } from '../utils/platform'
+import type { FileEntry } from '../types'
 
 const sessions = useSessionsStore()
 const dialogs = useDialogsStore()
@@ -120,11 +121,25 @@ watch(
   },
 )
 
-async function confirmReplace(names: string[], where: string): Promise<boolean> {
+function isFolderLike(e: FileEntry): boolean {
+  return e.kind === 'dir' || e.kind === 'symlink'
+}
+
+async function confirmReplace(names: string[], where: string, folders = false): Promise<boolean> {
   const list = names.slice(0, 3).map((n) => `“${n}”`).join(', ') + (names.length > 3 ? ` and ${names.length - 3} more` : '')
+  const one = names.length === 1
+  if (folders) {
+    // A folder that exists is merged into, not wiped: say what really happens
+    return dialogs.confirm({
+      title: one ? `“${names[0]}” is already there` : `${names.length} items are already there`,
+      message: `${list} already ${one ? 'exists' : 'exist'} in ${where}. Folders are merged: files with the same name inside are replaced, and the rest are kept.`,
+      confirmLabel: 'Merge and replace',
+      danger: true,
+    })
+  }
   return dialogs.confirm({
-    title: names.length === 1 ? `Replace “${names[0]}”?` : `Replace ${names.length} files?`,
-    message: `${list} already ${names.length === 1 ? 'exists' : 'exist'} in ${where}. Replacing overwrites ${names.length === 1 ? 'it' : 'them'}.`,
+    title: one ? `Replace “${names[0]}”?` : `Replace ${names.length} files?`,
+    message: `${list} already ${one ? 'exists' : 'exist'} in ${where}. Replacing overwrites ${one ? 'it' : 'them'}.`,
     confirmLabel: 'Replace',
     danger: true,
   })
@@ -169,38 +184,41 @@ async function transfer(fromIdx: 0 | 1, names: string[], toIdx: 0 | 1, folder: s
     return
   }
 
-  const files = picked.filter((e) => e.kind === 'file')
-  const skipped = picked.length - files.length
-  if (!files.length) {
-    ui.toast('info', 'Folders can’t be transferred yet — select files instead')
+  // Files and folders both go; a link is followed by the backend (to a file,
+  // or into the folder it names). Devices and sockets have nothing to copy.
+  const items = picked.filter((e) => e.kind !== 'other')
+  const skipped = picked.length - items.length
+  if (!items.length) {
+    ui.toast('info', 'Nothing here can be transferred: select files or folders')
     return
   }
 
   // Only check clashes when we can see the destination listing
   if (!folder) {
-    const clash = files.filter((f) => to.entries.some((e) => e.name === f.name)).map((f) => f.name)
-    if (clash.length && !(await confirmReplace(clash, `${paneLabel(to)} · ${baseName(toDir) || toDir}`))) return
+    const clash = items.filter((f) => to.entries.some((e) => e.name === f.name))
+    if (clash.length && !(await confirmReplace(clash.map((f) => f.name), `${paneLabel(to)} · ${baseName(toDir) || toDir}`, clash.some(isFolderLike)))) return
   }
 
   let renamedForLocalDisk = 0
-  for (const f of files) {
+  for (const f of items) {
+    const meta = { name: f.name, size: f.kind === 'file' ? f.size : 0 }
     if (from.kind === 'local' && to.sessionId !== null) {
-      track(api.sftpUpload(to.sessionId, joinLocal(from.path, f.name), joinRemote(toDir, f.name)), { sessionId: to.sessionId, kind: 'upload', name: f.name, size: f.size }, to, toDir)
+      track(api.sftpUpload(to.sessionId, joinLocal(from.path, f.name), joinRemote(toDir, f.name)), { sessionId: to.sessionId, kind: 'upload', ...meta }, to, toDir)
     } else if (from.kind === 'ssh' && from.sessionId !== null && to.kind === 'local') {
       // Linux allows names Windows doesn't (a ":" in a timestamped log, say)
       const localName = safeLocalName(f.name)
       if (localName !== f.name) renamedForLocalDisk++
-      track(api.sftpDownload(from.sessionId, joinRemote(from.path, f.name), joinLocal(toDir, localName)), { sessionId: from.sessionId, kind: 'download', name: f.name, size: f.size }, to, toDir)
+      track(api.sftpDownload(from.sessionId, joinRemote(from.path, f.name), joinLocal(toDir, localName)), { sessionId: from.sessionId, kind: 'download', ...meta }, to, toDir)
     } else if (from.sessionId !== null && to.sessionId !== null) {
       track(
         api.sftpCrossTransfer(from.sessionId, joinRemote(from.path, f.name), to.sessionId, toDir),
-        { sessionId: from.sessionId, kind: 'upload', name: `${f.name} (${from.hostLabel} → ${to.hostLabel})`, size: f.size },
+        { sessionId: from.sessionId, kind: 'upload', name: `${f.name} (${from.hostLabel} → ${to.hostLabel})`, size: meta.size },
         to,
         toDir,
       )
     }
   }
-  if (skipped) ui.toast('info', `${skipped === 1 ? '1 folder was' : `${skipped} folders were`} skipped — only files transfer for now`)
+  if (skipped) ui.toast('info', `${skipped === 1 ? '1 item was' : `${skipped} items were`} skipped: devices and sockets can’t be copied`)
   if (renamedForLocalDisk) {
     const count = renamedForLocalDisk === 1 ? '1 file name was' : `${renamedForLocalDisk} file names were`
     const why = isWindows ? 'adjusted for Windows (characters like : ? * are not allowed)' : 'adjusted so it can be saved here'
@@ -208,7 +226,7 @@ async function transfer(fromIdx: 0 | 1, names: string[], toIdx: 0 | 1, folder: s
   }
 }
 
-/** Files from Explorer (OS drop or file picker) into an SSH pane. */
+/** Files or folders from Explorer (OS drop or a picker) into an SSH pane. */
 async function uploadPaths(idx: 0 | 1, paths: string[], folder: string | null = null) {
   const to = panes[idx]
   if (to.kind !== 'ssh' || to.sessionId === null) return
@@ -218,10 +236,9 @@ async function uploadPaths(idx: 0 | 1, paths: string[], folder: string | null = 
   // destination listing is the one on screen; a folder row's contents aren't loaded.)
   // Dropping config.json from Explorer used to overwrite the server's copy silently.
   if (!folder) {
-    const clash = paths
-      .map((path) => baseName(path) || 'file')
-      .filter((name) => to.entries.some((e) => e.name === name))
-    if (clash.length && !(await confirmReplace(clash, `${paneLabel(to)} · ${baseName(dir) || dir}`))) return
+    const names = paths.map((path) => baseName(path) || 'file')
+    const clash = to.entries.filter((e) => names.includes(e.name))
+    if (clash.length && !(await confirmReplace(clash.map((e) => e.name), `${paneLabel(to)} · ${baseName(dir) || dir}`, clash.some(isFolderLike)))) return
     // The pane may have been pointed elsewhere while the dialog was open
     if (to.sessionId !== sessionId) return
   }
@@ -419,7 +436,7 @@ onMounted(async () => {
       const idx = hit?.pane ?? 1
       const pane = panes[idx]
       if (pane.kind !== 'ssh' || pane.sessionId === null) {
-        ui.toast('info', 'Drop files on a server pane to upload them')
+        ui.toast('info', 'Drop files or folders on a server pane to upload them')
         return
       }
       void uploadPaths(idx, pl.paths, hit?.folder ?? null)

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ArrowLeftRight, ArrowRight, Copy, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-vue-next'
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Copy, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import { useForwardsStore } from '../stores/extras'
 import { useHostsStore } from '../stores/hosts'
 import { useSessionsStore, errorText } from '../stores/sessions'
@@ -14,6 +14,7 @@ import PvText from '../components/PvText.vue'
 import { copyText, matchesQuery } from '../utils/pageHelpers'
 import { waitForConnection } from '../utils/sessionWait'
 import { thisComputerLower } from '../utils/platform'
+import { FORWARD_KINDS, forwardAddress, startedText } from '../utils/forwards'
 import type { PortForward } from '../types'
 
 const forwards = useForwardsStore()
@@ -36,9 +37,26 @@ const visible = computed(() =>
   [...forwards.forwards]
     .sort((a, b) => a.name.localeCompare(b.name))
     .filter((f) =>
-      matchesQuery(query.value, f.name, hostLabel(f.host_id), f.remote_host, String(f.local_port), String(f.remote_port)),
+      matchesQuery(
+        query.value,
+        f.name,
+        hostLabel(f.host_id),
+        f.remote_host,
+        String(f.local_port),
+        String(f.remote_port),
+        kindLabel(f),
+      ),
     ),
 )
+
+function kindLabel(f: PortForward): string {
+  return FORWARD_KINDS.find((k) => k.kind === f.kind)?.label ?? 'Local'
+}
+
+function copyAddress(f: PortForward) {
+  const { address, where } = forwardAddress(f)
+  void copyText(address, where === 'server' ? 'Server address copied' : 'Address copied')
+}
 
 function isActive(id: number): boolean {
   return forwards.activeIds.includes(id)
@@ -61,7 +79,7 @@ function statusText(f: PortForward): string {
   if (p === 'connecting') return `Connecting to ${hostLabel(f.host_id)}…`
   if (p === 'starting') return 'Starting…'
   if (p === 'stopping') return 'Stopping…'
-  if (isActive(f.id)) return 'Listening'
+  if (isActive(f.id)) return f.kind === 'remote' ? 'Server listening' : 'Listening'
   return hostStatus(f.host_id) === 'connected' ? 'Stopped' : 'Host offline'
 }
 
@@ -92,9 +110,9 @@ async function toggle(f: PortForward) {
     }
     setPending(f.id, 'starting')
     await forwards.start(f.id)
-    ui.toast('success', `Listening on localhost:${f.local_port}`, {
+    ui.toast('success', pv.t(startedText(f, hostLabel(f.host_id))), {
       actionLabel: 'Copy',
-      action: () => void copyText(`localhost:${f.local_port}`, 'Address copied'),
+      action: () => copyAddress(f),
     })
   } catch (e) {
     ui.toast('error', errorText(e))
@@ -119,7 +137,11 @@ function openMenu(f: PortForward, e: MouseEvent) {
     y: e.clientY,
     items: [
       { label: 'Edit', icon: Pencil, action: () => openEdit(f) },
-      { label: 'Copy local address', icon: Copy, action: () => void copyText(`localhost:${f.local_port}`, 'Address copied') },
+      {
+        label: f.kind === 'remote' ? 'Copy server address' : 'Copy local address',
+        icon: Copy,
+        action: () => copyAddress(f),
+      },
       { label: 'Delete', icon: Trash2, danger: true, action: () => void remove(f) },
     ],
   }
@@ -136,6 +158,7 @@ async function remove(f: PortForward) {
   const restore = {
     host_id: f.host_id,
     name: f.name,
+    kind: f.kind,
     local_port: f.local_port,
     remote_host: f.remote_host,
     remote_port: f.remote_port,
@@ -173,7 +196,7 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
           Port Forwarding
           <span v-if="forwards.forwards.length" class="page-count">{{ forwards.forwards.length }}</span>
         </h2>
-        <p class="page-sub">Reach a service behind an SSH host as if it ran on {{ thisComputerLower }}.</p>
+        <p class="page-sub">Reach a service behind an SSH host from {{ thisComputerLower }}, share one of yours with the server, or browse through it with a SOCKS proxy.</p>
       </div>
       <div v-if="hosts.hosts.length" class="page-actions">
         <button class="btn btn-primary" @click="openNew">
@@ -233,9 +256,20 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
           <button class="row-main fwd-main" :aria-label="pv.t(`Edit ${f.name}`)" @click="openEdit(f)">
             <span class="row-title">
               <span class="text-ellipsis"><PvText :text="f.name" /></span>
+              <span v-if="f.kind !== 'local'" class="chip" :title="FORWARD_KINDS.find((k) => k.kind === f.kind)?.hint">{{ kindLabel(f) }}</span>
               <span v-if="f.auto_start" class="chip" title="Starts whenever the host connects">Auto</span>
             </span>
-            <span class="fwd-route mono">
+            <span v-if="f.kind === 'remote'" class="fwd-route mono">
+              <span class="fwd-local"><PvText :text="hostLabel(f.host_id)" />:{{ f.remote_port }}</span>
+              <ArrowLeft :size="11" :stroke-width="1.75" class="fwd-arrow" aria-hidden="true" />
+              <span class="text-ellipsis"><span class="pv">{{ pv.hostText(f.remote_host) }}</span>:{{ f.local_port }} here</span>
+            </span>
+            <span v-else-if="f.kind === 'dynamic'" class="fwd-route mono">
+              <span class="fwd-local">localhost:{{ f.local_port }}</span>
+              <ArrowRight :size="11" :stroke-width="1.75" class="fwd-arrow" aria-hidden="true" />
+              <span class="text-ellipsis">any address</span>
+            </span>
+            <span v-else class="fwd-route mono">
               <span class="fwd-local">localhost:{{ f.local_port }}</span>
               <ArrowRight :size="11" :stroke-width="1.75" class="fwd-arrow" aria-hidden="true" />
               <span class="text-ellipsis"><span class="pv">{{ pv.hostText(f.remote_host) }}</span>:{{ f.remote_port }}</span>
@@ -250,9 +284,9 @@ onBeforeUnmount(() => clearTimeout(refreshTimer))
           <span class="row-actions">
             <button
               class="btn-icon"
-              :aria-label="`Copy localhost:${f.local_port}`"
-              title="Copy local address"
-              @click="copyText(`localhost:${f.local_port}`, 'Address copied')"
+              :aria-label="`Copy ${forwardAddress(f).address}`"
+              :title="f.kind === 'remote' ? 'Copy server address' : 'Copy local address'"
+              @click="copyAddress(f)"
             >
               <Copy :size="14" :stroke-width="1.5" aria-hidden="true" />
             </button>

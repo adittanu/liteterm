@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
-import { ArrowRight, Laptop, Server, Globe } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, AppWindow, Laptop, Server, Globe } from 'lucide-vue-next'
 import BaseModal from './BaseModal.vue'
 import SearchSelect, { type ComboOption } from './SearchSelect.vue'
 import PvText from './PvText.vue'
@@ -9,8 +9,9 @@ import { useHostsStore } from '../stores/hosts'
 import { useUiStore } from '../stores/ui'
 import { usePrivacyStore } from '../stores/privacy'
 import { errorText } from '../stores/sessions'
-import { thisComputer } from '../utils/platform'
-import type { PortForward } from '../types'
+import { thisComputer, thisComputerLower } from '../utils/platform'
+import { DEFAULT_SOCKS_PORT, FORWARD_KINDS } from '../utils/forwards'
+import type { ForwardKind, PortForward } from '../types'
 
 const props = defineProps<{ forward: PortForward | null }>()
 const emit = defineEmits<{ close: [] }>()
@@ -21,12 +22,17 @@ const ui = useUiStore()
 const pv = usePrivacyStore()
 
 const f = props.forward
+const kind = ref<ForwardKind>(f?.kind ?? 'local')
+// One form for every type. What each port means depends on the type:
+// local: local_port here, remote_host:remote_port seen from the server;
+// remote: remote_port on the server, remote_host:local_port seen from here;
+// dynamic: local_port only.
 const form = reactive({
   name: f?.name ?? '',
   host_id: f?.host_id ?? hosts.hosts[0]?.id ?? 0,
   local_port: f ? String(f.local_port) : '',
-  remote_host: f?.remote_host ?? 'localhost',
-  remote_port: f ? String(f.remote_port) : '',
+  remote_host: f?.remote_host || 'localhost',
+  remote_port: f && f.kind !== 'dynamic' ? String(f.remote_port) : '',
   auto_start: f?.auto_start ?? false,
 })
 
@@ -39,6 +45,7 @@ const hostOptions = computed<ComboOption[]>(() =>
   hosts.hosts.map((h) => ({ value: h.id, label: h.label, hint: h.address })),
 )
 const hostLabel = computed(() => hosts.hostById(form.host_id)?.label ?? 'host')
+const kindInfo = computed(() => FORWARD_KINDS.find((k) => k.kind === kind.value)!)
 
 function portError(raw: string, required: boolean): string | undefined {
   const v = raw.trim()
@@ -49,17 +56,28 @@ function portError(raw: string, required: boolean): string | undefined {
   return undefined
 }
 
-// Local port may stay empty: it then mirrors the remote port
-const effectiveLocal = computed(() => form.local_port.trim() || form.remote_port.trim())
-const effectiveName = computed(
-  () => form.name.trim() || `${hostLabel.value} ${form.remote_host.trim() || 'localhost'}:${form.remote_port.trim() || '…'}`,
-)
+// An empty second port mirrors the first, the way `ssh -L 5432:db:5432`
+// usually reads: local mirrors the remote port, remote's destination port
+// mirrors the server port. A SOCKS proxy without a port takes 1080.
+const effectiveLocal = computed(() => {
+  const own = form.local_port.trim()
+  if (kind.value === 'dynamic') return own || String(DEFAULT_SOCKS_PORT)
+  return own || form.remote_port.trim()
+})
+const dest = computed(() => form.remote_host.trim() || 'localhost')
+const effectiveName = computed(() => {
+  if (form.name.trim()) return form.name.trim()
+  const port = form.remote_port.trim() || '…'
+  if (kind.value === 'dynamic') return `${hostLabel.value} SOCKS :${effectiveLocal.value}`
+  if (kind.value === 'remote') return `${hostLabel.value} :${port} to ${dest.value}:${effectiveLocal.value || '…'}`
+  return `${hostLabel.value} ${dest.value}:${port}`
+})
 
 const errors = computed(() => ({
   host: form.host_id > 0 ? undefined : 'Choose a host',
   local_port: portError(form.local_port, false),
-  remote_host: form.remote_host.trim() ? undefined : 'Required',
-  remote_port: portError(form.remote_port, true),
+  remote_host: kind.value === 'dynamic' || form.remote_host.trim() ? undefined : 'Required',
+  remote_port: kind.value === 'dynamic' ? undefined : portError(form.remote_port, true),
 }))
 
 const valid = computed(() => Object.values(errors.value).every((e) => !e))
@@ -73,13 +91,15 @@ async function save() {
   if (!valid.value || saving.value) return
   saving.value = true
   try {
+    const dynamic = kind.value === 'dynamic'
     await forwards.save({
       id: f?.id,
       host_id: form.host_id,
       name: effectiveName.value,
+      kind: kind.value,
       local_port: Number(effectiveLocal.value),
-      remote_host: form.remote_host.trim(),
-      remote_port: Number(form.remote_port),
+      remote_host: dynamic ? '' : form.remote_host.trim(),
+      remote_port: dynamic ? 0 : Number(form.remote_port),
       auto_start: form.auto_start,
     })
     emit('close')
@@ -92,10 +112,29 @@ async function save() {
 </script>
 
 <template>
-  <BaseModal :title="forward ? 'Edit Forward' : 'New Forward'" :width="500" @close="emit('close')">
+  <BaseModal :title="forward ? 'Edit Forward' : 'New Forward'" :width="520" @close="emit('close')">
     <form class="fwd-form" novalidate @submit.prevent="save">
+      <div class="field">
+        <div class="auth-toggle" role="radiogroup" aria-label="Forward type">
+          <button
+            v-for="k in FORWARD_KINDS"
+            :key="k.kind"
+            type="button"
+            class="auth-option"
+            :class="{ on: kind === k.kind }"
+            role="radio"
+            :aria-checked="kind === k.kind"
+            :title="k.hint"
+            @click="kind = k.kind"
+          >
+            {{ k.label }} <span class="kind-flag mono">{{ k.flag }}</span>
+          </button>
+        </div>
+        <span class="field-hint">{{ kindInfo.hint }}</span>
+      </div>
+
       <!-- Live route preview: the mental model, drawn -->
-      <div class="route" aria-hidden="true">
+      <div v-if="kind === 'local'" class="route" aria-hidden="true">
         <span class="route-node">
           <Laptop :size="14" :stroke-width="1.5" />
           <span class="route-label">{{ thisComputer }}</span>
@@ -115,13 +154,70 @@ async function save() {
         </span>
       </div>
 
+      <div v-else-if="kind === 'remote'" class="route" aria-hidden="true">
+        <span class="route-node via">
+          <Server :size="14" :stroke-width="1.5" />
+          <span class="route-label">Listens on</span>
+          <span class="route-value mono text-ellipsis"><PvText :text="hostLabel" />:{{ form.remote_port.trim() || '…' }}</span>
+        </span>
+        <ArrowLeft :size="14" :stroke-width="1.5" class="route-arrow" />
+        <span class="route-node">
+          <Laptop :size="14" :stroke-width="1.5" />
+          <span class="route-label">via {{ thisComputerLower }}</span>
+          <span class="route-value text-ellipsis">SSH</span>
+        </span>
+        <ArrowRight :size="14" :stroke-width="1.5" class="route-arrow" />
+        <span class="route-node">
+          <Globe :size="14" :stroke-width="1.5" />
+          <span class="route-label">Destination</span>
+          <span class="route-value mono text-ellipsis"><span class="pv">{{ pv.hostText(form.remote_host.trim()) || '…' }}</span>:{{ effectiveLocal || '…' }}</span>
+        </span>
+      </div>
+
+      <div v-else class="route" aria-hidden="true">
+        <span class="route-node">
+          <AppWindow :size="14" :stroke-width="1.5" />
+          <span class="route-label">SOCKS proxy</span>
+          <span class="route-value mono">localhost:{{ effectiveLocal }}</span>
+        </span>
+        <ArrowRight :size="14" :stroke-width="1.5" class="route-arrow" />
+        <span class="route-node via">
+          <Server :size="14" :stroke-width="1.5" />
+          <span class="route-label">via SSH</span>
+          <span class="route-value text-ellipsis"><PvText :text="hostLabel" /></span>
+        </span>
+        <ArrowRight :size="14" :stroke-width="1.5" class="route-arrow" />
+        <span class="route-node">
+          <Globe :size="14" :stroke-width="1.5" />
+          <span class="route-label">Destination</span>
+          <span class="route-value text-ellipsis">Any address</span>
+        </span>
+      </div>
+
       <div class="field">
         <label class="field-label" for="fw-host">Through host</label>
         <SearchSelect id="fw-host" v-model="form.host_id" :options="hostOptions" aria-label="Through host" />
         <span v-if="submitted && errors.host" class="field-error">{{ errors.host }}</span>
       </div>
 
-      <div class="dest-grid">
+      <!-- Remote: the port the server opens comes first -->
+      <div v-if="kind === 'remote'" class="field">
+        <label class="field-label" for="fw-sport">Server port</label>
+        <input
+          id="fw-sport"
+          v-model="form.remote_port"
+          class="field-input mono port-input"
+          :class="{ invalid: show('remote_port') }"
+          type="text"
+          inputmode="numeric"
+          placeholder="8080"
+          @blur="touched.remote_port = true"
+        />
+        <span v-if="show('remote_port')" class="field-error">{{ show('remote_port') }}</span>
+        <span v-else class="field-hint">Programs on <PvText :text="hostLabel" /> connect to localhost on this port</span>
+      </div>
+
+      <div v-if="kind !== 'dynamic'" class="dest-grid">
         <div class="field">
           <label class="field-label" for="fw-rhost">Destination host</label>
           <input
@@ -136,9 +232,9 @@ async function save() {
             @blur="touched.remote_host = true"
           />
           <span v-if="show('remote_host')" class="field-error">{{ show('remote_host') }}</span>
-          <span v-else class="field-hint">As seen from the SSH host</span>
+          <span v-else class="field-hint">{{ kind === 'remote' ? `As seen from ${thisComputerLower}` : 'As seen from the SSH host' }}</span>
         </div>
-        <div class="field">
+        <div v-if="kind === 'local'" class="field">
           <label class="field-label" for="fw-rport">Port</label>
           <input
             id="fw-rport"
@@ -151,6 +247,21 @@ async function save() {
             @blur="touched.remote_port = true"
           />
           <span v-if="show('remote_port')" class="field-error">{{ show('remote_port') }}</span>
+        </div>
+        <div v-else class="field">
+          <label class="field-label" for="fw-dport">Port</label>
+          <input
+            id="fw-dport"
+            v-model="form.local_port"
+            class="field-input mono"
+            :class="{ invalid: show('local_port') }"
+            type="text"
+            inputmode="numeric"
+            :placeholder="form.remote_port.trim() || '3000'"
+            @blur="touched.local_port = true"
+          />
+          <span v-if="show('local_port')" class="field-error">{{ show('local_port') }}</span>
+          <span v-else class="field-hint">Empty = same</span>
         </div>
       </div>
 
@@ -166,7 +277,7 @@ async function save() {
             spellcheck="false"
           />
         </div>
-        <div class="field">
+        <div v-if="kind !== 'remote'" class="field">
           <label class="field-label" for="fw-lport">Local port</label>
           <input
             id="fw-lport"
@@ -175,13 +286,22 @@ async function save() {
             :class="{ invalid: show('local_port') }"
             type="text"
             inputmode="numeric"
-            :placeholder="form.remote_port.trim() || 'same'"
+            :placeholder="kind === 'dynamic' ? String(DEFAULT_SOCKS_PORT) : form.remote_port.trim() || 'same'"
             @blur="touched.local_port = true"
           />
           <span v-if="show('local_port')" class="field-error">{{ show('local_port') }}</span>
-          <span v-else class="field-hint">Empty = same</span>
+          <span v-else class="field-hint">{{ kind === 'dynamic' ? `Empty = ${DEFAULT_SOCKS_PORT}` : 'Empty = same' }}</span>
         </div>
       </div>
+
+      <p v-if="kind === 'dynamic'" class="note">
+        Point a browser or app at the SOCKS5 proxy <code class="mono">localhost:{{ effectiveLocal }}</code>. Its connections leave
+        from <PvText :text="hostLabel" />, so sites see that server's address.
+      </p>
+      <p v-else-if="kind === 'remote'" class="note">
+        The server's sshd must allow forwarding (<code class="mono">AllowTcpForwarding</code>, the default). Only programs on the
+        server itself can reach the port.
+      </p>
 
       <label class="check">
         <input v-model="form.auto_start" type="checkbox" />
@@ -261,6 +381,30 @@ async function save() {
   display: grid;
   grid-template-columns: 1fr 120px;
   gap: var(--space-3);
+}
+
+.port-input {
+  max-width: 160px;
+}
+
+.kind-flag {
+  font-size: var(--text-xs);
+  color: var(--text-4);
+}
+
+.auth-option.on .kind-flag {
+  color: var(--text-3);
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+.note code {
+  color: var(--text-2);
 }
 
 .field-input.invalid {

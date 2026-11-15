@@ -714,40 +714,34 @@ pub fn delete_note(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
 
 // ---------- port forwards ----------
 
-const FORWARD_COLS: &str = "id, host_id, name, local_port, remote_host, remote_port, auto_start";
+const FORWARD_COLS: &str = "id, host_id, name, local_port, remote_host, remote_port, auto_start, kind";
+
+fn row_to_forward(row: &rusqlite::Row) -> rusqlite::Result<PortForward> {
+    Ok(PortForward {
+        id: row.get(0)?,
+        host_id: row.get(1)?,
+        name: row.get(2)?,
+        local_port: row.get(3)?,
+        remote_host: row.get(4)?,
+        remote_port: row.get(5)?,
+        auto_start: row.get::<_, i64>(6)? != 0,
+        kind: row.get(7)?,
+    })
+}
 
 pub fn list_forwards(conn: &Connection) -> Result<Vec<PortForward>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!("SELECT {FORWARD_COLS} FROM port_forwards ORDER BY id"))?;
-    let rows = stmt.query_map([], |row| {
-        Ok(PortForward {
-            id: row.get(0)?,
-            host_id: row.get(1)?,
-            name: row.get(2)?,
-            local_port: row.get(3)?,
-            remote_host: row.get(4)?,
-            remote_port: row.get(5)?,
-            auto_start: row.get::<_, i64>(6)? != 0,
-        })
-    })?;
+    let rows = stmt.query_map([], row_to_forward)?;
     rows.collect()
 }
 
 pub fn get_forward(conn: &Connection, id: i64) -> Result<Option<PortForward>, rusqlite::Error> {
-    let mut stmt = conn.prepare(&format!("SELECT {FORWARD_COLS} FROM port_forwards WHERE id=?1"))?;
-    let mut rows = stmt
-        .query_map(params![id], |row| {
-            Ok(PortForward {
-                id: row.get(0)?,
-                host_id: row.get(1)?,
-                name: row.get(2)?,
-                local_port: row.get(3)?,
-                remote_host: row.get(4)?,
-                remote_port: row.get(5)?,
-                auto_start: row.get::<_, i64>(6)? != 0,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows.pop())
+    conn.query_row(
+        &format!("SELECT {FORWARD_COLS} FROM port_forwards WHERE id=?1"),
+        params![id],
+        row_to_forward,
+    )
+    .optional()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -756,6 +750,7 @@ pub fn upsert_forward(
     id: Option<i64>,
     host_id: i64,
     name: &str,
+    kind: &str,
     local_port: i64,
     remote_host: &str,
     remote_port: i64,
@@ -764,16 +759,16 @@ pub fn upsert_forward(
     let id = match id {
         Some(id) => {
             conn.execute(
-                "UPDATE port_forwards SET host_id=?2, name=?3, local_port=?4, remote_host=?5, remote_port=?6, auto_start=?7 WHERE id=?1",
-                params![id, host_id, name, local_port, remote_host, remote_port, auto_start as i64],
+                "UPDATE port_forwards SET host_id=?2, name=?3, local_port=?4, remote_host=?5, remote_port=?6, auto_start=?7, kind=?8 WHERE id=?1",
+                params![id, host_id, name, local_port, remote_host, remote_port, auto_start as i64, kind],
             )?;
             id
         }
         None => {
             conn.execute(
-                "INSERT INTO port_forwards (host_id, name, local_port, remote_host, remote_port, auto_start) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![host_id, name, local_port, remote_host, remote_port, auto_start as i64],
+                "INSERT INTO port_forwards (host_id, name, local_port, remote_host, remote_port, auto_start, kind) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![host_id, name, local_port, remote_host, remote_port, auto_start as i64, kind],
             )?;
             conn.last_insert_rowid()
         }

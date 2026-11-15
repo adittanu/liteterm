@@ -49,6 +49,7 @@ pub fn run() {
                 local_sessions: Mutex::new(HashMap::new()),
                 pending_hostkey: Mutex::new(HashMap::new()),
                 forwards: Mutex::new(HashMap::new()),
+                remote_targets: Mutex::new(HashMap::new()),
             };
 
             app.manage(Db(Mutex::new(conn)));

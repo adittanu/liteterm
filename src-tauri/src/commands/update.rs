@@ -1,14 +1,23 @@
 //! Self-update from GitHub Releases: check the latest release, stream the
-//! NSIS installer to a temp dir with progress events, then run it silently
-//! and bring the app back up. Only the setup.exe asset is ever executed.
+//! right asset for this install to a temp dir with progress events, check it
+//! against the SHA-256 digest GitHub publishes, then put it in place and
+//! bring the app back up.
 //!
-//! That whole path is Windows-only. On macOS and Linux an update is a
-//! download the user installs themselves, so the app only says one exists
-//! (`UpdateInfo::auto_install` is false) and opens the release page.
+//! How it goes in depends on how LiteTerm was installed ([`Install`]):
+//! - Windows: the NSIS setup runs silently.
+//! - macOS: the .app is copied out of the dmg next to the running bundle, and
+//!   swapped in once the app has quit.
+//! - Linux AppImage: the new AppImage replaces the file at `$APPIMAGE`.
+//! - Linux .deb/.rpm: the package manager installs it through pkexec, which
+//!   asks for the user's password.
+//!
+//! Anything else (a build from source, a bundle that cannot be written to)
+//! gets `auto_install: false`, and the app opens the release page instead.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -25,6 +34,9 @@ pub struct UpdateAsset {
     pub name: String,
     pub size: u64,
     pub url: String,
+    /// Lowercase hex SHA-256 from the release; the download must match it
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -36,8 +48,11 @@ pub struct UpdateInfo {
     pub release_url: Option<String>,
     pub notes: Option<String>,
     pub asset: Option<UpdateAsset>,
-    /// True when the app can download and run the installer itself (Windows).
+    /// True when the app can download and install the update itself
     pub auto_install: bool,
+    /// How it installs: "installer" (Windows), "app" (macOS), "appimage",
+    /// "package" (deb/rpm, asks for a password) or "page" (the release page)
+    pub install_method: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +71,9 @@ struct GhAsset {
     name: String,
     size: u64,
     browser_download_url: String,
+    /// "sha256:<hex>", on assets uploaded since GitHub started computing them
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -63,6 +81,22 @@ struct GhAsset {
 struct ProgressEvent {
     downloaded: u64,
     total: u64,
+}
+
+/// How this copy of LiteTerm was installed: which asset updates it, and how
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Install {
+    /// The NSIS installer
+    Windows,
+    /// An .app bundle, updated from the dmg
+    MacApp,
+    /// The AppImage file named by `$APPIMAGE`
+    AppImage,
+    /// A package from the .deb or .rpm
+    Deb,
+    Rpm,
+    /// A build from source or anything unrecognised: release page only
+    Other,
 }
 
 fn build_client() -> Result<reqwest::Client, String> {
@@ -102,37 +136,159 @@ fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-/// The release asset meant for `os` (an `std::env::consts::OS` value).
-/// Windows: the NSIS setup, preferring the x64 build. macOS: the dmg. Linux:
-/// the AppImage, then deb, then rpm. A release that lacks the asset for this
-/// OS (its build failed, or has not finished) offers no update here at all.
-fn pick_asset_for(os: &str, assets: &[GhAsset]) -> Option<UpdateAsset> {
-    let find = |suffix: &str| assets.iter().find(|a| a.name.to_lowercase().ends_with(suffix));
-    let chosen = match os {
-        "windows" => find("x64-setup.exe")
-            .or_else(|| find("-setup.exe"))
-            .or_else(|| find(".exe")),
-        "macos" => find(".dmg"),
-        "linux" => find(".appimage").or_else(|| find(".deb")).or_else(|| find(".rpm")),
-        _ => None,
-    }?;
+/// The asset suffixes that update `install`, best first. An install the app
+/// cannot update itself still names one, so the user hears about the release.
+fn wanted_suffixes(install: Install, os: &str) -> &'static [&'static str] {
+    match install {
+        Install::Windows => &["x64-setup.exe", "-setup.exe", ".exe"],
+        Install::MacApp => &[".dmg"],
+        Install::AppImage => &[".appimage"],
+        Install::Deb => &[".deb"],
+        Install::Rpm => &[".rpm"],
+        Install::Other => match os {
+            "windows" => &["x64-setup.exe", "-setup.exe", ".exe"],
+            "macos" => &[".dmg"],
+            "linux" => &[".appimage", ".deb", ".rpm"],
+            _ => &[],
+        },
+    }
+}
+
+/// The release asset meant for this install. A release that lacks it (its
+/// build failed, or has not finished) offers no update here at all.
+fn pick_asset_for(install: Install, os: &str, assets: &[GhAsset]) -> Option<UpdateAsset> {
+    let chosen = wanted_suffixes(install, os)
+        .iter()
+        .find_map(|suffix| assets.iter().find(|a| a.name.to_lowercase().ends_with(suffix)))?;
     Some(UpdateAsset {
         name: chosen.name.clone(),
         size: chosen.size,
         url: chosen.browser_download_url.clone(),
+        sha256: chosen.digest.as_deref().and_then(sha256_of_digest),
     })
 }
 
-fn pick_asset(assets: &[GhAsset]) -> Option<UpdateAsset> {
-    pick_asset_for(std::env::consts::OS, assets)
+/// "sha256:ABC…" -> "abc…"; any other algorithm, or a malformed value, is None
+fn sha256_of_digest(digest: &str) -> Option<String> {
+    let hex = digest.strip_prefix("sha256:")?;
+    (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| hex.to_ascii_lowercase())
 }
 
-/// The in-app download-and-run flow exists on Windows only.
-const AUTO_INSTALL: bool = cfg!(windows);
+/// `.../LiteTerm.app/Contents/MacOS/liteterm` -> `.../LiteTerm.app`
+fn mac_bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let is = |p: &Path, name: &str| p.file_name().is_some_and(|n| n == name);
+    let is_app = bundle.extension().is_some_and(|e| e.eq_ignore_ascii_case("app"));
+    (is(macos, "MacOS") && is(contents, "Contents") && is_app).then(|| bundle.to_path_buf())
+}
+
+fn detect_install() -> Install {
+    static INSTALL: std::sync::OnceLock<Install> = std::sync::OnceLock::new();
+    *INSTALL.get_or_init(|| {
+        if cfg!(windows) {
+            return Install::Windows;
+        }
+        let exe = std::env::current_exe().ok();
+        if cfg!(target_os = "macos") {
+            return if exe.as_deref().and_then(mac_bundle_of).is_some() { Install::MacApp } else { Install::Other };
+        }
+        if cfg!(target_os = "linux") {
+            if appimage_path().is_some() {
+                return Install::AppImage;
+            }
+            if let Some(exe) = exe {
+                // The package manager that owns the running binary
+                if quietly_succeeds("dpkg", &[exe.as_os_str()]) {
+                    return Install::Deb;
+                }
+                if quietly_succeeds("rpm", &[std::ffi::OsStr::new("-qf"), exe.as_os_str()]) {
+                    return Install::Rpm;
+                }
+            }
+        }
+        Install::Other
+    })
+}
+
+/// Runs `dpkg -S <path>` (the "-S" is added for dpkg) or the given command,
+/// and says whether it exited 0
+fn quietly_succeeds(program: &str, args: &[&std::ffi::OsStr]) -> bool {
+    let mut cmd = std::process::Command::new(program);
+    if program == "dpkg" {
+        cmd.arg("-S");
+    }
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// The AppImage this process runs from, if it does
+fn appimage_path() -> Option<PathBuf> {
+    let p = PathBuf::from(std::env::var_os("APPIMAGE")?);
+    p.is_file().then_some(p)
+}
+
+/// An executable on PATH, as an absolute path
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Whether this process can create files in `dir`
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".liteterm-update-check-{}", std::process::id()));
+    let ok = std::fs::File::create(&probe).is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
+/// Can this install update itself? Checked when the update is offered, so a
+/// copy that cannot gets the release page instead of a failure at the end.
+fn self_install_possible(install: Install) -> bool {
+    match install {
+        Install::Windows => true,
+        Install::MacApp => std::env::current_exe()
+            .ok()
+            .as_deref()
+            .and_then(mac_bundle_of)
+            .is_some_and(|bundle| {
+                // Opened from Downloads without moving it, macOS runs a
+                // read-only copy from a random path; started from the dmg,
+                // the bundle sits on a read-only volume
+                !bundle.to_string_lossy().contains("/AppTranslocation/")
+                    && bundle.parent().is_some_and(writable)
+            }),
+        Install::AppImage => appimage_path().and_then(|p| p.parent().map(writable)).unwrap_or(false),
+        Install::Deb | Install::Rpm => find_in_path("pkexec").is_some(),
+        Install::Other => false,
+    }
+}
+
+fn install_method(install: Install, auto: bool) -> &'static str {
+    if !auto {
+        return "page";
+    }
+    match install {
+        Install::Windows => "installer",
+        Install::MacApp => "app",
+        Install::AppImage => "appimage",
+        Install::Deb | Install::Rpm => "package",
+        Install::Other => "page",
+    }
+}
 
 #[tauri::command]
 pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
     let current = app.package_info().version.to_string();
+    let install = detect_install();
+    let auto_install = self_install_possible(install);
+    let method = install_method(install, auto_install);
 
     let resp = build_client()?
         .get(format!("{API_BASE}/repos/{REPO}/releases/latest"))
@@ -152,7 +308,8 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
             release_url: None,
             notes: None,
             asset: None,
-            auto_install: AUTO_INSTALL,
+            auto_install,
+            install_method: method,
         });
     }
     if !resp.status().is_success() {
@@ -165,7 +322,7 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
         .map_err(|e| format!("Could not read release: {e}"))?;
 
     let latest = version_digits(&release.tag_name).to_string();
-    let asset = pick_asset(&release.assets);
+    let asset = pick_asset_for(install, std::env::consts::OS, &release.assets);
 
     Ok(UpdateInfo {
         available: asset.is_some() && is_newer(&latest, &current),
@@ -174,7 +331,8 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
         release_url: release.html_url,
         notes: release.body,
         asset,
-        auto_install: AUTO_INSTALL,
+        auto_install,
+        install_method: method,
     })
 }
 
@@ -189,7 +347,7 @@ fn sanitize_name(name: &str) -> String {
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
         .collect();
-    if cleaned.is_empty() { "liteterm-setup.exe".into() } else { cleaned }
+    if cleaned.is_empty() || cleaned.starts_with('.') { format!("liteterm-update{cleaned}") } else { cleaned }
 }
 
 #[tauri::command]
@@ -220,6 +378,7 @@ pub async fn download_update(app: AppHandle, asset: UpdateAsset) -> Result<Strin
 
     let mut file = std::fs::File::create(&part_path)
         .map_err(|e| format!("Could not write update file: {e}"))?;
+    let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut last_emit: Option<std::time::Instant> = None;
 
@@ -231,6 +390,7 @@ pub async fn download_update(app: AppHandle, asset: UpdateAsset) -> Result<Strin
     {
         file.write_all(&chunk)
             .map_err(|e| format!("Could not write update file: {e}"))?;
+        hasher.update(&chunk);
         downloaded += chunk.len() as u64;
 
         let due = last_emit.map_or(true, |t| t.elapsed() >= PROGRESS_EMIT_INTERVAL);
@@ -245,6 +405,13 @@ pub async fn download_update(app: AppHandle, asset: UpdateAsset) -> Result<Strin
         let _ = std::fs::remove_file(&part_path);
         return Err(format!("Download incomplete ({downloaded} of {total} bytes)"));
     }
+    if let Some(want) = &asset.sha256 {
+        let got = hex_lower(&hasher.finalize());
+        if &got != want {
+            let _ = std::fs::remove_file(&part_path);
+            return Err("The download does not match the checksum GitHub published for it, so it was deleted. Try again.".into());
+        }
+    }
 
     std::fs::rename(&part_path, &final_path)
         .map_err(|e| format!("Could not finalize update file: {e}"))?;
@@ -256,8 +423,61 @@ pub async fn download_update(app: AppHandle, asset: UpdateAsset) -> Result<Strin
     Ok(final_path.to_string_lossy().into_owned())
 }
 
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The file type each install takes
+fn expected_extension(install: Install) -> Option<&'static str> {
+    match install {
+        Install::Windows => Some("exe"),
+        Install::MacApp => Some("dmg"),
+        Install::AppImage => Some("appimage"),
+        Install::Deb => Some("deb"),
+        Install::Rpm => Some("rpm"),
+        Install::Other => None,
+    }
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> {
+    let install = detect_install();
+    if !self_install_possible(install) {
+        return Err("This copy of LiteTerm can't update itself; download the new version from the release page".into());
+    }
+
+    // Only ever use files this app downloaded into its own temp folder — a
+    // path from the frontend must not become arbitrary exec.
+    let dir = update_dir().canonicalize().map_err(|e| format!("Update folder missing: {e}"))?;
+    let file = PathBuf::from(path)
+        .canonicalize()
+        .map_err(|e| format!("Update file is missing: {e}"))?;
+    let ext_ok = match (file.extension(), expected_extension(install)) {
+        (Some(e), Some(want)) => e.eq_ignore_ascii_case(want),
+        _ => false,
+    };
+    if !file.starts_with(&dir) || !ext_ok {
+        return Err("Refusing to run an unexpected file".into());
+    }
+
+    match install {
+        Install::Windows => install_windows(&file)?,
+        Install::MacApp => install_mac(&file).await?,
+        Install::AppImage => install_appimage(&file)?,
+        Install::Deb | Install::Rpm => install_package(install, &file).await?,
+        Install::Other => unreachable!("checked by self_install_possible"),
+    }
+
+    // Give the helper a beat to come alive before the app tears down.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    app.exit(0);
+    Ok(())
+}
+
+// ---------- Windows ----------
+
 /// `\\?\C:\foo` -> `C:\foo` (and `\\?\UNC\srv\share` -> `\\srv\share`).
-fn strip_verbatim_prefix(p: &std::path::Path) -> PathBuf {
+fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         PathBuf::from(format!(r"\\{rest}"))
@@ -268,33 +488,14 @@ fn strip_verbatim_prefix(p: &std::path::Path) -> PathBuf {
     }
 }
 
-// Off Windows the body below ends in an early error return; what follows it,
-// and the `app` it uses, are Windows-only.
-#[cfg_attr(not(windows), allow(unreachable_code, unused_variables))]
-#[tauri::command]
-pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> {
-    let installer = PathBuf::from(path);
-
-    // Only ever execute installers this app downloaded into its own temp
-    // folder — a path from the frontend must not become arbitrary exec.
-    let dir = update_dir().canonicalize().map_err(|e| format!("Update folder missing: {e}"))?;
-    let installer = installer
-        .canonicalize()
-        .map_err(|e| format!("Update file is missing: {e}"))?;
-    let is_exe = installer
-        .extension()
-        .map(|e| e.eq_ignore_ascii_case("exe"))
-        .unwrap_or(false);
-    if !installer.starts_with(&dir) || !is_exe {
-        return Err("Refusing to run an unexpected file".into());
-    }
-
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn install_windows(installer: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("Could not locate LiteTerm: {e}"))?;
 
     // canonicalize() yields `\\?\C:\...` verbatim paths on Windows, which
     // cmd.exe / `start` cannot parse (they get cut down to `\\` and Windows
     // reports "cannot find '\\'"). Hand cmd plain drive-letter paths.
-    let installer = strip_verbatim_prefix(&installer);
+    let installer = strip_verbatim_prefix(installer);
     let exe = strip_verbatim_prefix(&exe);
 
     // A detached cmd wrapper survives this process being killed by the
@@ -317,17 +518,256 @@ pub async fn install_update(app: AppHandle, path: String) -> Result<(), String> 
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Could not start the installer: {e}"))?;
+        Ok(())
     }
     #[cfg(not(windows))]
     {
         let _ = script;
-        return Err("Automatic updates are only supported on Windows".into());
+        Err("The Windows installer only runs on Windows".into())
+    }
+}
+
+// ---------- macOS and Linux ----------
+
+/// Waits (up to 30 s) for the app, pid "$1", to quit, then runs the rest of
+/// its arguments as the command. Used to start the updated LiteTerm.
+const RELAUNCH_SCRIPT: &str = r#"pid="$1"; shift
+i=0
+while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+exec "$@""#;
+
+/// Waits for the app, pid "$1", to quit, swaps the staged bundle "$2" in for
+/// the installed one "$3" (putting the old one back if that fails), and
+/// opens whichever is there.
+const MAC_SWAP_SCRIPT: &str = r#"pid="$1"; staged="$2"; app="$3"
+i=0
+while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+old="$app.old.$$"
+if mv "$app" "$old"; then
+  if mv "$staged" "$app"; then rm -rf "$old"; else mv "$old" "$app"; fi
+fi
+open "$app""#;
+
+/// Run `sh -c <script> sh <args…>` so it outlives this process. `env` lists
+/// variables to set (Some) or remove (None) for it.
+fn spawn_detached_sh(script: &str, args: &[&std::ffi::OsStr], env: &[(String, Option<String>)]) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(script)
+        .arg("sh")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Its own process group: nothing sent to the app's group reaches it
+        cmd.process_group(0);
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| format!("Could not start the update helper: {e}"))
+}
+
+/// Run a helper program to the end; its error output becomes the message
+fn run_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String> {
+    let out = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Could not run {program}: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    Err(format!("{program} failed{}", if last.is_empty() { String::new() } else { format!(": {last}") }))
+}
+
+/// macOS: copy the new LiteTerm.app out of the dmg next to the installed one
+/// while the app still runs (so a failure can still be reported), then let a
+/// helper swap it in once the app has quit.
+async fn install_mac(dmg: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("Could not locate LiteTerm: {e}"))?;
+    let bundle = mac_bundle_of(&exe).ok_or("LiteTerm is not running from an app bundle")?;
+    let dmg = dmg.to_path_buf();
+    let bundle2 = bundle.clone();
+    let staged = tokio::task::spawn_blocking(move || stage_mac_bundle(&dmg, &bundle2))
+        .await
+        .map_err(|e| e.to_string())??;
+    let pid = std::process::id().to_string();
+    spawn_detached_sh(
+        MAC_SWAP_SCRIPT,
+        &[pid.as_ref(), staged.as_os_str(), bundle.as_os_str()],
+        &[],
+    )
+}
+
+fn stage_mac_bundle(dmg: &Path, bundle: &Path) -> Result<PathBuf, String> {
+    let os = |s: &str| std::ffi::OsString::from(s);
+    let mount = update_dir().join(format!("mount-{}", std::process::id()));
+    std::fs::create_dir_all(&mount).map_err(|e| format!("Could not prepare the update: {e}"))?;
+    run_tool(
+        "hdiutil",
+        &[
+            &os("attach"),
+            &os("-nobrowse"),
+            &os("-readonly"),
+            &os("-noautoopen"),
+            &os("-mountpoint"),
+            mount.as_os_str(),
+            dmg.as_os_str(),
+        ],
+    )?;
+
+    let staged = (|| {
+        let app = std::fs::read_dir(&mount)
+            .map_err(|e| format!("Could not read the disk image: {e}"))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("app")))
+            .ok_or("The disk image has no app in it")?;
+        let parent = bundle.parent().ok_or("The app bundle has no folder")?;
+        let name = bundle.file_name().ok_or("The app bundle has no name")?.to_string_lossy();
+        // Next to the installed bundle, so the final swap is a rename on one disk
+        let staged = parent.join(format!(".{name}.update"));
+        if staged.exists() {
+            std::fs::remove_dir_all(&staged).map_err(|e| format!("Could not clear an earlier update: {e}"))?;
+        }
+        run_tool("ditto", &[app.as_os_str(), staged.as_os_str()])?;
+        // Not downloaded by a browser, so there is normally nothing to clear;
+        // a leftover flag would make Gatekeeper refuse the unsigned app
+        let _ = run_tool("xattr", &[&os("-dr"), &os("com.apple.quarantine"), staged.as_os_str()]);
+        Ok::<_, String>(staged)
+    })();
+
+    if run_tool("hdiutil", &[&os("detach"), mount.as_os_str(), &os("-quiet")]).is_err() {
+        let _ = run_tool("hdiutil", &[&os("detach"), mount.as_os_str(), &os("-force")]);
+    }
+    let _ = std::fs::remove_dir(&mount);
+    staged
+}
+
+/// Variables the AppImage runtime set for the old image. Entries that point
+/// into its mount (`appdir`) go; anything else the user had stays.
+fn appimage_env_cleanup(vars: impl Iterator<Item = (String, String)>, appdir: &str) -> Vec<(String, Option<String>)> {
+    const RUNTIME: [&str; 4] = ["APPIMAGE", "APPDIR", "ARGV0", "OWD"];
+    let mut out = Vec::new();
+    for (k, v) in vars {
+        if RUNTIME.contains(&k.as_str()) {
+            out.push((k, None));
+            continue;
+        }
+        if appdir.is_empty() || !v.contains(appdir) {
+            continue;
+        }
+        let kept: Vec<&str> = v.split(':').filter(|part| !part.is_empty() && !part.starts_with(appdir)).collect();
+        out.push((k, if kept.is_empty() { None } else { Some(kept.join(":")) }));
+    }
+    out
+}
+
+/// Linux AppImage: put the new image where the running one is, then start it
+/// once this one has quit. Replacing the file is safe while it runs: this
+/// process keeps the old one mounted until it exits.
+fn install_appimage(downloaded: &Path) -> Result<(), String> {
+    let target = appimage_path().ok_or("Could not find the AppImage LiteTerm runs from")?;
+    let dir = target.parent().ok_or("The AppImage has no folder")?;
+    let name = target.file_name().ok_or("The AppImage has no name")?.to_string_lossy();
+    // Copied into the same folder first: a rename across disks fails
+    let tmp = dir.join(format!(".{name}.update"));
+    std::fs::copy(downloaded, &tmp).map_err(|e| format!("Could not copy the new AppImage: {e}"))?;
+    make_executable(&tmp)?;
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Could not replace the AppImage: {e}")
+    })?;
+    let _ = std::fs::remove_file(downloaded);
+
+    let appdir = std::env::var("APPDIR").unwrap_or_default();
+    let env = appimage_env_cleanup(std::env::vars(), &appdir);
+    let pid = std::process::id().to_string();
+    spawn_detached_sh(RELAUNCH_SCRIPT, &[pid.as_ref(), target.as_os_str()], &env)
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("Could not make the new AppImage executable: {e}"))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), String> {
+    Err("AppImages only run on Linux".into())
+}
+
+/// The package manager command for a .deb or .rpm, run as root by pkexec.
+/// A front end (apt-get, dnf, zypper) can fetch a dependency the new version
+/// added; dpkg and rpm are the fallback.
+fn package_command(install: Install, file: &Path, have: impl Fn(&str) -> Option<PathBuf>) -> Option<Vec<std::ffi::OsString>> {
+    let f = file.as_os_str().to_os_string();
+    let cmd = |tool: PathBuf, args: &[&str]| {
+        let mut v = vec![tool.into_os_string()];
+        v.extend(args.iter().map(std::ffi::OsString::from));
+        v.push(f.clone());
+        v
+    };
+    match install {
+        Install::Deb => have("apt-get")
+            .map(|t| cmd(t, &["install", "-y"]))
+            .or_else(|| have("dpkg").map(|t| cmd(t, &["-i"]))),
+        Install::Rpm => have("dnf")
+            .map(|t| cmd(t, &["install", "-y"]))
+            .or_else(|| have("zypper").map(|t| cmd(t, &["--non-interactive", "install", "--allow-unsigned-rpm"])))
+            .or_else(|| have("rpm").map(|t| cmd(t, &["-U"]))),
+        _ => None,
+    }
+}
+
+/// Linux .deb/.rpm: the package manager installs the new version as root.
+/// pkexec shows the desktop's password prompt; the app is still running, so
+/// a cancelled prompt or a failed install is reported and nothing changes.
+async fn install_package(install: Install, file: &Path) -> Result<(), String> {
+    // Read before the package replaces it: afterwards Linux reports the
+    // running binary's path with " (deleted)" on the end
+    let exe = std::env::current_exe().map_err(|e| format!("Could not locate LiteTerm: {e}"))?;
+    let exe = PathBuf::from(exe.to_string_lossy().trim_end_matches(" (deleted)"));
+
+    let pkexec = find_in_path("pkexec").ok_or("pkexec is not installed, so LiteTerm can't ask for your password")?;
+    let command = package_command(install, file, find_in_path).ok_or("No package manager found to install the update")?;
+    let out = tokio::process::Command::new(&pkexec)
+        .args(&command)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("Could not start pkexec: {e}"))?;
+    match out.status.code() {
+        Some(0) => {}
+        // pkexec: the prompt was dismissed, or there is no agent to show one
+        Some(126) => return Err("The password prompt was cancelled, so the update was not installed".into()),
+        Some(127) => {
+            return Err("LiteTerm couldn't ask for your password (no authentication agent is running). \
+                        Install the downloaded package yourself, or update from the release page"
+                .into())
+        }
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+            return Err(format!(
+                "The package manager could not install the update{}",
+                if last.is_empty() { String::new() } else { format!(": {last}") }
+            ));
+        }
     }
 
-    // Give the wrapper a beat to come alive before the app tears down.
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    app.exit(0);
-    Ok(())
+    let pid = std::process::id().to_string();
+    spawn_detached_sh(RELAUNCH_SCRIPT, &[pid.as_ref(), exe.as_os_str()], &[])
 }
 
 /// Only this repo's own GitHub pages: an address from the frontend must not
@@ -337,8 +777,8 @@ fn is_release_url(url: &str) -> bool {
     url.starts_with(&prefix) && !url.chars().any(char::is_whitespace)
 }
 
-/// Outside Windows an update is a download: open the release page in the
-/// default browser and let the user take it from there.
+/// When the app can't install an update itself: open the release page in
+/// the default browser and let the user take it from there.
 #[tauri::command]
 pub fn open_release_page(url: String) -> Result<(), String> {
     if !is_release_url(&url) {
@@ -376,6 +816,7 @@ mod tests {
                 name: (*n).to_string(),
                 size: 1,
                 browser_download_url: format!("https://example.invalid/{n}"),
+                digest: None,
             })
             .collect()
     }
@@ -388,42 +829,120 @@ mod tests {
         "LiteTerm_1.9.0_x64-setup.exe",
     ];
 
-    fn pick(os: &str, names: &[&str]) -> Option<String> {
-        pick_asset_for(os, &assets(names)).map(|a| a.name)
+    fn pick(install: Install, os: &str, names: &[&str]) -> Option<String> {
+        pick_asset_for(install, os, &assets(names)).map(|a| a.name)
     }
 
     #[test]
-    fn each_os_gets_its_own_installer_from_a_shared_release() {
-        assert_eq!(pick("windows", ALL).as_deref(), Some("LiteTerm_1.9.0_x64-setup.exe"));
-        assert_eq!(pick("macos", ALL).as_deref(), Some("LiteTerm_1.9.0_universal.dmg"));
-        assert_eq!(pick("linux", ALL).as_deref(), Some("LiteTerm_1.9.0_amd64.AppImage"));
+    fn each_install_gets_its_own_asset_from_a_shared_release() {
+        assert_eq!(pick(Install::Windows, "windows", ALL).as_deref(), Some("LiteTerm_1.9.0_x64-setup.exe"));
+        assert_eq!(pick(Install::MacApp, "macos", ALL).as_deref(), Some("LiteTerm_1.9.0_universal.dmg"));
+        assert_eq!(pick(Install::AppImage, "linux", ALL).as_deref(), Some("LiteTerm_1.9.0_amd64.AppImage"));
+        // A package install updates from its own kind of package
+        assert_eq!(pick(Install::Deb, "linux", ALL).as_deref(), Some("LiteTerm_1.9.0_amd64.deb"));
+        assert_eq!(pick(Install::Rpm, "linux", ALL).as_deref(), Some("LiteTerm-1.9.0-1.x86_64.rpm"));
     }
 
     #[test]
-    fn linux_falls_back_from_appimage_to_deb_to_rpm() {
+    fn an_unknown_linux_install_still_hears_about_the_release() {
         let no_appimage = &ALL[..2];
-        assert_eq!(pick("linux", no_appimage).as_deref(), Some("LiteTerm_1.9.0_amd64.deb"));
-        assert_eq!(pick("linux", &["LiteTerm-1.9.0-1.x86_64.rpm"]).as_deref(), Some("LiteTerm-1.9.0-1.x86_64.rpm"));
+        assert_eq!(pick(Install::Other, "linux", no_appimage).as_deref(), Some("LiteTerm_1.9.0_amd64.deb"));
+        assert_eq!(pick(Install::Other, "linux", &["LiteTerm-1.9.0-1.x86_64.rpm"]).as_deref(), Some("LiteTerm-1.9.0-1.x86_64.rpm"));
+        assert_eq!(pick(Install::Other, "linux", ALL).as_deref(), Some("LiteTerm_1.9.0_amd64.AppImage"));
     }
 
     #[test]
-    fn a_release_without_a_build_for_this_os_offers_nothing() {
+    fn a_release_without_a_build_for_this_install_offers_nothing() {
         // The macOS build failed (or is still running): Mac users see no update
         let windows_only = &["LiteTerm_1.9.0_x64-setup.exe"];
-        assert_eq!(pick("macos", windows_only), None);
-        assert_eq!(pick("linux", windows_only), None);
-        assert_eq!(pick("windows", &["LiteTerm_1.9.0_universal.dmg"]), None);
-        assert_eq!(pick("freebsd", ALL), None);
+        assert_eq!(pick(Install::MacApp, "macos", windows_only), None);
+        assert_eq!(pick(Install::AppImage, "linux", windows_only), None);
+        assert_eq!(pick(Install::Deb, "linux", &["LiteTerm_1.9.0_amd64.AppImage"]), None);
+        assert_eq!(pick(Install::Windows, "windows", &["LiteTerm_1.9.0_universal.dmg"]), None);
+        assert_eq!(pick(Install::Other, "freebsd", ALL), None);
     }
 
     #[test]
     fn windows_still_prefers_the_x64_setup() {
         assert_eq!(
-            pick("windows", &["a-setup.exe", "LiteTerm_x64-setup.exe", "b.exe"]).as_deref(),
+            pick(Install::Windows, "windows", &["a-setup.exe", "LiteTerm_x64-setup.exe", "b.exe"]).as_deref(),
             Some("LiteTerm_x64-setup.exe")
         );
-        assert_eq!(pick("windows", &["a-setup.exe", "b.exe"]).as_deref(), Some("a-setup.exe"));
-        assert_eq!(pick("windows", &["b.exe"]).as_deref(), Some("b.exe"));
+        assert_eq!(pick(Install::Windows, "windows", &["a-setup.exe", "b.exe"]).as_deref(), Some("a-setup.exe"));
+        assert_eq!(pick(Install::Windows, "windows", &["b.exe"]).as_deref(), Some("b.exe"));
+    }
+
+    #[test]
+    fn the_published_digest_travels_with_the_asset() {
+        let hex = "601B6772623DE3289DF1A57C4914B445F6E3FA5499D43B647D7D312090D28568";
+        let mut a = assets(&["LiteTerm_1.11.0_universal.dmg"]);
+        a[0].digest = Some(format!("sha256:{hex}"));
+        let picked = pick_asset_for(Install::MacApp, "macos", &a).unwrap();
+        assert_eq!(picked.sha256.as_deref(), Some(hex.to_ascii_lowercase().as_str()));
+        assert_eq!(sha256_of_digest("md5:abc"), None);
+        assert_eq!(sha256_of_digest("sha256:xyz"), None);
+        assert_eq!(hex_lower(&Sha256::digest(b"abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn the_app_bundle_is_found_from_its_binary() {
+        assert_eq!(
+            mac_bundle_of(Path::new("/Applications/LiteTerm.app/Contents/MacOS/liteterm")),
+            Some(PathBuf::from("/Applications/LiteTerm.app"))
+        );
+        assert_eq!(mac_bundle_of(Path::new("/usr/local/bin/liteterm")), None);
+        assert_eq!(mac_bundle_of(Path::new("/x/Contents/MacOS/liteterm")), None);
+    }
+
+    #[test]
+    fn the_new_appimage_starts_without_the_old_ones_mount() {
+        let vars = [
+            ("APPIMAGE", "/home/me/LiteTerm.AppImage"),
+            ("APPDIR", "/tmp/.mount_LiteTeAbc"),
+            ("OWD", "/home/me"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_LiteTeAbc/usr/lib:/opt/mine/lib"),
+            ("GTK_PATH", "/tmp/.mount_LiteTeAbc/usr/lib/gtk-3.0"),
+            ("HOME", "/home/me"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let out = appimage_env_cleanup(vars.into_iter(), "/tmp/.mount_LiteTeAbc");
+        let get = |k: &str| out.iter().find(|(name, _)| name == k).map(|(_, v)| v.clone());
+        assert_eq!(get("APPIMAGE"), Some(None));
+        assert_eq!(get("APPDIR"), Some(None));
+        assert_eq!(get("LD_LIBRARY_PATH"), Some(Some("/opt/mine/lib".into())));
+        assert_eq!(get("GTK_PATH"), Some(None));
+        assert_eq!(get("HOME"), None, "unrelated variables are left alone");
+    }
+
+    #[test]
+    fn packages_go_through_the_front_end_when_there_is_one() {
+        let file = Path::new("/tmp/liteterm-update/LiteTerm_1.12.0_amd64.deb");
+        let only = |tools: &'static [&'static str]| {
+            move |name: &str| tools.contains(&name).then(|| PathBuf::from(format!("/usr/bin/{name}")))
+        };
+        let as_strings = |v: Option<Vec<std::ffi::OsString>>| {
+            v.map(|v| v.into_iter().map(|s| s.to_string_lossy().into_owned()).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            as_strings(package_command(Install::Deb, file, only(&["apt-get", "dpkg"]))),
+            Some(vec!["/usr/bin/apt-get".into(), "install".into(), "-y".into(), file.to_string_lossy().into_owned()])
+        );
+        assert_eq!(
+            as_strings(package_command(Install::Deb, file, only(&["dpkg"]))).unwrap()[..2],
+            ["/usr/bin/dpkg".to_string(), "-i".to_string()]
+        );
+        let rpm = Path::new("/tmp/liteterm-update/LiteTerm-1.12.0-1.x86_64.rpm");
+        assert_eq!(as_strings(package_command(Install::Rpm, rpm, only(&["dnf", "rpm"]))).unwrap()[1], "install");
+        assert_eq!(as_strings(package_command(Install::Rpm, rpm, only(&["zypper"]))).unwrap()[3], "--allow-unsigned-rpm");
+        assert_eq!(as_strings(package_command(Install::Rpm, rpm, only(&["rpm"]))).unwrap()[1], "-U");
+        assert_eq!(package_command(Install::Rpm, rpm, only(&[])), None);
+    }
+
+    #[test]
+    fn download_names_stay_inside_the_update_folder() {
+        assert_eq!(sanitize_name("LiteTerm_1.12.0_amd64.AppImage"), "LiteTerm_1.12.0_amd64.AppImage");
+        assert_eq!(sanitize_name("../../etc/passwd"), "liteterm-update....etcpasswd");
+        assert_eq!(sanitize_name("///"), "liteterm-update");
     }
 
     #[test]

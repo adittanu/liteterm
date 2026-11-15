@@ -12,6 +12,7 @@ export type UpdateStatus =
   | 'available' // a newer release is one click away
   | 'downloading'
   | 'ready' // installer on disk — waiting for the user to restart
+  | 'installing' // putting the update in place; the app quits and restarts when it's in
   | 'uptodate' // transient confirmation after a check
 
 export const useUpdaterStore = defineStore('updater', () => {
@@ -87,7 +88,7 @@ export const useUpdaterStore = defineStore('updater', () => {
     }
   }
 
-  /** Off Windows the app cannot install itself, so the update is the release page. */
+  /** When this copy can't install the update itself, the update is the release page. */
   async function openReleasePage(update: UpdateInfo) {
     if (!update.releaseUrl) {
       ui.toast('error', 'This release has no page to open')
@@ -133,11 +134,18 @@ export const useUpdaterStore = defineStore('updater', () => {
         new Promise<void>((resolve) => setTimeout(resolve, 1500)),
       ])
       // The backend exits the app as part of installing — this call not
-      // resolving is the normal path.
+      // resolving is the normal path. Until then the button says so: on a
+      // Mac the new app is copied out of the disk image first, and a Linux
+      // package waits on the system's password prompt.
+      status.value = 'installing'
       await api.installUpdate(installerPath)
     } catch (e) {
       restarting = false
-      ui.toast('error', String(e))
+      status.value = 'ready'
+      const update = info.value
+      ui.toast('error', String(e), update?.releaseUrl
+        ? { actionLabel: 'Download page', action: () => void openReleasePage(update) }
+        : undefined)
     }
   }
 
@@ -146,6 +154,7 @@ export const useUpdaterStore = defineStore('updater', () => {
     switch (status.value) {
       case 'checking':
       case 'downloading':
+      case 'installing':
         break
       case 'ready':
         // The installer is on disk — this click runs it and relaunches

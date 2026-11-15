@@ -84,7 +84,7 @@ pub const NOTES: SyncedTable = SyncedTable {
 pub const PORT_FORWARDS: SyncedTable = SyncedTable {
     table: "port_forwards",
     kind: "port_forward",
-    content: &["host_id", "name", "local_port", "remote_host", "remote_port", "auto_start"],
+    content: &["host_id", "name", "local_port", "remote_host", "remote_port", "auto_start", "kind"],
 };
 
 pub const KNOWN_HOSTS: SyncedTable = SyncedTable {
@@ -110,8 +110,9 @@ const UUID_V4: &str = "lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || 
     substr(hex(randomblob(2)), 2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || \
     substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))";
 
-/// Bring the database to schema v3 and (re)create the triggers. The triggers
-/// are rebuilt on every start, so they always match the column lists above.
+/// Bring the database to the current schema (v4) and (re)create the triggers.
+/// The triggers are rebuilt on every start, so they always match the column
+/// lists above.
 pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let tx = conn.unchecked_transaction()?;
 
@@ -154,6 +155,18 @@ pub fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         tx.execute(
             "INSERT INTO settings (key, value) VALUES ('schemaVersion', '3') \
              ON CONFLICT(key) DO UPDATE SET value = '3'",
+            [],
+        )?;
+    }
+
+    // v4: remote (-R) and dynamic (-D) forwards next to the local ones. The
+    // column must exist before the triggers below name it. Adding it with a
+    // default fires no update trigger, so no row is queued for sync.
+    if version < 4 {
+        add_column_if_missing(&tx, "port_forwards", "kind", "TEXT NOT NULL DEFAULT 'local'")?;
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES ('schemaVersion', '4') \
+             ON CONFLICT(key) DO UPDATE SET value = '4'",
             [],
         )?;
     }
@@ -309,7 +322,7 @@ mod tests {
         let host = add_host(&conn, "web");
         let snippet = db::upsert_snippet(&conn, None, "df", "df -h").unwrap().id;
         let note = db::create_note(&conn, "t", "b").unwrap().id;
-        let fwd = db::upsert_forward(&conn, None, host, "pg", 5432, "localhost", 5432, false)
+        let fwd = db::upsert_forward(&conn, None, host, "pg", "local", 5432, "localhost", 5432, false)
             .unwrap()
             .id;
         conn.execute(
@@ -400,7 +413,7 @@ mod tests {
         let host = add_host(&conn, "web");
         conn.execute("UPDATE hosts SET group_id = ?2 WHERE id = ?1", params![host, group])
             .unwrap();
-        let fwd = db::upsert_forward(&conn, None, host, "pg", 5432, "localhost", 5432, false)
+        let fwd = db::upsert_forward(&conn, None, host, "pg", "local", 5432, "localhost", 5432, false)
             .unwrap()
             .id;
         let note = db::create_note(&conn, "runbook", "").unwrap().id;
@@ -518,7 +531,7 @@ mod tests {
         let version: String = conn
             .query_row("SELECT value FROM settings WHERE key = 'schemaVersion'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, "3");
+        assert_eq!(version, "4");
 
         // The next start changes nothing
         db::migrate(&conn).unwrap();
@@ -527,5 +540,41 @@ mod tests {
             .query_row("SELECT count(*) FROM sync_outbox", [], |r| r.get(0))
             .unwrap();
         assert_eq!(again, 6);
+    }
+
+    #[test]
+    fn a_v3_database_gets_forward_kinds_without_queueing_anything() {
+        let conn = open();
+        let host = add_host(&conn, "web");
+        let fwd = db::upsert_forward(&conn, None, host, "pg", "local", 5432, "localhost", 5432, false)
+            .unwrap()
+            .id;
+        // Wind the database back to v3: no kind column, no v4 marker
+        for t in SYNCED {
+            for op in ["insert", "update", "delete"] {
+                conn.execute_batch(&format!("DROP TRIGGER {}_sync_{op};", t.table)).unwrap();
+            }
+        }
+        conn.execute_batch(
+            "ALTER TABLE port_forwards DROP COLUMN kind;
+             UPDATE settings SET value = '3' WHERE key = 'schemaVersion';",
+        )
+        .unwrap();
+        clear_outbox(&conn);
+        let (sync_id, before) = stamp(&conn, "port_forwards", fwd);
+
+        db::migrate(&conn).unwrap();
+        assert_eq!(db::get_forward(&conn, fwd).unwrap().unwrap().kind, "local");
+        assert_eq!(stamp(&conn, "port_forwards", fwd).1, before);
+        assert_eq!(queued(&conn, &sync_id), None, "a new column is not an edit");
+        let version: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'schemaVersion'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, "4");
+
+        // Changing the kind is an edit that syncs
+        conn.execute("UPDATE port_forwards SET kind = 'dynamic' WHERE id = ?1", params![fwd])
+            .unwrap();
+        assert!(queued(&conn, &sync_id).is_some());
     }
 }

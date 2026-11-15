@@ -104,11 +104,21 @@ pub struct PortForward {
     pub id: i64,
     pub host_id: i64,
     pub name: String,
+    /// "local" (-L), "remote" (-R) or "dynamic" (-D). The other columns mean:
+    /// - local: listen on this computer's `local_port`, reach
+    ///   `remote_host:remote_port` from the server
+    /// - remote: the server listens on `remote_port`, connections reach
+    ///   `remote_host:local_port` from this computer
+    /// - dynamic: a SOCKS proxy on this computer's `local_port`; the remote
+    ///   columns are unused ("" and 0)
+    pub kind: String,
     pub local_port: i64,
     pub remote_host: String,
     pub remote_port: i64,
     pub auto_start: bool,
 }
+
+pub const FORWARD_KINDS: [&str; 3] = ["local", "remote", "dynamic"];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FileEntry {
