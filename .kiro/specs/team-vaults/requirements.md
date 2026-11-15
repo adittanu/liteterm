@@ -107,5 +107,11 @@ connecting to them works the same way.
 1. A team SHALL have at most 50 members and 5,000 items.
 2. A LiteTerm older than this feature SHALL keep syncing its personal vault and
    SHALL never see team items.
-3. Key files: a team credential that uses a private key file SHALL show a hint
-   that each member needs the same key file, or should use an SSH agent.
+3. Key files: a team credential that uses a private key SHALL carry the key
+   itself in the vault, so every member can connect without copying files.
+   WHEN a key file is chosen for a team credential THEN the app SHALL read the
+   key, ask for its passphrase if it has one, and store it in the vault; the
+   path SHALL NOT be used on other computers.
+4. Team vaults SHALL be free, with no paid plan; the limits in 7.1 keep the
+   server within the free tier.
+5. Joining or creating a team SHALL require sync with a master password.

@@ -46,6 +46,9 @@ argon2 = { version = "0.5", default-features = false, features = ["alloc", "zero
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+# Team vaults: each account's key pair, so a team key can be sealed to a
+# member (src/cloud/team_crypto.rs)
+x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 unicode-normalization = "0.1"
 zeroize = "1"
 

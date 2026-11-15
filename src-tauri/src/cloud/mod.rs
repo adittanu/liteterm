@@ -8,4 +8,5 @@
 pub mod api;
 pub mod engine;
 pub mod items;
+pub mod team_crypto;
 pub mod vault;

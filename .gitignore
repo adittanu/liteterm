@@ -26,3 +26,5 @@ Thumbs.db
 
 # Host exports/imports can carry plaintext passwords; the repo is public
 /dataquest-import.json
+# Supabase CLI link state (project ref, versions)
+supabase/.temp/

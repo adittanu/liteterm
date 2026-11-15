@@ -38,9 +38,11 @@ master password ──Argon2id──► KEK ──wraps──► personal vault 
 - **Team items**: the existing envelope (`vault.rs` `seal`), AAD
   `liteterm:team-item:{team_id}:{sync_id}`. Unlike personal items, the AAD
   names the vault, so the server can't replay an item into another team.
-- **Safety code**: SHA-256 of the public key, first 60 bits as 12 digits in
-  groups of four (`4821 0937 6612`). Shown on the member's Account page and in
-  the admit dialog.
+- **Safety code**: SHA-256 of `"liteterm:safety-code:v1:" || public key`,
+  first 128 bits mod 10^20, as 20 digits in groups of four
+  (`0620 1527 2526 4411 3223`). About 66 bits, so finding a fake key with the
+  same code is out of reach. Shown on the member's Account page and in the
+  admit dialog.
 
 Why the confirmation step: the server hands out public keys. Without the code
 check, a hostile server could swap in its own key at admit time and read the
@@ -143,8 +145,9 @@ TeamState { key per epoch, role, cursor }>`.
 - `items.rs` device simulations, as the existing ones: two members, edits both
   ways, viewer push refused, member removed → rows and secrets deleted,
   rotation → old epoch readable until rewritten.
-- The SQL can't run here (no Postgres or Supabase CLI on this machine). The
-  migration gets a manual test checklist to run against the Supabase project.
+- The SQL is tried on the live project inside a transaction that ends in
+  `rollback` (`supabase db query --linked`), with `set local role
+  authenticated` and JWT claims per test user, before it is applied.
 
 ## Risks
 
@@ -153,5 +156,24 @@ TeamState { key per epoch, role, cursor }>`.
 - **Server cost**: team data lives on the same Supabase project as personal
   sync. 50 members × 5,000 items is well within the free tier's 500 MB; the
   limits are there to keep it so.
-- **Key files** can't be shared (paths differ per computer). Members need the
-  same key file or an agent; embedding keys in the vault is a later step.
+- **Key files** can't be shared as paths. A team credential that uses a key
+  carries the key itself (see "Embedded private keys").
+
+## Embedded private keys
+
+A credential gets an optional embedded private key (OpenSSH text). It travels
+in the credential payload as a `Secret`, like the password, so only members
+can read it.
+
+On each computer it is stored in a local table `credential_keys
+(credential_id, sealed)`, encrypted with a per-device key kept in the OS
+keyring (`local:secrets-key`). Not in the keyring itself: Windows Credential
+Manager caps an entry at 2,560 bytes, which an RSA-4096 key exceeds.
+
+Signing in with it: `AuthSpec::Key` gains a source (`File(path)` or
+`Embedded(text)`); the embedded one goes through `decode_secret_key`. A
+passphrase-protected key is decrypted once when it is added and stored
+unprotected inside the sealed copy, so members never need the passphrase.
+
+The same works for personal credentials ("Store the key in LiteTerm"), which
+makes a personal key follow the account to every computer too.

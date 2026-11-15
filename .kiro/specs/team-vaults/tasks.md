@@ -10,8 +10,8 @@
 
 - [ ] 2. Server migration
   - `supabase/migrations/2026111x_team_vaults.sql`: tables, RLS, RPCs and
-    limits from the design. A manual test checklist in the file header.
-  - Applied by hand in the Supabase SQL editor, like the first migration.
+    limits from the design, tried in a rolled-back transaction on the live
+    project, then applied with `supabase db query --linked -f`.
   - _Requirements: 2.1, 2.5, 3.1–3.4, 5.1, 7.1_
 
 - [ ] 3. API client
@@ -39,8 +39,14 @@
 
 - [ ] 7. Team items in the app
   - Team sections in the hosts view, "Move to team…", vault-aware pickers,
-    read-only state for viewers, key-file hint on team credentials.
-  - _Requirements: 4.1–4.6, 7.3_
+    read-only state for viewers.
+  - _Requirements: 4.1–4.6_
+
+- [ ] 7b. Embedded private keys
+  - `credential_keys` table sealed with a per-device key, the key in the
+    credential payload, `AuthSpec::Key` from embedded text, "Store the key in
+    LiteTerm" in the credential dialog (always on for team credentials).
+  - _Requirements: 7.3_
 
 - [ ] 8. Docs and landing
   - README (how teams work, what the server sees, the safety code), FAQ,

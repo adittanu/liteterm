@@ -186,6 +186,25 @@ impl VaultKey {
     pub fn decrypt_item(&self, sync_id: &str, data: &str) -> Result<Zeroizing<Vec<u8>>, VaultError> {
         open(&self.0, &item_aad(sync_id), data).map_err(|_| VaultError::Corrupt)
     }
+
+    /// Something else this account keeps under its vault key (its team
+    /// account key), bound to `aad`
+    pub(super) fn seal_other(&self, aad: &[u8], plaintext: &[u8]) -> String {
+        seal(&self.0, aad, plaintext)
+    }
+
+    pub(super) fn open_other(&self, aad: &[u8], data: &str) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+        open(&self.0, aad, data).map_err(|_| VaultError::Corrupt)
+    }
+}
+
+/// The vault envelope under any 32-byte key, for the team keys
+pub(super) fn seal_with(key: &[u8; KEY_LEN], aad: &[u8], plaintext: &[u8]) -> String {
+    seal(key, aad, plaintext)
+}
+
+pub(super) fn open_with(key: &[u8; KEY_LEN], aad: &[u8], data: &str) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+    open(key, aad, data).map_err(|_| VaultError::Corrupt)
 }
 
 fn item_aad(sync_id: &str) -> Vec<u8> {
