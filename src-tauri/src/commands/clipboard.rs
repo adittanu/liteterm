@@ -17,3 +17,18 @@ pub async fn clipboard_text(app: tauri::AppHandle) -> Option<String> {
     }
     Some(text.to_string())
 }
+
+/// Largest text a terminal program may put on the clipboard (OSC 52)
+const MAX_WRITE_LEN: usize = 1 << 20;
+
+/// Puts text on the clipboard for a terminal program's OSC 52 "copy".
+/// Written natively because the web view's clipboard API needs a recent
+/// user gesture (WKWebView refuses without one), and an OSC 52 copy from a
+/// remote program arrives some time after the mouse-up that caused it.
+#[tauri::command]
+pub async fn clipboard_write_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    if text.len() > MAX_WRITE_LEN {
+        return Err("Text is too large for the clipboard".into());
+    }
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
+}

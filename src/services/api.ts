@@ -51,6 +51,8 @@ export const api = {
   resolveHost: (address: string): Promise<string[]> => invoke('resolve_host', { address }),
   /** Short single-line clipboard text, or null (see commands/clipboard.rs) */
   clipboardText: (): Promise<string | null> => invoke('clipboard_text'),
+  /** Puts text on the clipboard natively (no user gesture needed; OSC 52 copies) */
+  clipboardWriteText: (text: string): Promise<void> => invoke('clipboard_write_text', { text }),
   /** Saves a pasted image where the tab's programs can open it; returns its path */
   pasteImage: (sessionId: number, dataBase64: string, ext: string): Promise<string> =>
     invoke('paste_image', { sessionId, dataBase64, ext }),

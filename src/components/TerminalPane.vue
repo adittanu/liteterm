@@ -14,6 +14,7 @@ import { IMAGE_EXTS, blobToBase64, imageFiles } from '../utils/imageData'
 import { useSnippetsStore } from '../stores/extras'
 import { nextWord, suggestionFor } from '../services/autosuggest'
 import { PromptLine, isPromptText, textBeforeCursor } from '../services/promptLine'
+import { osc52Text } from '../services/osc52'
 import { terminalThemeFor, xtermThemeFor } from '../services/terminalThemes'
 import { actionFor, captureActive, comboFor, comboText } from '../services/shortcuts'
 import { isMac, isWindows, terminalClipboardKeys } from '../utils/platform'
@@ -772,6 +773,18 @@ onMounted(() => {
   term.loadAddon(search)
   term.open(container.value)
   applyRenderer()
+
+  // OSC 52 clipboard writes. A TUI that captures the mouse (opencode,
+  // Claude Code, Neovim) gets the drag instead of xterm's selection, and
+  // copies by sending this sequence. Without a handler the copy is dropped
+  // and the app's "Copied to clipboard" notice is a lie.
+  term.parser.registerOscHandler(52, (data) => {
+    const text = osc52Text(data)
+    if (text !== null) {
+      api.clipboardWriteText(text).catch(() => ui.toast('error', 'Could not copy to the clipboard'))
+    }
+    return true
+  })
 
   // App shortcuts are handled by App.vue's capture-phase listener; returning
   // false here keeps xterm from forwarding bound combos into the shell as

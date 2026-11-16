@@ -80,6 +80,7 @@ pub fn run() {
             commands::local_fs::local_rename,
             commands::net::resolve_host,
             commands::clipboard::clipboard_text,
+            commands::clipboard::clipboard_write_text,
             commands::paste::paste_image,
             commands::notify::notify,
             commands::power::set_keep_awake,
