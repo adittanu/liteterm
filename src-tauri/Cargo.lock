@@ -3101,7 +3101,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "liteterm"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "argon2 0.5.3",
  "base64 0.22.1",
